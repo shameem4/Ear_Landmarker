@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ear Landmarker - 55-Point Ear Landmark Demo</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #1a1a2e;
+            color: #eee;
+        }
+        h1 {
+            color: #00d4ff;
+            text-align: center;
+        }
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-top: -10px;
+            margin-bottom: 20px;
+        }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: center;
+        }
+        .panel {
+            background: #16213e;
+            border-radius: 10px;
+            padding: 20px;
+            min-width: 300px;
+        }
+        .panel h2 {
+            margin-top: 0;
+            color: #00d4ff;
+            font-size: 1.2em;
+        }
+        #videoContainer {
+            position: relative;
+            display: inline-block;
+        }
+        #video, #canvas {
+            max-width: 100%;
+            border-radius: 8px;
+        }
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        #imageCanvas {
+            max-width: 100%;
+            border-radius: 8px;
+            background: #0f0f23;
+        }
+        button {
+            background: #00d4ff;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #00a8cc;
+        }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        input[type="file"] {
+            display: none;
+        }
+        .file-label {
+            display: inline-block;
+            background: #e94560;
+            color: #fff;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .file-label:hover {
+            background: #c73e54;
+        }
+        #status {
+            text-align: center;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            background: #0f3460;
+        }
+        #stats {
+            font-family: monospace;
+            font-size: 12px;
+            color: #aaa;
+        }
+        .detection-list {
+            max-height: 250px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+            background: #0f0f23;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .slider-container {
+            margin: 10px 0;
+        }
+        .slider-container label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        .slider-container input[type="range"] {
+            width: 100%;
+        }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .legend {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .legend-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <h1>Ear Landmarker</h1>
+    <p class="subtitle">Real-time 55-point ear landmark detection in the browser</p>
+
+    <div id="status">Loading ONNX Runtime...</div>
+
+    <div class="container">
+        <!-- Webcam Panel -->
+        <div class="panel">
+            <h2>Webcam</h2>
+            <div class="controls">
+                <button id="startWebcam" disabled>Start Webcam</button>
+                <button id="stopWebcam" disabled>Stop Webcam</button>
+            </div>
+            <div id="videoContainer">
+                <video id="video" width="640" height="480" autoplay muted playsinline></video>
+                <canvas id="canvas" width="640" height="480"></canvas>
+            </div>
+            <div id="stats"></div>
+            <div class="legend">
+                <div class="legend-item"><span class="legend-dot" style="background:#00FF00"></span> Helix (0-19)</div>
+                <div class="legend-item"><span class="legend-dot" style="background:#FF8000"></span> Antihelix (20-34)</div>
+                <div class="legend-item"><span class="legend-dot" style="background:#0080FF"></span> Concha (35-49)</div>
+                <div class="legend-item"><span class="legend-dot" style="background:#FF0080"></span> Tragus (50-54)</div>
+            </div>
+        </div>
+
+        <!-- Image Panel -->
+        <div class="panel">
+            <h2>Image</h2>
+            <div class="controls">
+                <label class="file-label">
+                    Choose Image
+                    <input type="file" id="imageInput" accept="image/*">
+                </label>
+            </div>
+            <canvas id="imageCanvas" width="640" height="480"></canvas>
+            <div class="detection-list" id="detectionList">
+                Upload an image to see detections
+            </div>
+        </div>
+
+        <!-- Settings Panel -->
+        <div class="panel">
+            <h2>Settings</h2>
+            <div class="slider-container">
+                <label>Confidence Threshold: <span id="confValue">0.70</span></label>
+                <input type="range" id="confSlider" min="0.1" max="0.99" step="0.01" value="0.70">
+            </div>
+            <div style="margin-top: 15px; font-size: 12px; color: #888;">
+                <p><strong>Pipeline:</strong></p>
+                <p>BlazeEar (128x128) &rarr; ROI crop &rarr; EarLandmarker (192x192) &rarr; 55 landmarks</p>
+                <p><strong>Models:</strong></p>
+                <ul>
+                    <li><code>BlazeEar_web.onnx</code> - Ear detector</li>
+                    <li><code>EarLandmarker_web.onnx</code> - Landmark regressor</li>
+                </ul>
+                <p><strong>Architecture:</strong></p>
+                <p>BlazeBlock backbone (FaceMesh pattern), 312K params, Wing loss trained</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ONNX Runtime Web -->
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort.min.js"></script>
+
+    <script type="module">
+        import { EarLandmarkerPipeline } from './earlandmarker_inference.js';
+
+        let pipeline = null;
+        let isWebcamRunning = false;
+        let animationId = null;
+
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const imageCanvas = document.getElementById('imageCanvas');
+        const imageCtx = imageCanvas.getContext('2d');
+        const statusEl = document.getElementById('status');
+        const statsEl = document.getElementById('stats');
+        const detectionListEl = document.getElementById('detectionList');
+        const startBtn = document.getElementById('startWebcam');
+        const stopBtn = document.getElementById('stopWebcam');
+        const imageInput = document.getElementById('imageInput');
+        const confSlider = document.getElementById('confSlider');
+        const confValue = document.getElementById('confValue');
+
+        confSlider.addEventListener('input', () => {
+            confValue.textContent = confSlider.value;
+            if (pipeline) {
+                pipeline.confidenceThreshold = parseFloat(confSlider.value);
+            }
+        });
+
+        async function loadModels() {
+            statusEl.textContent = 'Loading models...';
+            statusEl.style.background = '#0f3460';
+
+            try {
+                pipeline = new EarLandmarkerPipeline({
+                    confidenceThreshold: parseFloat(confSlider.value),
+                });
+                await pipeline.load('BlazeEar_web.onnx', 'EarLandmarker_web.onnx');
+
+                statusEl.textContent = 'Models loaded -- ready';
+                statusEl.style.background = '#155724';
+                startBtn.disabled = false;
+            } catch (error) {
+                statusEl.textContent = 'Error loading models: ' + error.message;
+                statusEl.style.background = '#721c24';
+                console.error(error);
+            }
+        }
+
+        startBtn.addEventListener('click', async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 640, height: 480, facingMode: 'user' },
+                });
+                video.srcObject = stream;
+                await video.play();
+
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+
+                isWebcamRunning = true;
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+
+                detectLoop();
+            } catch (error) {
+                statusEl.textContent = 'Webcam error: ' + error.message;
+                statusEl.style.background = '#721c24';
+            }
+        });
+
+        stopBtn.addEventListener('click', () => {
+            isWebcamRunning = false;
+            if (animationId) cancelAnimationFrame(animationId);
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(t => t.stop());
+            }
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            statsEl.textContent = '';
+        });
+
+        let frameCount = 0;
+        let lastTime = performance.now();
+
+        async function detectLoop() {
+            if (!isWebcamRunning) return;
+
+            const t0 = performance.now();
+
+            try {
+                const results = await pipeline.detect(video);
+
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                pipeline.drawResults(ctx, results, {
+                    lineWidth: 2,
+                    pointRadius: 3,
+                    fontSize: 14,
+                });
+
+                frameCount++;
+                const now = performance.now();
+                if (now - lastTime >= 1000) {
+                    const fps = frameCount;
+                    const ms = (now - t0).toFixed(1);
+                    const ears = results.length;
+                    const lmCount = results.reduce((s, r) => s + r.landmarks.length, 0);
+                    statsEl.textContent = `FPS: ${fps} | ${ms}ms | Ears: ${ears} | Landmarks: ${lmCount}`;
+                    frameCount = 0;
+                    lastTime = now;
+                }
+            } catch (error) {
+                console.error('Detection error:', error);
+            }
+
+            animationId = requestAnimationFrame(detectLoop);
+        }
+
+        imageInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const img = new Image();
+            img.onload = async () => {
+                const maxWidth = 640;
+                const scale = Math.min(1, maxWidth / img.width);
+                imageCanvas.width = img.width * scale;
+                imageCanvas.height = img.height * scale;
+
+                imageCtx.drawImage(img, 0, 0, imageCanvas.width, imageCanvas.height);
+
+                try {
+                    const t0 = performance.now();
+                    const results = await pipeline.detect(img);
+                    const ms = (performance.now() - t0).toFixed(1);
+
+                    // Scale results for display
+                    const scaled = results.map(r => ({
+                        bbox: {
+                            xmin: r.bbox.xmin * scale, ymin: r.bbox.ymin * scale,
+                            xmax: r.bbox.xmax * scale, ymax: r.bbox.ymax * scale,
+                        },
+                        confidence: r.confidence,
+                        landmarks: r.landmarks.map(pt => ({
+                            x: pt.x * scale, y: pt.y * scale,
+                        })),
+                    }));
+
+                    pipeline.drawResults(imageCtx, scaled, {
+                        lineWidth: 2,
+                        pointRadius: 3,
+                        fontSize: 14,
+                    });
+
+                    let html = `<strong>Found ${results.length} ear(s) in ${ms}ms</strong><br><br>`;
+                    results.forEach((r, i) => {
+                        html += `<div>[${i}] conf=${(r.confidence * 100).toFixed(1)}%`;
+                        html += ` | ${r.landmarks.length} landmarks</div><br>`;
+                    });
+                    detectionListEl.innerHTML = html || 'No detections';
+                } catch (error) {
+                    detectionListEl.innerHTML = 'Error: ' + error.message;
+                    console.error(error);
+                }
+            };
+            img.src = URL.createObjectURL(file);
+        });
+
+        loadModels();
+    </script>
+</body>
+</html>

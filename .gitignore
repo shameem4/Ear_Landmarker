@@ -1,0 +1,4 @@
+/data/preprocessed
+/data/raw
+*.pyc
+/runs

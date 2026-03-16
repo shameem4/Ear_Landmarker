@@ -1,0 +1,24 @@
+2026-03-16: EarLandmarker v1 -- initial build
+
+Data:
+  - Unified 4 sources: collectionA (605, auto-cropped), collectionB (3153), AudioEar2D (2000), AudioEar3D (112)
+  - Dropped: coco_keypoint (incompatible point ordering), flipped variants (handled in augmentation)
+  - Total: 5,870 samples, 55 landmarks each, normalized [0,1]
+  - Train/val split: 4,987 / 877 (stratified by source)
+  - Automated QA: image integrity, landmark bounds, cross-source consistency, outlier detection
+
+Model:
+  - Architecture: BlazeBlock backbone (FaceMesh pattern), 192x192 input, 312K params
+  - 5 stages: conv0(24) -> stage0(24) -> stage1(48) -> stage2(96) -> stage3(128) -> stage4(192) -> GAP -> FC -> sigmoid
+  - Loss: Wing loss (w=0.04, epsilon=0.01)
+  - Optimizer: AdamW + cosine annealing, AMP 16-mixed
+  - Speed: 579 FPS GPU, 226 FPS CPU
+
+Training:
+  - Baseline (100 epochs): val NME 0.0351 (~6.7px)
+  - Extended (345 epochs, early stopped at 395): val NME 0.0307 (~5.9px), 12.6% improvement
+  - No overfitting (train-val gap 0.0014)
+
+Pipeline:
+  - BlazeEar detector (128x128) -> ear ROI crop (1.3x expand) -> EarLandmarker (192x192) -> 55 landmarks
+  - Webcam demo verified working in real-time
