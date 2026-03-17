@@ -3,7 +3,6 @@
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
@@ -84,30 +83,34 @@ def add_para(doc, text, bold=False, italic=False):
 
 
 def add_table(doc, headers, rows):
-    table = doc.add_table(rows=1 + len(rows), cols=len(headers))
-    table.style = "Table Grid"
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    """Render table as ASCII text in monospace font for clean copy-paste."""
+    all_rows = [headers] + [[str(v) for v in r] for r in rows]
+    col_widths = [
+        max(len(row[c]) for row in all_rows) for c in range(len(headers))
+    ]
 
-    # Header row
-    for i, h in enumerate(headers):
-        cell = table.rows[0].cells[i]
-        cell.text = h
-        for p in cell.paragraphs:
-            for run in p.runs:
-                run.bold = True
-                run.font.size = Pt(10)
+    def fmt_row(row):
+        cells = [row[c].ljust(col_widths[c]) for c in range(len(headers))]
+        return "  " + "  |  ".join(cells)
 
-    # Data rows
-    for r, row_data in enumerate(rows):
-        for c, val in enumerate(row_data):
-            cell = table.rows[r + 1].cells[c]
-            cell.text = str(val)
-            for p in cell.paragraphs:
-                for run in p.runs:
-                    run.font.size = Pt(10)
+    def separator():
+        return "  " + "--+--".join("-" * w for w in col_widths)
+
+    lines = [fmt_row(all_rows[0]), separator()]
+    for row in all_rows[1:]:
+        lines.append(fmt_row(row))
+
+    p = doc.add_paragraph()
+    for i, line in enumerate(lines):
+        run = p.add_run(line)
+        run.font.name = "Courier New"
+        run.font.size = Pt(9)
+        if i == 0:
+            run.bold = True
+        if i < len(lines) - 1:
+            p.add_run("\n").font.size = Pt(9)
 
     doc.add_paragraph()  # spacing
-    return table
 
 
 def build_article():
