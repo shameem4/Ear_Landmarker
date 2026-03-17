@@ -20,6 +20,8 @@ HEADSIZE_URL = (
     "https://www.linkedin.com/pulse/measuring-human-face-privately-browser-"
     "shameem-hameed-51okc/"
 )
+DEMO_URL = "https://shameem4.github.io/Ear_Landmarker/"
+GITHUB_URL = "https://github.com/shameem4/Ear_Landmarker"
 
 
 def add_hyperlink(paragraph, text, url):
@@ -125,6 +127,14 @@ def build_article():
     )
     for run in title.runs:
         run.font.color.rgb = RGBColor(0, 0, 0)
+
+    # ===== Demo + Repo links =====
+    add_para_with_links(doc, [
+        ("Try the ", None),
+        ("live browser demo", DEMO_URL),
+        (" | ", None),
+        ("GitHub repository", GITHUB_URL),
+    ])
 
     # ===== The Short Version =====
     add_heading(doc, "The Short Version")
@@ -424,7 +434,11 @@ def build_article():
         ("BlazeFace", BLAZEFACE_URL),
         (" browser demos. No server-side computation is required. The full demo is "
          "a static site deployable via GitHub Pages: one HTML file, one JavaScript "
-         "module, and two ONNX model files.", None),
+         "module, and two ONNX model files. ", None),
+        ("Try it here", DEMO_URL),
+        (". Full source code is on ", None),
+        ("GitHub", GITHUB_URL),
+        (".", None),
     ])
 
     # ===== Design Decisions =====
@@ -659,6 +673,6 @@ def build_article():
 
 if __name__ == "__main__":
     doc = build_article()
-    out = "C:/Users/shame/OneDrive/Desktop/ear_stuff/Ear Landmarker/Ear_Landmarker_Article.docx"
+    out = "C:/Users/shame/OneDrive/Desktop/ear_stuff/Ear_Landmarker/Ear_Landmarker_Article.docx"
     doc.save(out)
     print(f"Saved: {out}")
