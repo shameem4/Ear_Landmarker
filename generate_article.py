@@ -1,10 +1,14 @@
 """Generate LinkedIn article as .docx for the Ear Landmarker project."""
 
+import io
+import tempfile
+
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+from PIL import Image, ImageDraw, ImageFont
 
 
 BLAZEEAR_URL = (
@@ -82,33 +86,114 @@ def add_para(doc, text, bold=False, italic=False):
     return p
 
 
-def add_table(doc, headers, rows):
-    """Render table as ASCII text in monospace font for clean copy-paste."""
+def _render_table_image(headers, rows):
+    """Render a table as a PNG image and return bytes."""
+    # Try to load a monospace font, fall back to default
+    font_size = 28
+    bold_size = 28
+    try:
+        font = ImageFont.truetype("consola.ttf", font_size)
+        font_bold = ImageFont.truetype("consolab.ttf", bold_size)
+    except OSError:
+        try:
+            font = ImageFont.truetype("cour.ttf", font_size)
+            font_bold = ImageFont.truetype("courbd.ttf", bold_size)
+        except OSError:
+            font = ImageFont.load_default()
+            font_bold = font
+
     all_rows = [headers] + [[str(v) for v in r] for r in rows]
-    col_widths = [
-        max(len(row[c]) for row in all_rows) for c in range(len(headers))
-    ]
 
-    def fmt_row(row):
-        cells = [row[c].ljust(col_widths[c]) for c in range(len(headers))]
-        return "  " + "  |  ".join(cells)
+    # Measure column widths in pixels
+    tmp_img = Image.new("RGB", (1, 1))
+    tmp_draw = ImageDraw.Draw(tmp_img)
 
-    def separator():
-        return "  " + "--+--".join("-" * w for w in col_widths)
+    pad_x = 24  # horizontal padding per cell side
+    pad_y = 12  # vertical padding per cell side
 
-    lines = [fmt_row(all_rows[0]), separator()]
-    for row in all_rows[1:]:
-        lines.append(fmt_row(row))
+    col_widths = []
+    for c in range(len(headers)):
+        max_w = 0
+        for r, row in enumerate(all_rows):
+            f = font_bold if r == 0 else font
+            bbox = tmp_draw.textbbox((0, 0), row[c], font=f)
+            max_w = max(max_w, bbox[2] - bbox[0])
+        col_widths.append(max_w + 2 * pad_x)
+
+    # Row height
+    bbox = tmp_draw.textbbox((0, 0), "Ag", font=font)
+    row_h = (bbox[3] - bbox[1]) + 2 * pad_y
+
+    # Image dimensions
+    total_w = sum(col_widths) + len(headers) + 1  # +1px per grid line
+    total_h = row_h * len(all_rows) + len(all_rows) + 1
+
+    # Colors
+    bg = (255, 255, 255)
+    header_bg = (41, 50, 65)
+    header_fg = (255, 255, 255)
+    text_fg = (30, 30, 30)
+    grid_color = (180, 180, 180)
+    alt_bg = (245, 247, 250)
+
+    img = Image.new("RGB", (total_w, total_h), bg)
+    draw = ImageDraw.Draw(img)
+
+    y = 0
+    for r, row in enumerate(all_rows):
+        # Row background
+        row_bg = header_bg if r == 0 else (alt_bg if r % 2 == 0 else bg)
+        draw.rectangle([0, y, total_w, y + row_h], fill=row_bg)
+
+        # Cell text
+        x = 1  # start after left grid line
+        for c, cell_text in enumerate(row):
+            f = font_bold if r == 0 else font
+            fg = header_fg if r == 0 else text_fg
+            text_bbox = draw.textbbox((0, 0), cell_text, font=f)
+            text_w = text_bbox[2] - text_bbox[0]
+            text_h = text_bbox[3] - text_bbox[1]
+            tx = x + pad_x
+            ty = y + (row_h - text_h) // 2 - text_bbox[1]
+            draw.text((tx, ty), cell_text, fill=fg, font=f)
+            x += col_widths[c] + 1  # +1 for grid line
+
+        y += row_h + 1  # +1 for grid line
+
+    # Draw grid lines
+    # Horizontal lines
+    y = 0
+    for r in range(len(all_rows) + 1):
+        draw.line([(0, y), (total_w, y)], fill=grid_color, width=1)
+        if r < len(all_rows):
+            y += row_h + 1
+    # Vertical lines
+    x = 0
+    for c in range(len(headers) + 1):
+        draw.line([(x, 0), (x, total_h)], fill=grid_color, width=1)
+        if c < len(headers):
+            x += col_widths[c] + 1
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", dpi=(200, 200))
+    buf.seek(0)
+    return buf, total_w, total_h
+
+
+def add_table(doc, headers, rows):
+    """Render table as a PNG image and embed in the document."""
+    buf, px_w, px_h = _render_table_image(headers, rows)
+
+    # Scale to fit page width (6.5 inches usable), cap at that
+    max_width = 6.5
+    img_width_in = px_w / 200.0  # 200 DPI
+    if img_width_in > max_width:
+        img_width_in = max_width
 
     p = doc.add_paragraph()
-    for i, line in enumerate(lines):
-        run = p.add_run(line)
-        run.font.name = "Courier New"
-        run.font.size = Pt(9)
-        if i == 0:
-            run.bold = True
-        if i < len(lines) - 1:
-            p.add_run("\n").font.size = Pt(9)
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run()
+    run.add_picture(buf, width=Inches(img_width_in))
 
     doc.add_paragraph()  # spacing
 
