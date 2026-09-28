@@ -54,7 +54,13 @@ EarLandmarker follows the MediaPipe FaceMesh pattern -- depthwise separable Blaz
 
 Dropped: `coco_keypoint` (incompatible point ordering -- landmark indices don't match the linestrip convention used by other sources).
 
-**Preprocessing pipeline:** `preprocess.py` ingests all formats, deduplicates, normalizes landmarks to [0,1], writes `landmarks.npy` (memory-mapped) + `manifest.csv`. `validate.py` runs 7 automated QA checks (image integrity, bounds, geometry, linestrip smoothness, statistical outliers, cross-source consistency, resolution audit). `split.py` creates stratified 85/15 train/val splits.
+**Preprocessing pipeline:** `preprocess.py` ingests all formats, deduplicates, normalizes landmarks to [0,1], writes `landmarks.npy` (memory-mapped) + `manifest.csv`. `validate.py` runs 7 automated QA checks (image integrity, bounds, geometry, linestrip smoothness, statistical outliers, cross-source consistency, resolution audit). `split.py` creates stratified 70/15/15 train/val/test splits.
+
+**Splits (v2):** 4,142 train / 861 val / 861 test. `val` drives early stopping and
+checkpoint selection; `test` is touched once, at the end, and is the only number
+suitable for reporting. AudioEar3D is kept entirely in train -- its 112 samples are
+56 subjects x (left, right), and with horizontal flip on, splitting near-mirror pairs
+across train/eval would leak.
 
 ## Training
 
@@ -65,9 +71,17 @@ Dropped: `coco_keypoint` (incompatible point ordering -- landmark indices don't 
 | Schedule | Cosine annealing |
 | Precision | 16-mixed AMP |
 | Augmentation | Horizontal flip, translation (5%), rotation (+/-15 deg), color jitter, bbox jitter (10%) |
-| Early stopping | Patience 50 on val/nme |
+| Early stopping | Patience 50 on val_nme |
 
-**Results:** val NME 0.0307 (~5.9px at 192px) after 345 epochs, no overfitting (train-val gap 0.0014).
+Augmentation labels are covered by `tests/test_augmentation.py`, which asserts that
+image content and landmark labels move together for every geometric augmentation.
+
+**v1 results (superseded):** val NME 0.0307 (~5.9px at 192px) at epoch 345. This
+number should not be used. Two reasons: the rotation augmentation transformed labels
+by the inverse rotation, mislabelling every rotated sample by ~12.5px mean (p90
+26.8px) at 192px; and the figure was the early-stopping/checkpoint-selection metric
+on a two-way split, with no held-out test set. v2 re-baselines on the corrected
+pipeline and reports test NME.
 
 ## Usage
 
@@ -84,6 +98,10 @@ python inference.py image path/to/ear.jpg --output result.jpg
 python train.py
 python train.py --epochs 500 --batch-size 128 --lr 1e-3
 python train.py --resume best
+python train.py --run-name my_experiment    # isolates checkpoints/logs
+
+# Tests (augmentation label correctness)
+python -m pytest tests/ -v
 
 # Data pipeline
 python data/preprocess.py

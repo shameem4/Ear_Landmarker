@@ -22,7 +22,7 @@ from onnxsim import simplify
 from model.ear_landmarker import EarLandmarker
 from inference import find_best_checkpoint
 
-PROJECT = Path("C:/Users/shame/OneDrive/Desktop/ear_stuff/Ear Landmarker")
+PROJECT = Path(__file__).resolve().parent
 
 
 def load_model(checkpoint_path: Path) -> EarLandmarker:

@@ -25,6 +25,11 @@ import torchvision.transforms.functional as TF
 
 NUM_LANDMARKS = 55
 
+# Attribution only. Set to True *solely* by scripts/train_baseline_v1.py, to
+# reproduce the v1 rotation-label bug and measure what fixing it was worth.
+# Must stay False for any real training run -- it corrupts every rotated label.
+LEGACY_ROTATION_SIGN = False
+
 
 @dataclass
 class AugmentationParams:
@@ -123,7 +128,16 @@ class EarLandmarkDataset(Dataset):
         # Normalize to [-1, 1]
         tensor_img = TF.normalize(tensor_img, self._norm_mean, self._norm_std)
 
-        return {"image": tensor_img, "landmarks": landmarks.view(-1)}
+        # Points pushed outside the frame by augmentation are unreachable by the
+        # sigmoid head. Mask them out rather than clamping them onto the border,
+        # which would supervise the model toward a position the point isn't at.
+        visible = ((landmarks >= 0.0) & (landmarks <= 1.0)).all(dim=1).float()  # (55,)
+
+        return {
+            "image": tensor_img,
+            "landmarks": landmarks.view(-1),
+            "visible": visible,
+        }
 
     def _geo_augment(
         self, image: Image.Image, landmarks: torch.Tensor,
@@ -151,8 +165,8 @@ class EarLandmarkDataset(Dataset):
             top = int(border + ty * self.image_size)
             image = image.crop((left, top, left + self.image_size, top + self.image_size))
             landmarks = landmarks.clone()
-            landmarks[:, 0] = torch.clamp(landmarks[:, 0] - tx, 0.0, 1.0)
-            landmarks[:, 1] = torch.clamp(landmarks[:, 1] - ty, 0.0, 1.0)
+            landmarks[:, 0] = landmarks[:, 0] - tx
+            landmarks[:, 1] = landmarks[:, 1] - ty
 
         # Rotation
         if aug.rotation_deg > 0:
@@ -162,10 +176,14 @@ class EarLandmarkDataset(Dataset):
             cos_a, sin_a = math.cos(rad), math.sin(rad)
             landmarks = landmarks.clone()
             c = landmarks - 0.5
-            x_new = c[:, 0] * cos_a - c[:, 1] * sin_a
-            y_new = c[:, 0] * sin_a + c[:, 1] * cos_a
-            landmarks[:, 0] = torch.clamp(x_new + 0.5, 0.0, 1.0)
-            landmarks[:, 1] = torch.clamp(y_new + 0.5, 0.0, 1.0)
+            # PIL rotates the image counter-clockwise; in image coords (y down)
+            # that is [[cos, sin], [-sin, cos]]. The transpose (v1) sends the
+            # labels the opposite way and mislabels every rotated sample.
+            s = -sin_a if LEGACY_ROTATION_SIGN else sin_a
+            x_new = c[:, 0] * cos_a + c[:, 1] * s
+            y_new = -c[:, 0] * s + c[:, 1] * cos_a
+            landmarks[:, 0] = x_new + 0.5
+            landmarks[:, 1] = y_new + 0.5
 
         return image, landmarks
 
@@ -190,7 +208,7 @@ class EarLandmarkDataset(Dataset):
 
         landmarks = landmarks.clone()
         crop_w, crop_h = max(1.0, x2 - x1), max(1.0, y2 - y1)
-        landmarks[:, 0] = torch.clamp((landmarks[:, 0] * w - x1) / crop_w, 0.0, 1.0)
-        landmarks[:, 1] = torch.clamp((landmarks[:, 1] * h - y1) / crop_h, 0.0, 1.0)
+        landmarks[:, 0] = (landmarks[:, 0] * w - x1) / crop_w
+        landmarks[:, 1] = (landmarks[:, 1] * h - y1) / crop_h
 
         return cropped, landmarks

@@ -37,12 +37,19 @@ class WingLoss(nn.Module):
         self.epsilon = epsilon
         self.c = w - w * math.log(1.0 + w / epsilon)
 
-    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        visible: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Compute mean Wing loss.
 
         Args:
             pred: (B, 110) predicted landmarks.
             target: (B, 110) ground truth landmarks.
+            visible: (B, 55) 1.0 for points inside the frame, 0.0 for points
+                pushed outside by augmentation. None means all visible.
 
         Returns:
             Scalar loss.
@@ -54,7 +61,13 @@ class WingLoss(nn.Module):
             self.w * torch.log1p(diff / self.epsilon),
             diff - self.c,
         )
-        return loss.mean()
+        if visible is None:
+            return loss.mean()
+
+        # (B, 55) -> (B, 55, 2) -> (B, 110) so both coords of a point share its mask
+        mask = visible.unsqueeze(-1).expand(-1, -1, 2).reshape(loss.shape)
+        denom = mask.sum().clamp_min(1.0)
+        return (loss * mask).sum() / denom
 
 
 class AdaptiveWingLoss(nn.Module):
@@ -92,7 +105,12 @@ class AdaptiveWingLoss(nn.Module):
         ) * self.exp * (theta_eps ** (self.exp - 1.0)) / epsilon
         self.c = theta * self.a - omega * math.log(1.0 + theta_eps ** self.exp)
 
-    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        visible: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         diff = torch.abs(pred - target)
         small = diff < self.theta
         loss = torch.where(
@@ -100,4 +118,8 @@ class AdaptiveWingLoss(nn.Module):
             self.omega * torch.log1p((diff / self.epsilon) ** self.exp),
             self.a * diff - self.c,
         )
-        return loss.mean()
+        if visible is None:
+            return loss.mean()
+
+        mask = visible.unsqueeze(-1).expand(-1, -1, 2).reshape(loss.shape)
+        return (loss * mask).sum() / mask.sum().clamp_min(1.0)

@@ -22,3 +22,54 @@ Training:
 Pipeline:
   - BlazeEar detector (128x128) -> ear ROI crop (1.3x expand) -> EarLandmarker (192x192) -> 55 landmarks
   - Webcam demo verified working in real-time
+
+2026-09-28: v2 -- correctness fixes before any accuracy work
+
+Bug found (result-altering):
+  - data/dataset.py rotation augmentation applied the TRANSPOSED rotation matrix
+    to landmarks. PIL rotates CCW ([[cos,sin],[-sin,cos]] in y-down image coords);
+    the code used [[cos,-sin],[sin,cos]], sending labels the opposite way.
+  - Error = 2x the rotation angle. Measured against actual image content
+    (gaussian-dot centroid): 10.1px @ 5deg, 20.5px @ 10deg, 30.4px @ 15deg.
+    Over the real aug distribution: mean 12.5px, p90 26.8px, max 43.4px at 192px.
+  - Rotation had no probability gate, so 100% of training samples were affected.
+  - Validation runs unaugmented, so no logged metric could ever reveal it.
+  - Verified: translation (0.20px) and bbox_jitter (0.13px) are CORRECT --
+    the bug was isolated to rotation.
+
+Other fixes:
+  - Clamping replaced with a visibility mask. Points pushed outside the frame were
+    clamped onto the border and supervised there; they are now masked out of both
+    loss and NME (WingLoss/AdaptiveWingLoss take an optional `visible` arg).
+  - Three-way 70/15/15 split (4142/861/861). v1 had no test set, so its reported
+    0.0307 was the early-stopping + checkpoint-selection metric.
+  - AudioEar3D confined to train (56 subjects x left/right are near-mirrors;
+    with horizontal flip on, random splitting leaked. Subject IDs unrecoverable
+    from the manifest, so the whole source stays in train).
+  - Per-region NME logged (helix/antihelix/concha/tragus) -- the article noted
+    this diagnostic was missing.
+  - ModelCheckpoint monitored "val/nme"; the "/" made Lightning create nested
+    directories per epoch. Now monitors a slash-free "val_nme" alias.
+  - All hardcoded Windows paths replaced with repo-relative resolution
+    (train/inference/export_onnx/split/validate/preprocess/generate_article).
+  - Added --run-name to isolate concurrent experiments.
+
+Guardrail:
+  - tests/test_augmentation.py (83 tests) asserts image content and labels move
+    together for rotation/translation/bbox_jitter/flip, by locating a rendered dot
+    via background-subtracted centroid. Verified it FAILS (24 cases) with the old
+    matrix restored and passes with the fix.
+
+v1 training curves recovered from runs/logs (version_2 = 100ep, version_3 = 500ep):
+  - 100ep: best val/nme 0.0351 @ ep92
+  - 500ep: best val/nme 0.0307 @ ep345, early stopped ep395
+  - Saturation: 0.0321 at 75% of run -> 0.0307 best. ~0.0014 over the last ~100
+    epochs, last-50 std 0.0003. Training length is not the binding constraint.
+  - "train-val gap 0.0014 = no overfitting" is not a valid inference: train NME is
+    measured on augmented data against CORRUPTED rotation labels, val on clean
+    unaugmented data. The two are not comparable.
+
+Status: v1 checkpoints archived to runs/archive_v1/ (published model preserved at
+runs/archive_v1/EarLandmarker_epoch=345_val/nme=0.0307.ckpt). Not yet retrained --
+GPU busy. Architecture change (GAP head -> soft-argmax) deliberately deferred until
+a clean baseline exists, so the two effects can be attributed separately.

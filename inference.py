@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -24,8 +25,8 @@ import torch.nn.functional as F
 from model.ear_landmarker import EarLandmarker
 
 # BlazeEar lives in a sibling directory
-BLAZEEAR_DIR = Path("C:/Users/shame/OneDrive/Desktop/ear_stuff/BlazeEar")
-PROJECT = Path("C:/Users/shame/OneDrive/Desktop/ear_stuff/Ear Landmarker")
+BLAZEEAR_DIR = Path(os.environ.get("BLAZEEAR_DIR", Path(__file__).resolve().parents[1] / "BlazeEar"))
+PROJECT = Path(__file__).resolve().parent
 
 LANDMARKER_INPUT_SIZE = 192
 DETECTOR_INPUT_SIZE = 128

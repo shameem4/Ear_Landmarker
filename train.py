@@ -24,7 +24,7 @@ from model.lightning_module import EarLandmarkerModule
 
 torch.set_float32_matmul_precision("high")
 
-PROJECT = Path("C:/Users/shame/OneDrive/Desktop/ear_stuff/Ear Landmarker")
+PROJECT = Path(__file__).resolve().parent
 DATA_DIR = PROJECT / "data" / "preprocessed"
 
 
@@ -46,7 +46,12 @@ def main() -> None:
     parser.add_argument("--resume", type=str, default=None,
                         help="Resume from checkpoint: 'last', 'best', or path to .ckpt")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--run-name", type=str, default="EarLandmarker",
+                        help="Names the checkpoint/log subdirectory, so concurrent "
+                             "experiments do not overwrite each other")
     args = parser.parse_args()
+
+    ckpt_dir = PROJECT / "runs" / "checkpoints" / args.run_name
 
     pl.seed_everything(args.seed)
 
@@ -72,6 +77,12 @@ def main() -> None:
         data_dir=DATA_DIR,
         image_size=args.image_size,
     )
+    test_csv = DATA_DIR / "test.csv"
+    test_ds = EarLandmarkDataset(
+        split_csv=test_csv,
+        data_dir=DATA_DIR,
+        image_size=args.image_size,
+    ) if test_csv.exists() else None
 
     loader_kwargs = dict(
         num_workers=args.num_workers, pin_memory=True,
@@ -84,6 +95,9 @@ def main() -> None:
     val_loader = DataLoader(
         val_ds, batch_size=args.batch_size, shuffle=False, **loader_kwargs,
     )
+    test_loader = DataLoader(
+        test_ds, batch_size=args.batch_size, shuffle=False, **loader_kwargs,
+    ) if test_ds is not None else None
 
     # Model
     module = EarLandmarkerModule(
@@ -102,17 +116,17 @@ def main() -> None:
 
     # Callbacks
     checkpoint_cb = ModelCheckpoint(
-        dirpath=PROJECT / "runs" / "checkpoints",
-        filename="EarLandmarker_{epoch:03d}_{val_nme:.4f}",
+        dirpath=ckpt_dir,
+        filename="EarLandmarker_{epoch:03d}_nme={val_nme:.4f}",
         auto_insert_metric_name=False,
-        monitor="val/nme",
+        monitor="val_nme",
         mode="min",
         save_top_k=3,
         save_last=True,
     )
     lr_monitor = LearningRateMonitor(logging_interval="epoch")
     early_stop = EarlyStopping(
-        monitor="val/nme",
+        monitor="val_nme",
         mode="min",
         patience=args.patience,
         verbose=True,
@@ -121,7 +135,7 @@ def main() -> None:
     # Logger
     logger = CSVLogger(
         save_dir=PROJECT / "runs" / "logs",
-        name="EarLandmarker",
+        name=args.run_name,
     )
 
     # Trainer
@@ -139,7 +153,6 @@ def main() -> None:
     # Resolve resume checkpoint
     ckpt_path = None
     if args.resume:
-        ckpt_dir = PROJECT / "runs" / "checkpoints"
         if args.resume == "last":
             ckpt_path = ckpt_dir / "last.ckpt"
         elif args.resume == "best":
@@ -164,7 +177,15 @@ def main() -> None:
     trainer.fit(module, train_loader, val_loader, ckpt_path=ckpt_path)
 
     print(f"\nBest model: {checkpoint_cb.best_model_path}")
-    print(f"Best NME:   {checkpoint_cb.best_model_score:.4f}")
+    print(f"Best val NME: {checkpoint_cb.best_model_score:.4f}  (model-selection metric)")
+
+    # Held-out test set: evaluated once, on the best checkpoint, after all
+    # selection is done. This is the number to report.
+    if test_loader is not None:
+        print("\nEvaluating best checkpoint on held-out test set...")
+        trainer.test(module, test_loader, ckpt_path=checkpoint_cb.best_model_path)
+    else:
+        print("\nNo test.csv found -- run `python data/split.py` to create one.")
 
 
 if __name__ == "__main__":

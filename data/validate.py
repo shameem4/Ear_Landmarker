@@ -28,7 +28,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-PREP_DIR = Path("C:/Users/shame/OneDrive/Desktop/ear_stuff/Ear Landmarker/data/preprocessed")
+PREP_DIR = Path(__file__).resolve().parent / "preprocessed"
 NUM_LANDMARKS = 55
 
 # Linestrip grouping: shape 0 (20 pts), shape 1 (15 pts), shape 2 (15 pts), shape 3 (5 pts)

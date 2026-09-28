@@ -12,6 +12,14 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from model.ear_landmarker import EarLandmarker
 from model.losses import WingLoss
 
+# (name, start_idx, end_idx) -- linestrip groups, end exclusive
+LANDMARK_REGIONS = [
+    ("helix", 0, 20),
+    ("antihelix", 20, 35),
+    ("concha", 35, 50),
+    ("tragus", 50, 55),
+]
+
 
 class EarLandmarkerModule(pl.LightningModule):
     """Lightning wrapper for EarLandmarker training.
@@ -52,18 +60,23 @@ class EarLandmarkerModule(pl.LightningModule):
     def _shared_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         images = batch["image"]
         targets = batch["landmarks"]
+        visible = batch.get("visible")
         preds = self.model(images)
 
-        loss = self.criterion(preds, targets)
+        loss = self.criterion(preds, targets, visible)
 
-        # Per-point NME (Normalized Mean Error) as fraction of [0,1] range
+        # Per-point NME (Normalized Mean Error) as fraction of [0,1] range.
+        # Averaged over visible points only, so it matches what was supervised.
         with torch.no_grad():
             preds_2d = preds.view(-1, self.hparams.num_landmarks, 2)
             targets_2d = targets.view(-1, self.hparams.num_landmarks, 2)
             per_point_err = torch.norm(preds_2d - targets_2d, dim=-1)  # (B, 55)
-            nme = per_point_err.mean()
+            if visible is None:
+                nme = per_point_err.mean()
+            else:
+                nme = (per_point_err * visible).sum() / visible.sum().clamp_min(1.0)
 
-        return {"loss": loss, "nme": nme}
+        return {"loss": loss, "nme": nme, "per_point_err": per_point_err}
 
     def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         result = self._shared_step(batch)
@@ -75,6 +88,25 @@ class EarLandmarkerModule(pl.LightningModule):
         result = self._shared_step(batch)
         self.log("val/loss", result["loss"], prog_bar=True, sync_dist=True)
         self.log("val/nme", result["nme"], prog_bar=True, sync_dist=True)
+        # Slash-free alias: ModelCheckpoint interpolates the monitored metric into
+        # the filename, and a "/" there makes Lightning create nested directories.
+        self.log("val_nme", result["nme"], sync_dist=True)
+        self._log_region_nme("val", result["per_point_err"])
+
+    def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> None:
+        result = self._shared_step(batch)
+        self.log("test/loss", result["loss"], sync_dist=True)
+        self.log("test/nme", result["nme"], prog_bar=True, sync_dist=True)
+        self._log_region_nme("test", result["per_point_err"])
+
+    def _log_region_nme(self, stage: str, per_point_err: torch.Tensor) -> None:
+        """Log NME broken down by anatomical region (helix/antihelix/concha/tragus)."""
+        for name, lo, hi in LANDMARK_REGIONS:
+            self.log(
+                f"{stage}/nme_{name}",
+                per_point_err[:, lo:hi].mean(),
+                sync_dist=True,
+            )
 
     def configure_optimizers(self) -> Dict[str, Any]:
         optimizer = AdamW(
