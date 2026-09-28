@@ -41,6 +41,11 @@ def main() -> None:
     parser.add_argument("--compile", action="store_true", help="Use torch.compile")
     parser.add_argument("--blazeear-ckpt", type=str, default=None,
                         help="BlazeEar checkpoint for backbone initialization")
+    parser.add_argument("--arch", type=str, default="gap", choices=["gap", "heatmap"],
+                        help="gap: GAP+FC coordinate regression (v1). "
+                             "heatmap: soft-argmax over 24x24 heatmaps.")
+    parser.add_argument("--tau", type=float, default=1.0,
+                        help="Soft-argmax softmax temperature (--arch heatmap only)")
     parser.add_argument("--wing-w", type=float, default=0.04)
     parser.add_argument("--wing-epsilon", type=float, default=0.01)
     parser.add_argument("--resume", type=str, default=None,
@@ -108,6 +113,8 @@ def main() -> None:
         wing_w=args.wing_w,
         wing_epsilon=args.wing_epsilon,
         blazeear_ckpt=args.blazeear_ckpt,
+        arch=args.arch,
+        tau=args.tau,
     )
 
     if args.compile:

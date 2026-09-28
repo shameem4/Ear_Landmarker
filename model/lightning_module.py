@@ -9,7 +9,7 @@ import pytorch_lightning as pl
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-from model.ear_landmarker import EarLandmarker
+from model.ear_landmarker import EarLandmarker, EarLandmarkerHeatmap
 from model.losses import WingLoss
 
 # (name, start_idx, end_idx) -- linestrip groups, end exclusive
@@ -32,6 +32,9 @@ class EarLandmarkerModule(pl.LightningModule):
         wing_w: Wing loss width parameter.
         wing_epsilon: Wing loss curvature parameter.
         blazeear_ckpt: Optional path to BlazeEar checkpoint for backbone init.
+        arch: "gap" for the v1 GAP+FC coordinate head, "heatmap" for the
+            soft-argmax head over 24x24 heatmaps.
+        tau: Soft-argmax softmax temperature (arch="heatmap" only).
     """
 
     def __init__(
@@ -43,11 +46,18 @@ class EarLandmarkerModule(pl.LightningModule):
         wing_w: float = 0.04,
         wing_epsilon: float = 0.01,
         blazeear_ckpt: Optional[str] = None,
+        arch: str = "gap",
+        tau: float = 1.0,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
 
-        self.model = EarLandmarker(num_landmarks=num_landmarks)
+        if arch == "gap":
+            self.model = EarLandmarker(num_landmarks=num_landmarks)
+        elif arch == "heatmap":
+            self.model = EarLandmarkerHeatmap(num_landmarks=num_landmarks, tau=tau)
+        else:
+            raise ValueError(f"unknown arch {arch!r}, expected 'gap' or 'heatmap'")
         self.criterion = WingLoss(w=wing_w, epsilon=wing_epsilon)
 
         if blazeear_ckpt:

@@ -22,7 +22,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from model.ear_landmarker import EarLandmarker
+from model.ear_landmarker import EarLandmarker, EarLandmarkerHeatmap
 
 # BlazeEar lives in a sibling directory
 BLAZEEAR_DIR = Path(os.environ.get("BLAZEEAR_DIR", Path(__file__).resolve().parents[1] / "BlazeEar"))
@@ -81,9 +81,18 @@ class LandmarkPredictor:
 
     def __init__(self, weights_path: str | Path, device: str = "cpu") -> None:
         self.device = torch.device(device)
-        self.model = EarLandmarker(num_landmarks=55)
 
         ckpt = torch.load(str(weights_path), map_location="cpu", weights_only=True)
+        # Architecture comes from the checkpoint's saved hyperparameters, so a
+        # heatmap-head checkpoint loads without passing a matching flag.
+        hparams = ckpt.get("hyper_parameters", {}) or {}
+        if hparams.get("arch", "gap") == "heatmap":
+            self.model = EarLandmarkerHeatmap(
+                num_landmarks=55, tau=hparams.get("tau", 1.0),
+            )
+        else:
+            self.model = EarLandmarker(num_landmarks=55)
+
         state = ckpt.get("state_dict", ckpt)
         # Strip "model." prefix from Lightning checkpoint keys
         state = {k.removeprefix("model."): v for k, v in state.items()

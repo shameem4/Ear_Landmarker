@@ -73,3 +73,52 @@ Status: v1 checkpoints archived to runs/archive_v1/ (published model preserved a
 runs/archive_v1/EarLandmarker_epoch=345_val/nme=0.0307.ckpt). Not yet retrained --
 GPU busy. Architecture change (GAP head -> soft-argmax) deliberately deferred until
 a clean baseline exists, so the two effects can be attributed separately.
+
+2026-09-28: v2 third run prepared (soft-argmax head) -- NOT YET TRAINED
+
+model/ear_landmarker.py:
+  - Refactored backbone into forward_features() returning (stage2, stage3, stage4).
+    Pure refactor: v1 state_dict keys are byte-identical and the archived v1
+    checkpoint still loads strict=True (asserted in tests/test_model.py).
+  - Added EarLandmarkerHeatmap: same backbone, heatmap head + soft-argmax.
+    Rationale: the GAP head collapses 6x6x192 -> 192 before regressing coords.
+    Global average pooling is permutation-invariant over spatial positions, so it
+    discards WHERE features are -- the one thing landmark localisation needs.
+    Soft-argmax (expectation of a spatial softmax) is differentiable and sub-pixel,
+    so the article's objection to heatmaps (argmax grid quantisation) does not apply.
+    Decoder: stage4 -1x1-> 96, up -> +stage3, up -> +stage2, BlazeBlock, 1x1 -> 55
+    heatmaps @ 24x24. Params 340,167 vs 312,958 (+8.7%).
+  - Bug caught during prep: zero-initialising to_heatmap.weight (the obvious way
+    to start predictions at image centre) leaves 129 of 131 parameter tensors with
+    NO gradient, because d(loss)/d(decoder) = dL/dheatmap * weight = 0. Only the
+    final 1x1 conv learns. Fixed with small-std normal init (std=0.01): heatmaps
+    still start near-flat (predictions mean 0.4995) but gradient reaches everything.
+    Locked in by test_heatmap_head_gradients_reach_the_backbone (verified to fail
+    with 129 starved tensors if zero-init is reintroduced).
+
+Plumbing:
+  - train.py: --arch {gap,heatmap} and --tau.
+  - export_onnx.py / inference.py: architecture is read from the checkpoint's saved
+    hyper_parameters, so a heatmap checkpoint loads and exports with no extra flag.
+  - Both archs verified to export to ONNX (opset 14) and match PyTorch under
+    onnxruntime to 1.8e-07. Sizes 1227 KB (gap) / 1343 KB (heatmap).
+    Note: the heatmap graph contains Range/Resize ops (from torch.arange and
+    bilinear upsample). Fine for ONNX Runtime Web; revisit if TFLite export
+    becomes a goal.
+
+tests/ now 97 tests (augmentation label correctness + model head contract).
+
+TODO (filed, blocked on results): revise the published LinkedIn article and
+generate_article.py once the three runs produce test NME. The article's 0.0307,
+its "12.6% improvement" narrative and its "no overfitting" claim all need
+correcting, and its stated reason for rejecting heatmaps no longer holds.
+
+Runs queued (GPU busy at time of writing, ~35 min each):
+  1. scripts/train_baseline_v1.py --epochs 500 --num-workers 6
+       -> v1 behaviour (bug enabled) on the new splits: the honest "before"
+  2. train.py --epochs 500 --num-workers 6 --run-name v2_fixed
+       -> bug fixed, GAP head: isolates the value of the bug fix
+  3. train.py --epochs 500 --num-workers 6 --run-name v2_heatmap --arch heatmap
+       -> bug fixed + soft-argmax head: isolates the value of the architecture
+  Run 1 vs 2 attributes the fix; 2 vs 3 attributes the architecture. Report test
+  NME, never val NME.
