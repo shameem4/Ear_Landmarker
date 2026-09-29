@@ -357,3 +357,57 @@ point-to-contour normal error, and contour-measurement error -- all index-free.
 Runs launched: v3_persp (heatmap + 35deg perspective) and v4_persp_canon
 (+ canonical labels). Whether canonicalization helps is an open empirical
 question; eval_contour.py will decide it. Suite now 153 tests.
+
+2026-09-29: v3/v4 results -- perspective aug WINS, canonicalization REJECTED
+
+Raw NME is NOT comparable across these runs (v4 predicts canonical targets), so
+everything below uses index-free metrics from scripts/eval_contour.py.
+
+FRONTAL test set (400 images):
+  run              arch      chamfer   normal   meas err
+  v2_fixed         gap        2.747p   3.004p     6.34%
+  v2_heatmap       heatmap    2.479p   2.704p     6.09%   <- best frontal
+  v3_persp         heatmap    2.541p   2.802p     6.26%
+  v4_persp_canon   heatmap    2.618p   2.796p     6.53%
+
+POSE ROBUSTNESS -- point-to-contour error vs simulated yaw (250 images):
+  yaw     v2_heatmap        v3_persp      v4_persp_canon
+   0°   2.793p   +0%     2.858p   +0%     2.908p   +0%
+  20°   3.239p  +16%     2.981p   +4%     2.959p   +2%
+  35°   3.850p  +38%     3.087p   +8%     3.008p   +3%
+  50°   4.760p  +70%     3.345p  +17%     3.426p  +18%
+
+CONCLUSIONS:
+
+1. PERSPECTIVE AUGMENTATION IS THE WIN for real captures. At 50deg yaw --
+   the range of the user's actual photos (43-53deg) -- it cuts error 30%
+   (4.760 -> 3.345 px). At 35deg, 20% (3.850 -> 3.087). The cost is 2% worse
+   frontal (2.793 -> 2.858). For a turned-head use case this trade is strongly
+   favourable; for a frontal-only use case it is not.
+   This also validates the diagnosis: pose OOD was a real cause, and closing it
+   in augmentation closed most of the gap.
+
+2. CANONICALIZATION IS REJECTED. v4 is worse than v3 on every frontal metric
+   (chamfer 2.618 vs 2.541, meas err 6.53% vs 6.26%) and a wash on pose (better
+   at 20-35deg, worse at 50deg). It does not pay for rewriting every label,
+   breaking index semantics, and the added preprocessing step.
+   The diagnosis that drove it was sound -- tangential error IS 72% of the total
+   and DOES track per-source spacing irregularity -- but the fix does not follow
+   from the diagnosis. Most likely the original vertex placements carry real
+   anatomical information that uniform spacing discards, so consistency is
+   bought at the price of anatomy. Keep data/canonicalize.py as a documented
+   negative result; do not use it.
+
+3. Tangential error remains the largest single error term and is still
+   unaddressed. Contour-based measurement (model/measure.py) sidesteps it for
+   the measurement use case, which is the practical answer. Fixing it at source
+   would need re-annotation to a single convention, not resampling.
+
+RECOMMENDED PRODUCTION STACK:
+  model        runs/checkpoints/v3_persp  (heatmap head + 35deg perspective aug)
+  measurement  model/measure.py           (index-free contour anthropometry)
+  smoothing    model/smoothing.py         (enabled by default in inference.py)
+  NOT used     data/canonicalize.py       (negative result, see above)
+
+OPEN: --perspective-deg 35 was a guess, never swept. Single training seed
+throughout. Web demo (docs/) not yet updated to v3 or to smoothing.
