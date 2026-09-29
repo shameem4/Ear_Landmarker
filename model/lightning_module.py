@@ -10,7 +10,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from model.ear_landmarker import EarLandmarker, EarLandmarkerHeatmap
-from model.losses import WingLoss
+from model.losses import WingLoss, TangentialWeightedWingLoss, _contour_frames
 
 # (name, start_idx, end_idx) -- linestrip groups, end exclusive
 LANDMARK_REGIONS = [
@@ -48,6 +48,8 @@ class EarLandmarkerModule(pl.LightningModule):
         blazeear_ckpt: Optional[str] = None,
         arch: str = "gap",
         tau: float = 1.0,
+        tangential_weight: float = 1.0,
+        spacing_weight: float = 0.0,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -58,7 +60,16 @@ class EarLandmarkerModule(pl.LightningModule):
             self.model = EarLandmarkerHeatmap(num_landmarks=num_landmarks, tau=tau)
         else:
             raise ValueError(f"unknown arch {arch!r}, expected 'gap' or 'heatmap'")
-        self.criterion = WingLoss(w=wing_w, epsilon=wing_epsilon)
+        # tangential_weight < 1 discounts residual along the GT contour, where most
+        # of the label noise lives. 1.0 reproduces plain isotropic Wing loss.
+        if tangential_weight >= 1.0 and spacing_weight <= 0.0:
+            self.criterion = WingLoss(w=wing_w, epsilon=wing_epsilon)
+        else:
+            self.criterion = TangentialWeightedWingLoss(
+                w=wing_w, epsilon=wing_epsilon,
+                tangential_weight=tangential_weight,
+                spacing_weight=spacing_weight,
+            )
 
         if blazeear_ckpt:
             n = self.model.load_blazeear_backbone(blazeear_ckpt)
@@ -86,7 +97,22 @@ class EarLandmarkerModule(pl.LightningModule):
             else:
                 nme = (per_point_err * visible).sum() / visible.sum().clamp_min(1.0)
 
-        return {"loss": loss, "nme": nme, "per_point_err": per_point_err}
+            # Split NME along/off the GT contour. 72% of squared error is
+            # tangential and largely annotation noise, so nme_normal is the
+            # cleaner signal for model selection; plain nme rewards fitting noise.
+            tan, nrm = _contour_frames(targets_2d)
+            resid = preds_2d - targets_2d
+            d_tan = (resid * tan).sum(-1).abs()
+            d_nrm = (resid * nrm).sum(-1).abs()
+            if visible is None:
+                nme_n, nme_t = d_nrm.mean(), d_tan.mean()
+            else:
+                den = visible.sum().clamp_min(1.0)
+                nme_n = (d_nrm * visible).sum() / den
+                nme_t = (d_tan * visible).sum() / den
+
+        return {"loss": loss, "nme": nme, "nme_normal": nme_n,
+                "nme_tangential": nme_t, "per_point_err": per_point_err}
 
     def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         result = self._shared_step(batch)
@@ -101,12 +127,17 @@ class EarLandmarkerModule(pl.LightningModule):
         # Slash-free alias: ModelCheckpoint interpolates the monitored metric into
         # the filename, and a "/" there makes Lightning create nested directories.
         self.log("val_nme", result["nme"], sync_dist=True)
+        self.log("val/nme_normal", result["nme_normal"], sync_dist=True)
+        self.log("val/nme_tangential", result["nme_tangential"], sync_dist=True)
+        self.log("val_nme_normal", result["nme_normal"], sync_dist=True)
         self._log_region_nme("val", result["per_point_err"])
 
     def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> None:
         result = self._shared_step(batch)
         self.log("test/loss", result["loss"], sync_dist=True)
         self.log("test/nme", result["nme"], prog_bar=True, sync_dist=True)
+        self.log("test/nme_normal", result["nme_normal"], sync_dist=True)
+        self.log("test/nme_tangential", result["nme_tangential"], sync_dist=True)
         self._log_region_nme("test", result["per_point_err"])
 
     def _log_region_nme(self, stage: str, per_point_err: torch.Tensor) -> None:

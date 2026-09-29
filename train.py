@@ -51,6 +51,15 @@ def main() -> None:
     parser.add_argument("--resume", type=str, default=None,
                         help="Resume from checkpoint: 'last', 'best', or path to .ckpt")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--monitor", type=str, default="val_nme",
+                        choices=["val_nme", "val_nme_normal"],
+                        help="Metric for early stopping and checkpoint selection. "
+                             "Use val_nme_normal with --tangential-weight < 1, or "
+                             "selection rewards fitting the noise being discounted.")
+    parser.add_argument("--tangential-weight", type=float, default=1.0,
+                        help="Weight on residual along the GT contour (1.0 = plain Wing)")
+    parser.add_argument("--spacing-weight", type=float, default=0.0,
+                        help="Anti-collapse penalty on shrinking predicted segments")
     parser.add_argument("--perspective-deg", type=float, default=0.0,
                         help="Simulated out-of-plane turn in degrees (0 = off)")
     parser.add_argument("--landmarks", type=str, default="landmarks.npy",
@@ -123,6 +132,8 @@ def main() -> None:
         blazeear_ckpt=args.blazeear_ckpt,
         arch=args.arch,
         tau=args.tau,
+        tangential_weight=args.tangential_weight,
+        spacing_weight=args.spacing_weight,
     )
 
     if args.compile:
@@ -134,14 +145,14 @@ def main() -> None:
         dirpath=ckpt_dir,
         filename="EarLandmarker_{epoch:03d}_nme={val_nme:.4f}",
         auto_insert_metric_name=False,
-        monitor="val_nme",
+        monitor=args.monitor,
         mode="min",
         save_top_k=3,
         save_last=True,
     )
     lr_monitor = LearningRateMonitor(logging_interval="epoch")
     early_stop = EarlyStopping(
-        monitor="val_nme",
+        monitor=args.monitor,
         mode="min",
         patience=args.patience,
         verbose=True,

@@ -411,3 +411,36 @@ RECOMMENDED PRODUCTION STACK:
 
 OPEN: --perspective-deg 35 was a guess, never swept. Single training seed
 throughout. Web demo (docs/) not yet updated to v3 or to smoothing.
+
+2026-09-29: tangential error attempt #2 -- PRE-REGISTERED criteria
+
+Written BEFORE running anything, because down-weighting tangential error would
+mechanically improve any metric that contains it. Choosing the metric after
+seeing results would be self-serving.
+
+Hypothesis: tangential label spread is largely irreducible annotation noise
+(different conventions per source, no anchoring feature along a smooth contour).
+Wing loss currently penalises it as hard as normal error, so the model spends
+capacity fitting noise. Down-weighting the tangential residual component should
+improve SHAPE accuracy and stability, not just the number being optimised.
+
+PRIMARY metrics (index-free, decided now):
+  - contour measurement error (%)   <- the actual user-facing quantity
+  - symmetric Chamfer distance      <- shape agreement
+SECONDARY:
+  - point-to-contour (normal) error
+  - pose robustness at 35/50 deg yaw
+  - jitter (photometric + geometric)
+
+EXPECTED TO GET WORSE, and that is acceptable:
+  - raw NME against original labels. NME contains the tangential term we are
+    deliberately de-emphasising, so a rise there is the mechanism working, not a
+    regression. It is NOT evidence of success either -- it is uninformative.
+
+SUCCESS = measurement error AND Chamfer both improve vs v3_persp, with pose
+robustness not worse. Anything less and this is another negative result.
+
+FAILURE MODE TO WATCH: relaxing the tangential constraint lets predicted points
+bunch together along the contour, which would flatter Chamfer while destroying
+the point distribution. An anti-collapse term guards it, and a test asserts
+predicted segment lengths do not shrink.
