@@ -253,3 +253,54 @@ class EarLandmarkerHeatmap(EarLandmarker):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.soft_argmax(self.heatmaps(x), self.tau)
+
+    @staticmethod
+    def heatmap_confidence(
+        heatmaps: torch.Tensor, tau: float = 1.0, ref_std: float = 0.05,
+    ) -> torch.Tensor:
+        """Per-landmark confidence in (0, 1] from heatmap concentration.
+
+        A peaked spatial softmax means the model has localised the point; a
+        diffuse one means it is hedging across a region. The spatial standard
+        deviation of the distribution is therefore a direct estimate of
+        positional uncertainty, which is exactly what temporal smoothing wants:
+        smooth uncertain points harder than confident ones.
+
+        Args:
+            heatmaps: (B, K, H, W) unnormalized scores.
+            tau: Softmax temperature, matching soft_argmax.
+            ref_std: Spatial std (in normalized [0,1] units) mapping to
+                confidence 1/e. Heuristic scale, not a calibrated probability.
+
+        Returns:
+            (B, K) confidence in (0, 1].
+        """
+        b, k, h, w = heatmaps.shape
+        probs = F.softmax(heatmaps.reshape(b, k, h * w) / tau, dim=-1).reshape(b, k, h, w)
+
+        xs = (torch.arange(w, dtype=probs.dtype, device=probs.device) + 0.5) / w
+        ys = (torch.arange(h, dtype=probs.dtype, device=probs.device) + 0.5) / h
+        px = probs.sum(dim=2)          # marginal over y -> (B, K, W)
+        py = probs.sum(dim=3)          # marginal over x -> (B, K, H)
+
+        mx = (px * xs).sum(-1)
+        my = (py * ys).sum(-1)
+        vx = (px * (xs - mx.unsqueeze(-1)) ** 2).sum(-1)
+        vy = (py * (ys - my.unsqueeze(-1)) ** 2).sum(-1)
+        std = torch.sqrt((vx + vy).clamp_min(0.0) / 2.0)
+
+        return torch.exp(-std / ref_std)
+
+    def predict_with_confidence(
+        self, x: torch.Tensor, ref_std: float = 0.05,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Coordinates plus per-point confidence in one pass.
+
+        Returns:
+            ((B, K*2) coords in [0, 1], (B, K) confidence in (0, 1]).
+        """
+        hm = self.heatmaps(x)
+        return (
+            self.soft_argmax(hm, self.tau),
+            self.heatmap_confidence(hm, self.tau, ref_std),
+        )

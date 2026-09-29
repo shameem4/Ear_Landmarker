@@ -240,3 +240,54 @@ Harness validated: tests/test_jitter_harness.py substitutes an ideal equivariant
 model and asserts it scores ~0 (spread and succ < 1e-3 px) and that the inversion
 recovers true positions to 1e-5. Without this, an inversion bug would inflate
 every model equally and silently. Suite now 104 tests.
+
+2026-09-29: temporal + bbox smoothing (model/smoothing.py)
+
+One Euro filter (Casiez et al., CHI 2012) -- speed-adaptive low-pass, same class
+of filter MediaPipe uses for landmark streams. A fixed-alpha EMA trades jitter
+for lag at one fixed ratio; One Euro smooths hard when still and backs off when
+moving. Components: OneEuroFilter, LandmarkSmoother (confidence-weighted),
+BoxSmoother (centre/size parameterisation so the box cannot distort), EarTracker
+(nearest-centre association so two ears never swap filter state).
+
+Per-point confidence added: EarLandmarkerHeatmap.heatmap_confidence() maps the
+spatial std of the softmax to (0,1]. Measured on the trained model, spatial std
+is 0.03-0.11 (uniform would be 0.29), so ref_std=0.05 gives a usable confidence
+range of 0.12-0.55. Only the heatmap arch can provide this.
+
+BENCHMARK BUG FOUND AND FIXED: the first version phased a full pan cycle over
+the clip length, so a 20-frame clip was a 1.5 Hz oscillation -- far faster than
+any head. Every filter looked terrible and smoothing appeared to cost +28-99%
+error. Motion is now defined in absolute time (motion_hz=0.25, one sweep per 4s).
+Conclusions from the first version were wrong and are superseded.
+
+scripts/eval_smoothing.py scores two OPPOSED metrics so over-smoothing cannot
+win: err_px (vs a perfect-detector reference, includes lag) and jit_px
+(successive-difference mismatch). Results, v2_heatmap, min_cutoff=3.0 beta=0.4:
+
+  STATIC              err_px   jit_px   vs raw err  vs raw jit
+  raw                  0.997    1.259          --          --
+  box only             0.692    0.691      -30.6%      -45.1%
+  landmark only        0.650    0.391      -34.7%      -69.0%
+  box + landmark       0.522    0.246      -47.6%      -80.5%
+  box + lm + conf      0.486    0.109      -51.2%      -91.4%
+
+  MOVING (0.25 Hz)    err_px   jit_px   vs raw err  vs raw jit
+  raw                  1.088    1.384          --          --
+  box only             0.790    0.896      -27.4%      -35.3%
+  landmark only        0.787    0.577      -27.7%      -58.3%
+  box + landmark       0.679    0.472      -37.6%      -65.9%
+  box + lm + conf      0.892    0.402      -18.0%      -70.9%
+
+Smoothing improves BOTH metrics in BOTH scenarios -- it is not trading accuracy
+for smoothness. Note confidence weighting helps jitter but costs error under
+motion (-37.6% -> -18.0%), because low-confidence points are smoothed harder and
+therefore lag; conf_strength is set to 0.5 in the pipeline default as a
+compromise rather than the 1.0 used in the sweep.
+
+Wired into inference.py: boxes are smoothed BEFORE cropping (so the landmarker
+sees a steady input) and landmarks are smoothed in frame coords (so the filter
+sees real motion, not motion induced by the crop moving). Disable with
+EarLandmarkerPipeline(smooth=False).
+
+Not yet ported to docs/earlandmarker_inference.js (the web demo).
