@@ -543,3 +543,39 @@ v6_persp65 vs the v1-equivalent baseline at the user's capture angles:
 OPEN: every config is a single seed; the persp50/65/80 differences at the user's
 angles are small enough to warrant seed replication before publishing. Web demo
 still runs v1 and has no smoothing.
+
+2026-09-29: web demo updated to v6_persp65 + smoothing
+
+docs/EarLandmarker_web.onnx re-exported from
+runs/checkpoints/v6_persp65/EarLandmarker_410_nme=0.0290.ckpt (1353 KB, was
+1262 KB). The export wrapper now emits TWO outputs -- landmarks (1,55,2) and
+per-point confidence (1,55) -- so the browser smoother can weight uncertain
+points. ONNX/PyTorch parity 1.1e-06 (landmarks) and 2.1e-07 (confidence).
+
+docs/smoothing.js: port of model/smoothing.py (OneEuroFilter, LandmarkSmoother,
+BoxSmoother, EarTracker). Wired into the pipeline the same way as Python --
+boxes smoothed BEFORE cropping, landmarks after in frame coords. On by default;
+disable with new EarLandmarkerPipeline({ smooth: false }).
+
+Verified in a real browser against a locally served copy:
+  - pipeline loads, ORT reports "Landmarker outputs: {0: landmarks, 1: confidence}"
+    so the two-output model is picked up
+  - full detect() produces 55 landmarks + 55 confidences, range 0.004-0.241
+  - all 9 smoothing checks mirroring the Python tests pass in-browser:
+    passthrough, convergence without drift, noise reduction (0.0104 -> 0.0026),
+    bounded lag on a ramp (0.0099), zero/negative dt safety, box shape
+    preservation, two-ear track separation, no swap on reordered detections,
+    and confidence weighting (confident point moves 0.183 vs uncertain 0.053)
+
+BUG FOUND DURING THE PORT: the scripted patch matched the same three-line
+pattern in both the constructor and dispose(), injecting tracker-construction
+code into dispose() where `options` is not in scope. It would have thrown at
+runtime on every dispose. Caught by grepping for duplicate insertions rather
+than trusting the patch.
+
+NOTE: runs/test_output.jpg is v1's annotated output, not a photo, so BlazeEar
+detects nothing in it at the default 0.70 threshold. It is not a usable
+end-to-end test fixture. The repo has no clean photo-with-a-head fixture; adding
+one would make the web path testable end to end.
+
+Still v1-era in docs/: index.html copy still describes the old model/metrics.

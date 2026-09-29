@@ -14,6 +14,8 @@
  *   // Returns: Array of { bbox, confidence, landmarks }
  */
 
+import { EarTracker } from './smoothing.js';
+
 const ort = (typeof window !== 'undefined' && window.ort) ||
             (typeof globalThis !== 'undefined' && globalThis.ort) ||
             (typeof require !== 'undefined' ? require('onnxruntime-web') : null);
@@ -47,7 +49,16 @@ class EarLandmarkerPipeline {
         this.detectorSession = null;
         this.landmarkerSession = null;
         this.isLoaded = false;
+        // Temporal smoothing. Box wobble is ~90% of frame-to-frame jitter, so
+        // boxes are smoothed BEFORE cropping and landmarks after, in frame
+        // coords. Pass { smooth: false } to disable.
+        this.tracker = (options.smooth ?? true)
+            ? new EarTracker(options.smoothing ?? {})
+            : null;
     }
+
+    /** Clear smoothing state, e.g. when switching between webcam and an image. */
+    resetSmoothing() { if (this.tracker) this.tracker.reset(); }
 
     /**
      * Load both ONNX models
@@ -81,18 +92,31 @@ class EarLandmarkerPipeline {
      * @param {HTMLImageElement|HTMLVideoElement|HTMLCanvasElement} source
      * @returns {Promise<Array>} Array of { bbox, confidence, landmarks }
      */
-    async detect(source) {
+    async detect(source, timestamp = null) {
         if (!this.isLoaded) throw new Error('Models not loaded. Call load() first.');
 
         const { canvas, width, height } = this._sourceToCanvas(source);
         const ctx = canvas.getContext('2d');
 
         // Stage 1: BlazeEar detection
-        const detections = await this._runDetector(canvas, width, height);
+        let detections = await this._runDetector(canvas, width, height);
+
+        // Smooth the boxes before cropping: a steady crop means the landmarker
+        // sees a consistent input frame to frame, which is where most of the
+        // visible jitter comes from.
+        const t = (timestamp ?? performance.now()) / 1000;
+        let trackIds = [];
+        if (this.tracker) {
+            trackIds = this.tracker.assign(detections);
+            detections = detections.map((d, i) => ({
+                ...d, ...this.tracker.smoothBox(trackIds[i], d, t),
+            }));
+        }
 
         // Stage 2: For each detection, crop and run landmarker
         const results = [];
-        for (const det of detections) {
+        for (let di = 0; di < detections.length; di++) {
+            const det = detections[di];
             // Expand bbox for context
             const bw = det.xmax - det.xmin;
             const bh = det.ymax - det.ymin;
@@ -115,18 +139,27 @@ class EarLandmarkerPipeline {
             cropCanvas.getContext('2d').drawImage(canvas, x1, y1, cropW, cropH, 0, 0, cropW, cropH);
 
             // Run landmarker on crop
-            const landmarks = await this._runLandmarker(cropCanvas, cropW, cropH);
+            const { landmarks, pointConfidence } =
+                await this._runLandmarker(cropCanvas, cropW, cropH);
 
             // Map landmarks back to full frame coords
-            const frameLandmarks = landmarks.map(pt => ({
+            let frameLandmarks = landmarks.map(pt => ({
                 x: pt.x * cropW + x1,
                 y: pt.y * cropH + y1,
             }));
+
+            // Smooth in frame coords, so the filter sees real motion rather
+            // than motion induced by the crop moving underneath it.
+            if (this.tracker) {
+                frameLandmarks = this.tracker.smoothLandmarks(
+                    trackIds[di], frameLandmarks, t, pointConfidence);
+            }
 
             results.push({
                 bbox: { xmin: det.xmin, ymin: det.ymin, xmax: det.xmax, ymax: det.ymax },
                 confidence: det.confidence,
                 landmarks: frameLandmarks,
+                pointConfidence,
             });
         }
 
@@ -244,6 +277,9 @@ class EarLandmarkerPipeline {
 
         const results = await this.landmarkerSession.run(feeds);
         const lmData = results.landmarks.data;  // (1, 55, 2) flattened
+        // The heatmap model also emits per-point confidence; a GAP-head model
+        // exported earlier does not, so treat it as optional.
+        const pointConfidence = results.confidence ? results.confidence.data : null;
 
         const landmarks = [];
         for (let i = 0; i < 55; i++) {
@@ -252,7 +288,7 @@ class EarLandmarkerPipeline {
                 y: lmData[i * 2 + 1],
             });
         }
-        return landmarks;
+        return { landmarks, pointConfidence };
     }
 
     /** @private */
@@ -364,6 +400,7 @@ class EarLandmarkerPipeline {
         this.detectorSession = null;
         this.landmarkerSession = null;
         this.isLoaded = false;
+        if (this.tracker) this.tracker.reset();
     }
 }
 
