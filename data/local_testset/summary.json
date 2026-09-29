@@ -1,0 +1,10 @@
+{
+ "images": 800,
+ "gt_ears": 800,
+ "detections": 560,
+ "matched": 380,
+ "duplicate_gt": 12,
+ "ratio_median": 0.9822420516248276,
+ "ratio_mean": 0.999049355293697,
+ "implied_roi_expand_median": 1.2641467845879377
+}

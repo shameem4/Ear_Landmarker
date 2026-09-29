@@ -6,3 +6,6 @@
 # local test fixtures (personal photos)
 /fixtures/*
 !/fixtures/README.md
+
+# downloaded face test set (third-party images, see metadata.json for licences)
+/data/face_testset/

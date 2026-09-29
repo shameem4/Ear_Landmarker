@@ -67,10 +67,23 @@ class EarDetector:
 
         Returns:
             (N, 5) array of [ymin, xmin, ymax, xmax, confidence] in pixel coords.
+
+        BlazeEar.process() actually returns (N, 17): box in columns 0-3, six
+        BlazeFace-style keypoints in 4-15, and confidence in the LAST column.
+        Reading column 4 as the confidence -- as this file used to -- picks up a
+        keypoint x-coordinate instead, which is in the hundreds of pixels rather
+        than [0, 1]. That made NMS sort by a keypoint and report nonsense scores.
+        Normalise here so the rest of the pipeline sees the documented shape.
         """
         detections = self.model.process(frame_rgb)
         if isinstance(detections, torch.Tensor):
             detections = detections.cpu().numpy()
+        detections = np.asarray(detections, dtype=np.float64)
+        if detections.size == 0:
+            return np.zeros((0, 5))
+        detections = np.atleast_2d(detections)
+        if detections.shape[1] > 5:
+            detections = np.column_stack([detections[:, :4], detections[:, -1]])
         return detections
 
 
@@ -199,7 +212,7 @@ class EarLandmarkerPipeline:
 
         results = []
         for k, det in enumerate(detections):
-            ymin, xmin, ymax, xmax, conf = det[:5]
+            ymin, xmin, ymax, xmax, conf = det[:5]  # normalised in EarDetector.detect
 
             # Expand bbox for context
             bw, bh = xmax - xmin, ymax - ymin

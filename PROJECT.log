@@ -740,3 +740,58 @@ per-image optima disagree. n=4, one subject, one distance.
 VERDICT: suggestive but not established. ROI_EXPAND stays 1.3. To settle it
 properly we need real full-frame photos WITH ground-truth landmarks across
 subjects and distances -- which is a small annotation task, not a tuning run.
+
+2026-09-29: ROI_EXPAND SETTLED -- 1.3 is correct, the 1.7 hypothesis was WRONG
+
+Found the real data already on disk. BlazeEar/data/yolo11_ears holds 7,157
+full-scene images with ground-truth ear boxes ("Ear Detection from Full Face
+image", Open Images derived) plus ~4,300 more across five other bundled ear
+datasets, 22 image/label directories in total. Real scenes: varied pose,
+distance, lighting, multiple people, ear boxes spanning 2.4%-33% of image width.
+
+This made the internet download unnecessary and it has been deleted. That attempt
+returned 14 detections from 56 images of which only four were usable modern ears;
+the rest were marble Roman busts and false positives on painted faces.
+scripts/build_face_testset.py is kept but marked superseded.
+
+THE MEASUREMENT (scripts/build_local_testset.py, 800 images, 380 matched ears):
+
+  true-ear-extent / detector-box-extent
+      mean 0.999   median 0.982   p25 0.827   p75 1.155
+
+The detector box tracks the true ear extent almost exactly (ratio ~1.0). The
+implied expansion to land the ear at the landmarker's training occupancy of
+0.777 is therefore
+
+      ROI_EXPAND = 0.982 / 0.777 = 1.26   (median)
+                 = 0.999 / 0.777 = 1.29   (mean)
+
+The current 1.30 puts the ear at 0.756 of the crop, against a training value of
+0.777. IT IS ALREADY RIGHT, to within a couple of percent.
+
+MY 1.7 HYPOTHESIS WAS AN ARTIFACT, exactly as suspected when it was challenged.
+It rested on occupancy 0.886 measured on four frames of one subject, from
+PREDICTED landmarks -- circular, tiny sample, one framing. Against ground truth
+over 380 matched ears from hundreds of subjects the ratio is 0.98, not the ~1.15
+that a 1.7 expansion would require. The jitter-stability curve that also favoured
+1.5-1.7 was measuring something real (prediction variance) but that is not the
+same as being correctly framed, and it should not have been treated as
+corroboration. ROI_EXPAND stays 1.30 and this line of investigation is closed.
+
+TWO OTHER FINDINGS FROM THE SAME RUN:
+
+1. DETECTOR RECALL IS 47.5% of annotated ears (380/800 at IoU>=0.3). Half the
+   annotated ears are missed. Confidence on what it does find is healthy
+   (mean 0.848, p5 0.714). This is a much larger lever on end-to-end quality
+   than anything tuned in the landmarker so far, and it is a BlazeEar issue,
+   not an EarLandmarker one. Caveat: this dataset is hard (tiny, occluded and
+   rear-view ears) so 47.5% is a floor, not a verdict.
+
+2. DUPLICATE RATE IS 1.5% (12 of 800 GT ears had >1 overlapping detection),
+   which matches the intermittent behaviour seen live -- rare per frame, but at
+   30fps it shows up constantly. Consistent with the IoMin fix being worth
+   having while being hard to reproduce on stills.
+
+CAVEAT on this dataset: annotations are incomplete -- in multi-person scenes only
+some ears are boxed. So an unmatched detection is not necessarily a false
+positive, and no false-positive rate is reported.
