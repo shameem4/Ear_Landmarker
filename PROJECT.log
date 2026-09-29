@@ -631,3 +631,44 @@ so the next webcam run will confirm whether IoMin is what suppresses it.
 
 fixtures/ added (gitignored) for real photos with a head in frame. The repo had
 no such fixture, which is why this was only caught by eye.
+
+2026-09-29: pipeline tested on four real capture frames (fixtures/)
+
+RESULT: the duplicate detection did NOT reproduce. At the default 0.70 threshold
+all four frames give exactly ONE detection (conf 0.88-0.95), and old NMS
+(io_min disabled) and new NMS agree. Also unchanged when the frames are upscaled
+1.8x and 2.4x toward native webcam resolution, and stable across 10 smoothed
+frames (landmark spread fixed at 63x93 px).
+
+So the IoMin fix is unit-tested and correct in principle but is NOT yet shown to
+fix the observed bug -- the real duplicate is intermittent and pose-specific, and
+none of these four frames contains it. The `debug: true` option now logs IoU and
+IoMin for any surviving pair, so the next occurrence will identify which term
+suppresses it. Do not claim the duplicate is fixed until that is seen.
+
+Lowering the threshold to 0.30 produces a flood of spurious boxes (38/15/6/11)
+scattered around the frame with IoU 0.00 against the ear box -- false positives
+on hair and background, NOT nested duplicates. IoMin removes some (38->31 etc.)
+but that is incidental.
+
+SEPARATE FINDING -- ROI_EXPAND 1.3 IS TOO TIGHT:
+Measured how much of the crop the predicted landmarks occupy, against the
+training distribution (ear fills 0.777 of frame, p95 0.879, over 5,870 samples):
+
+  ROI_EXPAND   s1    s2    s3    s4    mean
+        1.3   0.95  0.94  0.86  0.79   0.886   <- current, above the p95 of training
+        1.7   0.89  0.80  0.71  0.59   0.750   <- closest to training
+        2.1   0.72  0.65  0.57  0.49   0.608
+
+At 1.3 the ear fills 0.886 of the crop, tighter than 95% of the training data,
+and two frames sit at 0.94-0.95 i.e. saturating the crop. Landmark height also
+grows with expansion on s1/s2 (83->102, 92->103 px), consistent with the ear
+being clipped at 1.3. s2 was additionally crop-clipped at the image edge at 1.3
+and 1.7.
+
+CAVEAT: occupancy is computed from PREDICTED landmarks, which is partly circular
+-- the model tends to spread over its crop. The variation (0.95 down to 0.49) is
+too large for that to be the whole story, but this needs validating against
+ground truth before ROI_EXPAND is changed. It is a hypothesis, not a result.
+
+NOT changed yet: ROI_EXPAND stays 1.3 in both pipelines pending that validation.
