@@ -250,7 +250,7 @@
             statusEl.style.background = '#0f3460';
 
             try {
-                pipeline = new EarLandmarkerPipeline({
+                pipeline = new EarLandmarkerPipeline({ debug: true,
                     confidenceThreshold: parseFloat(confSlider.value),
                 });
                 await pipeline.load('BlazeEar_web.onnx', 'EarLandmarker_web.onnx');
@@ -313,7 +313,8 @@
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 pipeline.drawResults(ctx, results, {
                     lineWidth: 2,
-                    pointRadius: 3,
+                    pointRadius: 1.8,
+                    pointLineWidth: 1,
                     fontSize: 14,
                 });
 
@@ -367,7 +368,8 @@
 
                     pipeline.drawResults(imageCtx, scaled, {
                         lineWidth: 2,
-                        pointRadius: 3,
+                        pointRadius: 1.8,
+                    pointLineWidth: 1,
                         fontSize: 14,
                     });
 

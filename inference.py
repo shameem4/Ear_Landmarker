@@ -33,6 +33,7 @@ LANDMARKER_INPUT_SIZE = 192
 DETECTOR_INPUT_SIZE = 128
 ROI_EXPAND = 1.3  # expand detected bbox by 30% for context
 NMS_IOU_THRESH = 0.3  # suppress duplicate detections on same ear
+NMS_IOMIN_THRESH = 0.6  # also suppress when overlap covers this much of the SMALLER box
 
 
 # ---------------------------------------------------------------------------
@@ -237,8 +238,13 @@ class EarLandmarkerPipeline:
         return results
 
     @staticmethod
-    def _nms(detections: np.ndarray, iou_thresh: float = NMS_IOU_THRESH) -> np.ndarray:
-        """Standard greedy NMS to remove duplicate detections on the same ear."""
+    def _nms(detections: np.ndarray, iou_thresh: float = NMS_IOU_THRESH,
+             io_min_thresh: float = NMS_IOMIN_THRESH) -> np.ndarray:
+        """Greedy NMS removing duplicate detections on the same ear.
+
+        Suppresses on EITHER IoU or intersection-over-minimum; see the comment
+        at the io_min computation for why IoU alone is not enough.
+        """
         if len(detections) <= 1:
             return detections
 
@@ -268,7 +274,17 @@ class EarLandmarkerPipeline:
             union = areas[i] + areas[rest] - inter
             iou = inter / np.maximum(union, 1e-6)
 
-            order = rest[iou <= iou_thresh]
+            # Plain IoU misses the duplicates this detector actually produces on
+            # a single ear: a small box inside a larger one scores
+            # IoU = areaSmall/areaLarge, which drops below any sane threshold
+            # once the larger box is ~3x the smaller, so both survive and two
+            # landmark sets get drawn on one ear. Intersection-over-minimum
+            # catches containment, and stays ~0 for two genuinely different
+            # ears, which are far apart in frame.
+            min_area = np.minimum(areas[i], areas[rest])
+            io_min = inter / np.maximum(min_area, 1e-6)
+
+            order = rest[(iou <= iou_thresh) & (io_min <= io_min_thresh)]
 
         return detections[keep]
 

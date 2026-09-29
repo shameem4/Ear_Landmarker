@@ -579,3 +579,55 @@ end-to-end test fixture. The repo has no clean photo-with-a-head fixture; adding
 one would make the web path testable end to end.
 
 Still v1-era in docs/: index.html copy still describes the old model/metrics.
+
+2026-09-29: demo bug #1 -- duplicate detections on one ear
+
+Symptom: live webcam drew TWO boxes on a single ear (72.1% and 91.6%), and
+therefore two landmark sets on top of each other, which reads as "the landmarks
+collapsed into a blob".
+
+Isolated the landmarker first, to avoid blaming the wrong stage: fed a known ear
+crop straight to the ONNX model in-browser, bypassing the detector. Output spread
+0.812 x 0.794 against ground truth 0.768 x 0.770, full range 0.095-0.907, healthy
+confidence 0.137-0.520. The model, the export and the JS preprocessing are all
+correct, so the fault is upstream in detection/cropping.
+
+Two wrong guesses before the real cause, both checked and discarded:
+  - "JS NMS is missing the confidence sort that Python has" -- it is not, the JS
+    sorts on line 11 of the candidate block.
+  - estimated the screenshot box geometry and computed IoU 0.466, which the old
+    threshold would already have suppressed. Estimating pixel coordinates off a
+    screenshot is not evidence; it disagreed with the observed behaviour, which
+    means the real boxes are more extreme than the estimate.
+
+ROOT CAUSE: plain IoU cannot suppress a nested duplicate. A small box inside a
+larger one scores IoU = areaSmall/areaLarge, which drops below any sane threshold
+once the larger box is ~3x the smaller. Both survive, both get landmarks drawn.
+
+FIX: suppress on EITHER IoU > 0.3 OR intersection-over-minimum > 0.6, in both
+docs/earlandmarker_inference.js and inference.py (they had the same weakness).
+IoMin catches containment and stays ~0 for two genuinely different ears, which
+are far apart in frame.
+
+Verified in-browser on four synthetic cases: nested (IoU 0.225 / IoMin 1.00)
+collapses, near-duplicate collapses, two separate ears BOTH survive, and the
+highest-confidence box is the one kept. tests/test_nms.py adds 7 Python tests
+including one asserting the pair survives with io_min disabled, so the new term
+is provably load-bearing.
+
+Also: landmarks now draw as small unfilled rings (radius 1.8, 1px stroke) instead
+of filled radius-3 discs. At 55 points on a small ear the filled discs merged
+into a solid blob and hid where each landmark actually sat -- which is part of
+why the duplicate-detection bug looked like a landmark failure.
+
+INTRODUCED AND FIXED IN THE SAME SESSION: the Python edit referenced
+NMS_IOMIN_THRESH before defining it. py_compile passes (syntax only) but the
+default argument is evaluated at def time, so `import inference` raised
+NameError. Caught by actually importing the module rather than trusting compile.
+
+STILL OPEN: the exact geometry of the real duplicate pair is unconfirmed -- the
+debug logging (new `debug: true` option) prints IoU/IoMin for any surviving pair,
+so the next webcam run will confirm whether IoMin is what suppresses it.
+
+fixtures/ added (gitignored) for real photos with a head in frame. The repo had
+no such fixture, which is why this was only caught by eye.

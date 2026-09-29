@@ -2,3 +2,7 @@
 /data/raw
 *.pyc
 /runs
+
+# local test fixtures (personal photos)
+/fixtures/*
+!/fixtures/README.md

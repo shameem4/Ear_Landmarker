@@ -42,6 +42,11 @@ class EarLandmarkerPipeline {
     constructor(options = {}) {
         this.confidenceThreshold = options.confidenceThreshold ?? 0.70;
         this.iouThreshold = options.iouThreshold ?? 0.3;
+        // Suppress a box whose overlap covers this much of the SMALLER box.
+        // Two detections on one ear overlap heavily relative to the smaller one
+        // even when their IoU is low; two different ears do not.
+        this.ioMinThreshold = options.ioMinThreshold ?? 0.6;
+        this.debug = options.debug ?? false;
         this.minAspectRatio = options.minAspectRatio ?? 0.35;
         this.maxAspectRatio = options.maxAspectRatio ?? 1.4;
         this.minSizeFrac = options.minSizeFrac ?? 0.03;
@@ -300,12 +305,48 @@ class EarLandmarkerPipeline {
             selected.push(candidates[i]);
             for (let j = i + 1; j < candidates.length; j++) {
                 if (suppressed.has(j)) continue;
-                if (this._iou(candidates[i], candidates[j]) > this.iouThreshold) {
+                // Plain IoU misses the nested / strongly-offset duplicates the
+                // detector produces on a single ear: a small box inside a large
+                // one scores IoU = areaSmall/areaLarge, which falls under any
+                // reasonable threshold once the larger box is ~3x the smaller.
+                // Intersection-over-minimum catches exactly that case, while
+                // staying near zero for two genuinely different ears, which are
+                // far apart in frame.
+                const iou = this._iou(candidates[i], candidates[j]);
+                const iomin = this._ioMin(candidates[i], candidates[j]);
+                if (iou > this.iouThreshold || iomin > this.ioMinThreshold) {
                     suppressed.add(j);
                 }
             }
         }
+        if (this.debug && selected.length > 1) {
+            for (let i = 0; i < selected.length; i++) {
+                for (let j = i + 1; j < selected.length; j++) {
+                    console.log('[nms] surviving pair',
+                        { a: this._boxStr(selected[i]), b: this._boxStr(selected[j]),
+                          iou: +this._iou(selected[i], selected[j]).toFixed(3),
+                          ioMin: +this._ioMin(selected[i], selected[j]).toFixed(3) });
+                }
+            }
+        }
         return selected;
+    }
+
+    /** @private Intersection over the smaller box's area: catches containment. */
+    _ioMin(a, b) {
+        const x1 = Math.max(a.xmin, b.xmin), y1 = Math.max(a.ymin, b.ymin);
+        const x2 = Math.min(a.xmax, b.xmax), y2 = Math.min(a.ymax, b.ymax);
+        const inter = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+        const areaA = (a.xmax - a.xmin) * (a.ymax - a.ymin);
+        const areaB = (b.xmax - b.xmin) * (b.ymax - b.ymin);
+        const minArea = Math.min(areaA, areaB);
+        return minArea > 0 ? inter / minArea : 0;
+    }
+
+    /** @private */
+    _boxStr(d) {
+        return [Math.round(d.xmin), Math.round(d.ymin), Math.round(d.xmax),
+                Math.round(d.ymax), +d.confidence.toFixed(3)].join(',');
     }
 
     /** @private */
@@ -348,7 +389,8 @@ class EarLandmarkerPipeline {
      */
     drawResults(ctx, results, options = {}) {
         const lineWidth = options.lineWidth || 2;
-        const pointRadius = options.pointRadius || 3;
+        const pointRadius = options.pointRadius ?? 1.8;
+        const pointLineWidth = options.pointLineWidth ?? 1;
         const showBbox = options.showBbox ?? true;
         const showConfidence = options.showConfidence ?? true;
         const fontSize = options.fontSize || 14;
@@ -386,11 +428,13 @@ class EarLandmarkerPipeline {
                 }
                 ctx.stroke();
 
-                ctx.fillStyle = group.color;
+                // Unfilled rings: at 55 points on a small ear, filled discs merge
+                // into a blob and hide where each landmark actually sits.
+                ctx.lineWidth = pointLineWidth;
                 for (const pt of pts) {
                     ctx.beginPath();
                     ctx.arc(pt.x, pt.y, pointRadius, 0, 2 * Math.PI);
-                    ctx.fill();
+                    ctx.stroke();
                 }
             }
         }
