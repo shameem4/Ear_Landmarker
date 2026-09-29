@@ -493,3 +493,53 @@ combination, which is untested and expected to be best.
 
 Best single config so far: v6_persp50 -- meas err 5.93% frontal, 7.46% at 50deg
 yaw, vs v3_persp 6.26% / 8.53%.
+
+2026-09-29: FINAL sweep results -- perspective plateaus ~65deg, combination fails
+
+CONTOUR ERROR (px@192) / MEASUREMENT ERROR (%) by test yaw:
+
+  yaw     heatmap      persp35     persp50     persp65     persp80    combined
+   0°  2.809 6.20%  2.854 6.36%  2.816 6.11%  2.833 6.16%  2.867 6.23%  2.799 6.20%
+  35°  3.906 8.07%  3.087 6.88%  2.948 6.36%  2.909 6.24%  2.964 6.44%  2.956 6.51%
+  50°  4.909 11.6%  3.371 8.53%  3.054 7.46%  2.946 7.30%  2.962 7.41%  3.076 7.58%
+  65°  6.808 20.7%  4.485 15.8%  3.429 11.4%  2.759 9.17%  2.731 8.78%  3.306 11.8%
+
+  degradation 0->50deg:  +74.8%  +18.1%  +8.4%  +4.0%  +3.3%  +9.9%
+
+1. PERSPECTIVE PLATEAUS AROUND 65 DEG. 50->65 still helps (7.46 -> 7.30% at
+   50deg yaw, 11.4 -> 9.17% at 65deg); 65->80 does not (7.30 -> 7.41%) and costs
+   slightly more frontally. Optimum for the 43-53deg capture range is 65deg.
+   The earlier 35deg was a guess and was well short.
+
+2. THE COMBINATION FAILS TO COMPOUND. v7_combined (persp 50 + tangential 0.6) is
+   no better than persp50 alone anywhere: 6.20 vs 6.11% frontal, 7.58 vs 7.46% at
+   50deg, 11.76 vs 11.40% at 65deg. The tangential gain measured at perspective 35
+   (6.03 vs 6.26%) did NOT reproduce at perspective 50.
+   Most likely reading: strong perspective augmentation already supplies the
+   regularisation that tangential down-weighting was providing, so the two are
+   substitutes rather than complements. The differences are small enough
+   (~0.1-0.2pp, single seed) that "no benefit" is better supported than "worse".
+   CONFOUND: v7 selected on val_nme_normal and stopped at epoch 269; persp50
+   selected on val_nme and ran to ~378. Some of the gap may be selection/length,
+   not the loss.
+
+3. Tangential weighting therefore stands as a real but NON-ADDITIVE result: it
+   wins at matched perspective 35, and is redundant once perspective is tuned.
+   It is not in the recommended stack.
+
+FINAL RECOMMENDED STACK:
+  model        runs/checkpoints/v6_persp65   (heatmap head, 65deg perspective aug)
+  measurement  model/measure.py              (index-free contour anthropometry)
+  smoothing    model/smoothing.py            (on by default in inference.py)
+  NOT used     data/canonicalize.py          (negative result)
+  NOT used     --tangential-weight           (real at persp 35, redundant at 65)
+
+v6_persp65 vs the v1-equivalent baseline at the user's capture angles:
+  contour error at 50deg yaw : 4.909p -> 2.946p   (-40%)
+  measurement error at 50deg : 11.57% -> 7.30%    (-37%)
+  measurement error frontal  :  6.20% -> 6.16%    (flat)
+  plus 66-80% less frame-to-frame jitter from smoothing.
+
+OPEN: every config is a single seed; the persp50/65/80 differences at the user's
+angles are small enough to warrant seed replication before publishing. Web demo
+still runs v1 and has no smoothing.
