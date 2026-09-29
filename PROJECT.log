@@ -182,3 +182,61 @@ FINDINGS -- read these before citing any number:
 
 Best model: runs/checkpoints/v2_heatmap/ (test NME 0.0291, 5.59px at 192px).
 Not yet exported to ONNX or wired into the demo.
+
+2026-09-29: stability (jitter) benchmark -- scripts/eval_jitter.py
+
+No video in the repo, so stability is measured by building a "virtual video" from
+each test still. Two perturbations, both leaving the true landmark positions
+unchanged, so any output movement is the model:
+
+  geometric   -- wobble the crop window (centre +/-3.1px of a 384px source,
+                 scale +/-2%), i.e. what an upstream detector's bbox does between
+                 frames. Predictions are mapped back through the exact inverse
+                 crop transform, so a perfectly equivariant model scores 0.
+  photometric -- geometry held byte-identical; only brightness (+/-3%) and pixel
+                 noise (std 0.01) vary. Needs no inverse mapping.
+
+Metrics in px at 192: spread = per-landmark std over frames; succ = mean
+successive-frame displacement (closest to perceived jitter).
+
+Full test set (861 images, 16 frames). Seeds 1 and 2 agree within 1%:
+
+  run            arch       GEO spread  GEO succ   PHO spread  PHO succ
+  baseline_v1    gap            0.620      1.162        0.294     0.554
+  v2_fixed       gap            0.586      1.095        0.237     0.446
+  v2_heatmap     heatmap        0.570      1.060        0.184     0.345
+
+  vs baseline:   v2_fixed    geo -5.8%  pho -19.5%
+                 v2_heatmap  geo -8.8%  pho -37.7%
+  soft-argmax vs GAP (v2_fixed -> v2_heatmap): geo -3.1%, pho -22.8%
+
+FINDINGS:
+
+1. The rotation fix DID improve stability (-19.5% photometric jitter) even though
+   it did not improve accuracy (+0.76% test NME). Plausible mechanism: training
+   against noisy labels pushes the model to lean on spurious cues, raising
+   sensitivity to input perturbation without shifting the conditional mean. This
+   is the real justification for the fix -- stability, not NME.
+
+2. The soft-argmax head improves stability further, and much more under
+   photometric perturbation (-22.8%) than geometric (-3.1%). Spatial softmax
+   averages over a distribution rather than reading a single pooled vector, which
+   is inherently less twitchy under pixel noise.
+
+3. GEOMETRIC JITTER DOMINATES AND IS BARELY IMPROVED BY ANYTHING WE DID.
+   It is 1.06-1.16px vs 0.34-0.55px photometric -- ~90-95% of total jitter by
+   magnitude -- and the full baseline->heatmap change only moves it -8.8%.
+   A ~1.8px (at 192) bbox wobble still moves landmarks ~1.1px in the best model.
+   => For the live demo, the dominant jitter source is upstream detector bbox
+   wobble. No landmarker-side change fixes that. The leverage is temporal
+   smoothing (the heatmap head's per-point confidence is the principled input)
+   or stabilising/smoothing the BlazeEar box between frames. Neither is done.
+
+CAVEAT: perturbation seeds are reproducible to <1%, but all three models come
+from a SINGLE TRAINING seed. The measurement is precise; the architecture
+comparison still needs training-seed replication.
+
+Harness validated: tests/test_jitter_harness.py substitutes an ideal equivariant
+model and asserts it scores ~0 (spread and succ < 1e-3 px) and that the inversion
+recovers true positions to 1e-5. Without this, an inversion bug would inflate
+every model equally and silently. Suite now 104 tests.
