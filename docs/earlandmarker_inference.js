@@ -36,6 +36,26 @@ const DETECTOR_INPUT_SIZE = 128;
 const LANDMARKER_INPUT_SIZE = 192;
 const ROI_EXPAND = 1.3;
 
+// Adaptive ROI refinement. ROI_EXPAND alone cannot frame the ear, because the
+// detector box is not a fixed fraction of it: on real captures the ratio of
+// true ear extent to detector box extent runs 1.02-1.53. Where the box is
+// tight, a 1.3x crop is SMALLER than the ear, so landmarks jam against the crop
+// border and can never reach the rim. The ROI is therefore re-derived from the
+// landmarks, which do know where the ear is -- the same ROI-from-landmarks
+// refinement MediaPipe uses for face and hand tracking.
+const TRAIN_OCCUPANCY = 0.777;  // ear extent / crop side, over all 5,870 training samples
+const ROI_OCC_TOL = 0.06;       // skip refinement when occupancy is already this close
+const ROI_SATURATED = 0.88;     // above this the ear is clipped, so extent under-reads
+const ROI_SAT_BOOST = 1.25;     // ...so grow faster than the measurement implies
+const ROI_MAX_REFINE = 1;       // refinement passes; 1 lands within 1% of the fixed point
+
+/** Next ROI side so the ear lands at the training occupancy. */
+function refineRoiSide(side, extent) {
+    const occ = side > 0 ? extent / side : 0;
+    if (occ > ROI_SATURATED) return side * (occ / TRAIN_OCCUPANCY) * ROI_SAT_BOOST;
+    return extent / TRAIN_OCCUPANCY;
+}
+
 
 class EarLandmarkerPipeline {
     /**
@@ -55,6 +75,10 @@ class EarLandmarkerPipeline {
         // ~0.00 (they are a head-width apart), so the two cases stay separable.
         this.ioMinThreshold = options.ioMinThreshold ?? 0.35;
         this.debug = options.debug ?? false;
+        // Re-derive the ROI from the landmarks instead of trusting the detector
+        // box. Pass { refineRoi: false } for the old single-pass behaviour.
+        this.refineRoi = options.refineRoi ?? true;
+        this._roiExpand = new Map();   // trackId -> expansion that worked last frame
         this.minAspectRatio = options.minAspectRatio ?? 0.35;
         this.maxAspectRatio = options.maxAspectRatio ?? 1.4;
         this.minSizeFrac = options.minSizeFrac ?? 0.03;
@@ -135,47 +159,67 @@ class EarLandmarkerPipeline {
             const bh = det.ymax - det.ymin;
             const cx = (det.xmin + det.xmax) / 2;
             const cy = (det.ymin + det.ymax) / 2;
-            const side = Math.max(bw, bh) * ROI_EXPAND;
-            // The ROI must stay SQUARE and keep the ear at the occupancy the
-            // model was trained on. Clamping it to the frame instead would make
-            // the crop non-square, and resizing that to 192x192 stretches the
-            // ear along one axis -- a distortion the model never saw in
-            // training. Near a frame edge that costs ~17% accuracy, and 15% of
-            // real ears sit close enough to an edge to trigger it. So the
-            // window is kept whole and the part outside the frame is filled
-            // with grey 128, matching the padding dataset.py uses.
-            const x1 = Math.round(cx - side / 2);
-            const y1 = Math.round(cy - side / 2);
-            const cropW = Math.round(side);
-            const cropH = cropW;
+            // Seed from what this track needed last frame, so video settles to
+            // one pass instead of paying for refinement on every frame.
+            const tid = trackIds ? trackIds[di] : undefined;
+            let side = Math.max(bw, bh) *
+                (this._roiExpand.get(tid) ?? ROI_EXPAND);
+            let roiX = cx, roiY = cy;
+            let frameLandmarks = null, pointConfidence = null;
 
-            if (cropW < 16) continue;
+            for (let attempt = 0; attempt <= ROI_MAX_REFINE; attempt++) {
+                // The ROI must stay SQUARE. Clamping it to the frame instead
+                // would make the crop non-square, and resizing that to 192x192
+                // stretches the ear along one axis -- a distortion the model
+                // never saw in training. Near a frame edge that costs ~17%
+                // accuracy, and 15% of real ears sit close enough to an edge to
+                // trigger it. So the window is kept whole and the part outside
+                // the frame is filled with grey 128, matching dataset.py.
+                const n = Math.round(side);
+                if (n < 16) break;
+                const x1 = Math.round(roiX - side / 2);
+                const y1 = Math.round(roiY - side / 2);
 
-            // Visible portion of the ROI, in frame coordinates
-            const sx1 = Math.max(0, x1);
-            const sy1 = Math.max(0, y1);
-            const sx2 = Math.min(width, x1 + cropW);
-            const sy2 = Math.min(height, y1 + cropH);
-            if (sx2 - sx1 < 8 || sy2 - sy1 < 8) continue;
+                const sx1 = Math.max(0, x1);
+                const sy1 = Math.max(0, y1);
+                const sx2 = Math.min(width, x1 + n);
+                const sy2 = Math.min(height, y1 + n);
+                if (sx2 - sx1 < 8 || sy2 - sy1 < 8) break;
 
-            const cropCanvas = document.createElement('canvas');
-            cropCanvas.width = cropW;
-            cropCanvas.height = cropH;
-            const cropCtx = cropCanvas.getContext('2d');
-            cropCtx.fillStyle = 'rgb(128,128,128)';
-            cropCtx.fillRect(0, 0, cropW, cropH);
-            cropCtx.drawImage(canvas, sx1, sy1, sx2 - sx1, sy2 - sy1,
-                              sx1 - x1, sy1 - y1, sx2 - sx1, sy2 - sy1);
+                const cropCanvas = document.createElement('canvas');
+                cropCanvas.width = n;
+                cropCanvas.height = n;
+                const cropCtx = cropCanvas.getContext('2d');
+                cropCtx.fillStyle = 'rgb(128,128,128)';
+                cropCtx.fillRect(0, 0, n, n);
+                cropCtx.drawImage(canvas, sx1, sy1, sx2 - sx1, sy2 - sy1,
+                                  sx1 - x1, sy1 - y1, sx2 - sx1, sy2 - sy1);
 
-            // Run landmarker on crop
-            const { landmarks, pointConfidence } =
-                await this._runLandmarker(cropCanvas, cropW, cropH);
+                const out = await this._runLandmarker(cropCanvas, n, n);
+                pointConfidence = out.pointConfidence;
+                frameLandmarks = out.landmarks.map(pt => ({
+                    x: pt.x * n + x1,
+                    y: pt.y * n + y1,
+                }));
 
-            // Map landmarks back to full frame coords
-            let frameLandmarks = landmarks.map(pt => ({
-                x: pt.x * cropW + x1,
-                y: pt.y * cropH + y1,
-            }));
+                if (!this.refineRoi || attempt === ROI_MAX_REFINE) break;
+
+                const xs = frameLandmarks.map(q => q.x);
+                const ys = frameLandmarks.map(q => q.y);
+                const exX = Math.max(...xs) - Math.min(...xs);
+                const exY = Math.max(...ys) - Math.min(...ys);
+                const extent = Math.max(exX, exY);
+                if (Math.abs(extent / n - TRAIN_OCCUPANCY) <= ROI_OCC_TOL) break;
+
+                side = refineRoiSide(n, extent);
+                roiX = (Math.min(...xs) + Math.max(...xs)) / 2;
+                roiY = (Math.min(...ys) + Math.max(...ys)) / 2;
+            }
+
+            if (!frameLandmarks) continue;
+            if (tid !== undefined && Math.max(bw, bh) > 0) {
+                this._roiExpand.set(tid, side / Math.max(bw, bh));
+            }
 
             // Smooth in frame coords, so the filter sees real motion rather
             // than motion induced by the crop moving underneath it.

@@ -35,6 +35,24 @@ ROI_EXPAND = 1.3  # expand detected bbox by 30% for context
 NMS_IOU_THRESH = 0.3  # suppress duplicate detections on same ear
 NMS_IOMIN_THRESH = 0.35  # also suppress when overlap covers this much of the SMALLER box
 
+# Adaptive ROI refinement.
+#
+# ROI_EXPAND alone cannot frame the ear correctly, because the detector box is
+# not a fixed fraction of the ear: measured on real captures, true ear extent
+# over detector box extent ranges 1.02-1.53. At 1.3 expansion a tight box yields
+# a crop SMALLER than the ear, so the landmarks jam against the crop border and
+# can never reach the rim.
+#
+# So the ROI is re-derived from the landmarks, which do know where the ear is:
+# crop, predict, measure the extent, and re-crop so the ear sits at the
+# occupancy the model was trained on. This is the ROI-from-landmarks refinement
+# MediaPipe uses for face and hand tracking.
+TRAIN_OCCUPANCY = 0.777   # ear extent / crop side, measured over all 5,870 training samples
+ROI_OCC_TOL = 0.06        # skip refinement when occupancy is already this close
+ROI_SATURATED = 0.88      # above this the ear is clipped, so measured extent under-reads
+ROI_SAT_BOOST = 1.25      # ...so grow more aggressively than the measurement implies
+ROI_MAX_REFINE = 1        # refinement passes; 1 lands within 1% of the fixed point
+
 
 # ---------------------------------------------------------------------------
 # BlazeEar detector wrapper (lightweight, avoids importing full BlazeEar pkg)
@@ -188,6 +206,22 @@ def square_roi_crop(frame_rgb: np.ndarray, cx: float, cy: float, side: float,
     return crop, x1, y1
 
 
+def refine_roi_side(side: float, extent: float) -> float:
+    """Next ROI side so the ear lands at the training occupancy.
+
+    `extent` is the landmark bounding extent measured in the same units as
+    `side`. Normally the answer is just extent / TRAIN_OCCUPANCY. But when the
+    ear is clipped by the crop, the measured extent is bounded by the crop
+    itself and under-reads the true ear, so that update converges slowly. Above
+    ROI_SATURATED the crop is treated as clipped and grown by a boosted factor
+    instead, which reaches the fixed point in one pass rather than two.
+    """
+    occ = extent / side if side > 0 else 0.0
+    if occ > ROI_SATURATED:
+        return side * (occ / TRAIN_OCCUPANCY) * ROI_SAT_BOOST
+    return extent / TRAIN_OCCUPANCY
+
+
 class EarLandmarkerPipeline:
     """Full pipeline: detect ears -> crop -> predict landmarks."""
 
@@ -199,6 +233,7 @@ class EarLandmarkerPipeline:
         detector_confidence: float | None = None,
         smooth: bool = True,
         smoothing_kwargs: dict | None = None,
+        refine_roi: bool = True,
     ) -> None:
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -212,6 +247,11 @@ class EarLandmarkerPipeline:
             "box_kwargs": {"min_cutoff": 3.0, "beta": 0.4,
                            "size_min_cutoff": 1.5, "size_beta": 0.2},
         })) if smooth else None
+        # Re-derive the ROI from the landmarks rather than trusting the detector
+        # box; see the ROI_* constants. Pass refine_roi=False for the old
+        # single-pass behaviour.
+        self.refine_roi = refine_roi
+        self._roi_expand: dict[int, float] = {}
 
     def __call__(self, frame_rgb: np.ndarray, timestamp: float | None = None) -> List[dict]:
         """Run full pipeline on an RGB frame.
@@ -253,17 +293,39 @@ class EarLandmarkerPipeline:
             # Expand bbox for context
             bw, bh = xmax - xmin, ymax - ymin
             cx, cy = (xmin + xmax) / 2, (ymin + ymax) / 2
-            side = max(bw, bh) * ROI_EXPAND
-            got = square_roi_crop(frame_rgb, cx, cy, side)
-            if got is None:
-                continue
-            crop, x1, y1 = got
-            lm_crop, point_conf = self.landmarker.predict(crop, with_confidence=True)
 
-            # Map landmarks back to full frame coords
-            lm_frame = lm_crop.copy()
-            lm_frame[:, 0] += x1
-            lm_frame[:, 1] += y1
+            # Seed the ROI from what this track needed last frame, so video
+            # settles to one pass instead of paying for refinement every frame.
+            tid = track_ids[k] if track_ids else None
+            expand = self._roi_expand.get(tid, ROI_EXPAND) if tid is not None else ROI_EXPAND
+            side = max(bw, bh) * expand
+
+            lm_frame = point_conf = None
+            for attempt in range(ROI_MAX_REFINE + 1):
+                got = square_roi_crop(frame_rgb, cx, cy, side)
+                if got is None:
+                    break
+                crop, x1, y1 = got
+                lm_crop, point_conf = self.landmarker.predict(crop, with_confidence=True)
+
+                # Map landmarks back to full frame coords
+                lm_frame = lm_crop.copy()
+                lm_frame[:, 0] += x1
+                lm_frame[:, 1] += y1
+
+                if not self.refine_roi or attempt == ROI_MAX_REFINE:
+                    break
+                extent = float(max(np.ptp(lm_frame[:, 0]), np.ptp(lm_frame[:, 1])))
+                if abs(extent / side - TRAIN_OCCUPANCY) <= ROI_OCC_TOL:
+                    break  # already framed the way the model was trained
+                side = refine_roi_side(side, extent)
+                cx = float((lm_frame[:, 0].min() + lm_frame[:, 0].max()) / 2)
+                cy = float((lm_frame[:, 1].min() + lm_frame[:, 1].max()) / 2)
+
+            if lm_frame is None:
+                continue
+            if tid is not None and max(bw, bh) > 0:
+                self._roi_expand[tid] = side / max(bw, bh)
 
             # Smooth in frame coords, so the filter sees real motion rather than
             # motion induced by the crop moving underneath it.

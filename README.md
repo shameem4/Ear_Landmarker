@@ -12,10 +12,36 @@ Real-time 55-point ear landmark regression using a BlazeBlock backbone (FaceMesh
 Webcam/Image -> BlazeEar detector (128x128) -> ROI crop (1.3x expand) -> EarLandmarker (192x192) -> 55 landmarks
 ```
 
-The detector (BlazeEar, separate project) produces bounding boxes with NMS. Each box is expanded 30% for context, cropped, and fed to the landmarker. The 1.3x
-expansion is not a guess -- measured against ground-truth boxes over 380 matched
-ears it is the value that lands the ear at the landmarker's training occupancy of
-0.777.
+The detector (BlazeEar, separate project) produces bounding boxes with NMS. Each
+box is expanded for context, cropped, and fed to the landmarker.
+
+**The crop is derived from the landmarks, not from the detector box.** A fixed
+expansion cannot work, because the detector box is not a fixed fraction of the
+ear: on real captures the ratio of true ear extent to box extent runs 1.02 to
+1.53. Where the box is tight, a 1.3x crop is *smaller than the ear*, so the
+landmarks jam against the crop border and can never reach the rim -- the ear came
+out 19% too small on the worst capture measured.
+
+So the pipeline crops, predicts, measures the resulting occupancy, and re-crops
+if the ear is not sitting at the 0.777 the model was trained on. This is the
+ROI-from-landmarks refinement MediaPipe uses for face and hand tracking. One
+refinement pass is enough:
+
+| capture | true ear / det box | fixed 1.3x | adaptive |
+|---------|--------------------|------------|----------|
+| A | 1.53 | 19% too small | 0.6% |
+| B | 1.37 | 10.6% | 0.1% |
+| C | 1.21 | 7.2% | 0.9% |
+| D | 1.02 | 1.6% | 1.6% (no refinement needed) |
+
+Cost is bounded: framing that is already correct exits after one pass, and on
+video each track seeds from the expansion that worked last frame, so the steady
+state is one pass. Pass `refine_roi=False` (`refineRoi: false` in JS) for the old
+single-pass behaviour.
+
+Crops stay **square and grey-128 padded** at frame edges rather than being
+clamped, since a clamped window is non-square and resizing it to 192x192
+stretches the ear along one axis -- worth 17% NME on edge cases.
 
 NMS suppresses on IoU **or intersection-over-minimum** (threshold 0.35). Plain IoU
 cannot catch a small box nested inside a larger one on the same ear, which is what

@@ -73,14 +73,25 @@ were never modified, and synthetic never entered val or test. `data/synthetic/`
 can be deleted or ignored. Untried and plausible: a lower ratio (~0.25), or
 synthetic warm-start followed by real-only fine-tuning.
 
-### ROI_EXPAND
+### ROI_EXPAND -- this conclusion was wrong, and is retracted
 
-An early hypothesis that the crop needed widening to 1.7 came from four frames
-of one subject, judged against the model's *own* predicted landmarks -- circular
-evidence. Measured properly against ground-truth boxes over 380 matched ears,
-true-ear-extent / detector-box-extent is 0.982, which at the landmarker's
-training occupancy of 0.777 implies ROI_EXPAND 1.26-1.29. The existing 1.30 was
-right. `scripts/build_local_testset.py` reproduces this.
+The original claim here was that ROI_EXPAND 1.30 is correct and a proposed 1.7
+was refuted, on the basis of 380 matched ears giving true-ear-extent /
+detector-box-extent = 0.982.
+
+**That measurement compared the detector's boxes to the YOLO dataset's own
+ground-truth boxes.** It therefore showed that BlazeEar reproduces its training
+convention -- not that its boxes cover the ear. Those GT boxes are themselves
+tight. I validated the detector against itself, which is a circularity of the
+same family as the one the original hypothesis was criticised for.
+
+Measured against the ear's actual extent on real captures, the ratio is 1.02 to
+1.53, implying a required expansion between 1.31 and 1.97. The 1.7 proposal was
+closer to right than this file claimed.
+
+No single constant fixes it, since the ratio varies by a factor of 1.5 across
+frames. The pipeline now derives the ROI from the landmarks instead; see the
+Pipeline section of README.md.
 
 ## Where the remaining error is
 
@@ -121,6 +132,14 @@ uses) on held-out samples with a 20% edge overlap:
 test set sit close enough to a frame edge to trigger it, losing 19.5% of the
 intended crop area on average (p90 35%). Present in both `inference.py` and the
 browser pipeline. Fixed; `tests/test_roi_crop.py` covers it.
+
+**Crop width has an asymmetric cost.** Too tight is a hard failure: the ear does
+not fit and landmarks cannot reach the rim. Too wide degrades gracefully, then
+steeply. Measured on full scenes with real surrounding context, drift from the
+converged answer is ~0 at 1.7x, 7% at 2.0x, 18% at 2.5x, 31% at 3.0x and 67% at
+4.0x -- driven mainly by resolution, since the 192x192 input spends more of
+itself on background as the crop grows. If a single constant must be used,
+1.6-2.0 is the safe band; below ~1.4 it fails hard on tight boxes.
 
 **Three of four landmark group names were wrong.** The strips were named
 helix / antihelix / concha / tragus; under the iBUG scheme these sources actually

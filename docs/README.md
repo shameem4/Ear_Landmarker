@@ -36,7 +36,14 @@ The demo loads two ONNX models:
 | `BlazeEar_web.onnx` | (1, 3, 128, 128) | boxes (896, 4) + scores (896,) | Ear detection |
 | `EarLandmarker_web.onnx` | (1, 3, 192, 192) | landmarks (1, 55, 2) + confidence (1, 55) | Landmark prediction |
 
-Pipeline: BlazeEar detection -> NMS -> box smoothing -> ROI crop (1.3x expand) -> EarLandmarker -> 55 landmarks mapped to frame coordinates -> landmark smoothing.
+Pipeline: BlazeEar detection -> NMS -> box smoothing -> ROI crop -> EarLandmarker
+-> refine ROI from the landmarks and re-run if the framing is off -> 55 landmarks
+mapped to frame coordinates -> landmark smoothing.
+
+The ROI is re-derived from the landmarks rather than trusted from the detector
+box, because the box is not a fixed fraction of the ear (1.02-1.53 on real
+captures) and a too-tight crop clips the landmarks against its own border. Set
+`refineRoi: false` for the old single-pass behaviour.
 
 The landmarker exports two outputs. `landmarks` are normalised [0,1] crop
 coordinates; `confidence` is a per-landmark score derived from the heatmap's
@@ -92,6 +99,10 @@ const pipeline = new EarLandmarkerPipeline(options);
   Set `false` for single images; call `reset()` when switching sources.
 - `smoothing` (default: {}) - Overrides passed to the underlying filters
   (see `smoothing.js`)
+- `refineRoi` (default: true) - Re-derive the crop from the landmarks so the ear
+  lands at the 0.777 occupancy the model was trained on. Costs a second
+  landmarker pass only when the first framing is off; on video each track seeds
+  from the previous frame, so the steady state is one pass.
 - `debug` (default: false) - Log suppressed duplicate pairs to the console
 
 **Methods:**
