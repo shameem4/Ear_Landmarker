@@ -270,14 +270,54 @@ python train.py --arch heatmap --perspective-deg 65    # the shipped configurati
 python scripts/eval_test.py
 python scripts/eval_test.py v6_persp65
 
-# Tests (augmentation label correctness)
-python -m pytest tests/ -v
+# Tests
+python -m pytest tests/ -q
 
 # Data pipeline
 python data/preprocess.py
 python data/validate.py
 python data/split.py
 ```
+
+### Web demo
+
+The browser pipeline is the same one the [live demo](https://shameem4.github.io/Ear_Landmarker/)
+runs. To serve it locally:
+
+```bash
+python -m http.server 8000 -d docs
+```
+
+Then open `http://localhost:8000/`. Webcam capture needs a secure context, which
+`localhost` counts as -- but a demo served from a LAN IP over plain HTTP will not
+get camera permission, so use `localhost` or HTTPS.
+
+To regenerate the ONNX model the page loads:
+
+```bash
+python export_onnx.py
+python export_onnx.py --checkpoint runs/checkpoints/v6_persp65/EarLandmarker_409_nme=0.0290.ckpt
+```
+
+### Comparing the ROI refinement
+
+Both pipelines take a flag that restores the old single-pass framing, which is
+the easiest way to see what the refinement is doing:
+
+```python
+EarLandmarkerPipeline(det, lm, refine_roi=False)    # Python
+```
+
+```javascript
+new EarLandmarkerPipeline({ refineRoi: false })     // JS, in docs/index.html
+```
+
+Point a webcam at an ear and watch the **top of the helix and the lobe** with the
+flag off: where the detector box is tight, the contour stops short of the rim
+because the crop is smaller than the ear. Vary your distance from the camera --
+the ear-to-box ratio changes with scale, so correct framing should hold at every
+distance, not just one. `ROI_MAX_REFINE` raises the pass count if one is ever not
+enough.
 
 ## Performance
 
