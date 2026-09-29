@@ -44,8 +44,8 @@ import numpy as np
 PREP_DIR = Path(__file__).resolve().parent / "preprocessed"
 
 # (name, start, end) -- end exclusive
-LINESTRIPS = [("helix", 0, 20), ("antihelix", 20, 35),
-              ("concha", 35, 50), ("tragus", 50, 55)]
+LINESTRIPS = [("outer_helix", 0, 20), ("inner_helix", 20, 35),
+              ("concha_border", 35, 50), ("superior_crus", 50, 55)]
 
 
 def resample_uniform(points: np.ndarray, spline: bool = True) -> np.ndarray:

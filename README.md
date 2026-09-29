@@ -61,12 +61,24 @@ second ONNX output.
 
 55 points organized as 4 linestrips:
 
-| Group     | Indices | Points | Color (viz) |
-|-----------|---------|--------|-------------|
-| Helix     | 0-19    | 20     | Green       |
-| Antihelix | 20-34   | 15     | Orange      |
-| Concha    | 35-49   | 15     | Blue        |
-| Tragus    | 50-54   | 5      | Pink        |
+| Strip          | Indices | Points | Color (viz) | iBUG regions it spans |
+|----------------|---------|--------|-------------|------------------------|
+| Outer helix    | 0-19    | 20     | Green       | ascending helix 0-3, descending helix 4-7, helix 8-13, lobe 14-19 |
+| Inner helix    | 20-34   | 15     | Orange      | ascending inner helix 20-24, descending inner helix 25-28, inner helix 29-34 |
+| Concha border  | 35-49   | 15     | Blue        | tragus 35-38, canal 39, antitragus 40-42, concha 43-46, inferior crus 47-49 |
+| Superior crus  | 50-54   | 5      | Pink        | superior crus 50-54 |
+
+These four are the connected polylines used for drawing, contour losses and
+smoothness checks. The per-point semantics come from the **iBUG ear annotation
+scheme** (Zhou & Zaferiou, *Deformable Models of Ears in-the-wild*, FG 2017),
+which is what collectionA/B and the AudioEar sets are labelled with;
+`model.measure.IBUG_REGIONS` holds the authoritative mapping.
+
+v1 named these strips helix / antihelix / concha / tragus, and three of the four
+were wrong -- "tragus" was applied to the superior crus, while the real tragus
+(35-38) sits inside the strip that was called "concha". Anything measuring by
+those names measured the wrong structure. `tests/test_landmark_naming.py` locks
+the mapping.
 
 ## Data
 

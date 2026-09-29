@@ -14,10 +14,10 @@ from model.losses import WingLoss, TangentialWeightedWingLoss, _contour_frames
 
 # (name, start_idx, end_idx) -- linestrip groups, end exclusive
 LANDMARK_REGIONS = [
-    ("helix", 0, 20),
-    ("antihelix", 20, 35),
-    ("concha", 35, 50),
-    ("tragus", 50, 55),
+    ("outer_helix", 0, 20),
+    ("inner_helix", 20, 35),
+    ("concha_border", 35, 50),
+    ("superior_crus", 50, 55),
 ]
 
 
@@ -141,7 +141,7 @@ class EarLandmarkerModule(pl.LightningModule):
         self._log_region_nme("test", result["per_point_err"])
 
     def _log_region_nme(self, stage: str, per_point_err: torch.Tensor) -> None:
-        """Log NME broken down by anatomical region (helix/antihelix/concha/tragus)."""
+        """Log NME per contour strip (iBUG naming; see model/measure.py)."""
         for name, lo, hi in LANDMARK_REGIONS:
             self.log(
                 f"{stage}/nme_{name}",

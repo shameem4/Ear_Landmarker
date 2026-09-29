@@ -99,6 +99,37 @@ inconsistent arc-length positions along the same contour. It puts a floor under
 NME that no architecture change will lift, which is why `nme_normal` is the
 better model-selection metric and why this configuration is considered done.
 
+## Corrections found after the fact
+
+Two defects surfaced in review after the experiments above were complete. Neither
+changes any number in this file -- the ROI bug is inference-side and the naming
+bug is confined to `model/measure.py`, which the training and NME results do not
+use -- but both affected shipped behaviour.
+
+**ROI crops were clamped to the frame, not padded.** The intended square ROI was
+being clipped at image edges, producing a non-square crop that was then resized
+to 192x192, stretching the ear along one axis. The model never saw that
+distortion in training. Measured against grey-128 padding (what `data/dataset.py`
+uses) on held-out samples with a 20% edge overlap:
+
+| policy | NME |
+|--------|-----|
+| clip (old) | 0.05295 |
+| pad (new) | 0.04373 |
+
+**-17.4%, better on 89% of samples.** 14.8% of ground-truth ears in the local
+test set sit close enough to a frame edge to trigger it, losing 19.5% of the
+intended crop area on average (p90 35%). Present in both `inference.py` and the
+browser pipeline. Fixed; `tests/test_roi_crop.py` covers it.
+
+**Three of four landmark group names were wrong.** The strips were named
+helix / antihelix / concha / tragus; under the iBUG scheme these sources actually
+use, 50-54 is the *superior crus*, not the tragus, and the real tragus (35-38)
+sits inside the strip that was called "concha". `measure_ear()` consequently
+reported `tragus_to_antitragus` computed from the superior crus, and measured the
+concha across a span five structures wide. Fixed, with `IBUG_REGIONS` as the
+authoritative mapping and `tests/test_landmark_naming.py` locking it.
+
 ## Known limitation
 
 The **BlazeEar detector recalls 47.5%** of annotated ears (duplicate rate 1.5%

@@ -110,12 +110,16 @@ const pipeline = new EarLandmarkerPipeline(options);
 
 ### Landmark Groups
 
-| Group | Indices | Color |
+| Strip | Indices | Color |
 |-------|---------|-------|
-| Helix | 0-19 | Green |
-| Antihelix | 20-34 | Orange |
-| Concha | 35-49 | Blue |
-| Tragus | 50-54 | Pink |
+| Outer helix | 0-19 | Green |
+| Inner helix | 20-34 | Orange |
+| Concha border | 35-49 | Blue |
+| Superior crus | 50-54 | Pink |
+
+Names follow the iBUG ear scheme (Zhou & Zaferiou, FG 2017). Each strip spans
+several iBUG regions -- the real tragus is 35-38, inside the concha-border
+strip. See [../README.md](../README.md) for the full mapping.
 
 ## Regenerating the ONNX Model
 
