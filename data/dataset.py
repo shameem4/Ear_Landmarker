@@ -44,6 +44,11 @@ class AugmentationParams:
     })
     bbox_jitter: float = 0.1
     bbox_jitter_prob: float = 0.5
+    # Simulated out-of-plane head turn. The source datasets are near-frontal, and
+    # measured error rises +59% at 40 deg yaw and +89% at 50 deg, which is exactly
+    # the range real captures use. No other augmentation covers foreshortening.
+    perspective_deg: float = 0.0
+    perspective_prob: float = 0.5
 
 
 class EarLandmarkDataset(Dataset):
@@ -64,6 +69,7 @@ class EarLandmarkDataset(Dataset):
         image_size: int = 192,
         augmentation: Optional[AugmentationParams] = None,
         stats: Optional[Dict[str, Sequence[float]]] = None,
+        landmarks_file: str = "landmarks.npy",
     ) -> None:
         self.data_dir = Path(data_dir)
         self.image_size = image_size
@@ -75,7 +81,7 @@ class EarLandmarkDataset(Dataset):
 
         # Memory-map landmarks for fast access
         self.landmarks = np.load(
-            self.data_dir / "landmarks.npy", mmap_mode="r",
+            self.data_dir / landmarks_file, mmap_mode="r",
         )  # (N_total, 55, 2) float32
 
         # Normalization (applied after ToTensor)
@@ -168,6 +174,12 @@ class EarLandmarkDataset(Dataset):
             landmarks[:, 0] = landmarks[:, 0] - tx
             landmarks[:, 1] = landmarks[:, 1] - ty
 
+        # Out-of-plane turn (perspective)
+        if aug.perspective_deg > 0 and random.random() < aug.perspective_prob:
+            yaw = random.uniform(-aug.perspective_deg, aug.perspective_deg)
+            pitch = random.uniform(-aug.perspective_deg, aug.perspective_deg)
+            image, landmarks = self._perspective(image, landmarks, yaw, pitch)
+
         # Rotation
         if aug.rotation_deg > 0:
             angle = random.uniform(-aug.rotation_deg, aug.rotation_deg)
@@ -212,3 +224,65 @@ class EarLandmarkDataset(Dataset):
         landmarks[:, 1] = (landmarks[:, 1] * h - y1) / crop_h
 
         return cropped, landmarks
+
+    @staticmethod
+    def _perspective_matrix(yaw_deg: float, pitch_deg: float, focal: float = 2.0) -> np.ndarray:
+        """Homography (in normalized [0,1] coords) simulating out-of-plane turn.
+
+        Treats the ear as a plane, rotates it about the vertical (yaw) and
+        horizontal (pitch) axes, and reprojects. This models foreshortening but
+        not 3D parallax or self-occlusion, so it is an approximation of a real
+        head turn -- a useful one, since foreshortening is the dominant effect
+        and it costs nothing to generate.
+
+        Returns:
+            (3, 3) forward matrix mapping input -> output in normalized coords.
+        """
+        ty, tp = math.radians(yaw_deg), math.radians(pitch_deg)
+        # Work in centred coords in [-1, 1], then map back to [0, 1].
+        to_centred = np.array([[2.0, 0.0, -1.0], [0.0, 2.0, -1.0], [0.0, 0.0, 1.0]])
+        from_centred = np.array([[0.5, 0.0, 0.5], [0.0, 0.5, 0.5], [0.0, 0.0, 1.0]])
+        # x' = x cos(yaw), y' = y cos(pitch), with depth z = x sin(yaw) + y sin(pitch)
+        # giving the perspective divide (1 + z/f).
+        core = np.array([
+            [math.cos(ty), 0.0, 0.0],
+            [0.0, math.cos(tp), 0.0],
+            [math.sin(ty) / focal, math.sin(tp) / focal, 1.0],
+        ])
+        return from_centred @ core @ to_centred
+
+    @staticmethod
+    def _apply_homography(h: np.ndarray, pts: torch.Tensor) -> torch.Tensor:
+        """Apply a 3x3 homography to (N, 2) normalized points."""
+        p = pts.detach().cpu().numpy().astype(np.float64)
+        ones = np.ones((len(p), 1))
+        q = np.concatenate([p, ones], axis=1) @ h.T
+        w = np.where(np.abs(q[:, 2:3]) < 1e-9, 1e-9, q[:, 2:3])
+        return torch.from_numpy((q[:, :2] / w).astype(np.float32))
+
+    def _perspective(
+        self, image: Image.Image, landmarks: torch.Tensor,
+        yaw_deg: float, pitch_deg: float,
+    ) -> Tuple[Image.Image, torch.Tensor]:
+        """Warp image and landmarks by the same homography.
+
+        PIL's PERSPECTIVE transform maps OUTPUT pixels back to INPUT pixels, so
+        it needs the INVERSE of the matrix used for the landmarks. Getting that
+        backwards is the same class of error as the v1 rotation bug, so
+        tests/test_augmentation.py asserts image and labels agree.
+        """
+        h_fwd = self._perspective_matrix(yaw_deg, pitch_deg)
+        size = self.image_size
+
+        # Convert the normalized forward matrix to pixel coords, then invert for PIL.
+        scale = np.array([[size, 0.0, 0.0], [0.0, size, 0.0], [0.0, 0.0, 1.0]])
+        unscale = np.array([[1.0 / size, 0.0, 0.0], [0.0, 1.0 / size, 0.0], [0.0, 0.0, 1.0]])
+        h_px = scale @ h_fwd @ unscale
+        h_inv = np.linalg.inv(h_px)
+        h_inv = h_inv / h_inv[2, 2]
+
+        image = image.transform(
+            (size, size), Image.PERSPECTIVE, h_inv.flatten()[:8].tolist(),
+            resample=Image.BILINEAR, fillcolor=(128, 128, 128),
+        )
+        return image, self._apply_homography(h_fwd, landmarks)

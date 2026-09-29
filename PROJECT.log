@@ -291,3 +291,69 @@ sees real motion, not motion induced by the crop moving). Disable with
 EarLandmarkerPipeline(smooth=False).
 
 Not yet ported to docs/earlandmarker_inference.js (the web demo).
+
+2026-09-29: diagnosis of real-world failures + all four fixes
+
+Two causes found for "landmarks almost there but not quite" on real captures,
+both measured rather than assumed:
+
+1. TANGENTIAL DRIFT -- 72% of squared error is points sliding ALONG the contour,
+   not sitting off it (tangential 4.44px vs normal 2.48px on v2_heatmap).
+   It is a LABEL problem. Per-source, the model's tangential error tracks how
+   irregularly that source spaces its points:
+       source        spacing CV (helix)   tangential err
+       audioear2d          0.137             2.74 px
+       collectionB         0.250             4.96 px
+       collectionA         0.286             7.44 px
+   The heatmap head cut normal error 11% but tangential only 1% -- better
+   localisation cannot resolve an ambiguity that is in the annotations.
+
+2. OUT-OF-PLANE POSE IS OUT OF DISTRIBUTION. Simulated yaw (homography):
+       0deg 0.0294 | 20deg 0.0353 (+20%) | 40deg 0.0467 (+59%) | 50deg 0.0554 (+89%)
+   Real captures are at 43-53deg. Augmentation had NO perspective term at all.
+   The homography understates it: it models foreshortening but not 3D parallax
+   or self-occlusion, so real turned views are at least this bad.
+
+FIXES:
+
+a) model/measure.py -- contour-based anthropometry, index-free. Measures from
+   the arc-length-resampled polyline (caliper diameter + perpendicular extent)
+   instead of distance(point_3, point_16). Under the model's real 4.4px
+   tangential drift, ear-length error is +/-0.54mm vs +/-1.13mm index-based on a
+   70mm ear. Roughly 2x better, not the near-total immunity first expected --
+   the caliper still touches the contour extremes.
+
+b) Perspective augmentation (data/dataset.py, --perspective-deg). Plane rotated
+   about vertical/horizontal axes and reprojected. PIL's PERSPECTIVE takes the
+   INVERSE matrix, the same trap as the v1 rotation bug; tests assert image and
+   labels agree and were verified to fail (12 cases) when given the forward
+   matrix. Default 0.0 -- opt-in, since it changes the training distribution.
+
+c) data/canonicalize.py -- uniform arc-length label resampling. helix spacing CV
+   drops 0.21 -> 0.0096 and all four sources now agree.
+   TWO PROBLEMS FOUND AND FIXED DURING DEVELOPMENT:
+     - Linear resampling of a 15-20 vertex strip CUTS CORNERS, deforming the
+       contour by 2.09px mean / 5.31px p95 and shifting measurements 1.17mm on a
+       70mm ear -- comparable to the model's entire 2.48px normal error. Now
+       interpolates with PCHIP (monotone, no overshoot on the concha bowl),
+       giving 1.76px / 0.99mm. Much of the residual is a polyline-representation
+       artefact (two piecewise-linear approximations of one curve with vertices
+       in different places), not real distortion, so this is left for the
+       empirical comparison to settle rather than argued further.
+     - 4 real strips contain coincident vertices, making the arc-length
+       parameter non-monotonic; PCHIP rejects those outright. Duplicates are now
+       dropped before fitting.
+   CAVEAT: canonicalization changes what each INDEX means. Index-based
+   measurements must be re-derived; model/measure.py is index-free by design.
+
+d) Smoothing -- see previous entry.
+
+scripts/eval_contour.py: parameterisation-INVARIANT evaluation, required because
+NME cannot compare a canonical-label model against an original-label one (they
+predict different targets for the same index, so the canonical model would be
+penalised for being right). Scores symmetric Chamfer distance between contours,
+point-to-contour normal error, and contour-measurement error -- all index-free.
+
+Runs launched: v3_persp (heatmap + 35deg perspective) and v4_persp_canon
+(+ canonical labels). Whether canonicalization helps is an open empirical
+question; eval_contour.py will decide it. Suite now 153 tests.

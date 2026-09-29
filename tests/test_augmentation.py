@@ -161,6 +161,32 @@ def test_visibility_mask_marks_out_of_frame_points():
     )
 
 
+@pytest.mark.parametrize("yaw,pitch", [(30.0, 0.0), (-30.0, 0.0), (0.0, 30.0),
+                                       (0.0, -30.0), (25.0, -20.0), (-40.0, 15.0)])
+@pytest.mark.parametrize("dot", DOTS)
+def test_perspective_moves_labels_with_image(yaw, pitch, dot):
+    """PIL's PERSPECTIVE takes the INVERSE matrix; using the forward one warps
+    the image opposite to the labels. Same failure mode as the v1 rotation bug."""
+    aug = AugmentationParams(
+        horizontal_flip=False, translation=0.0, rotation_deg=0.0,
+        color_jitter=None, bbox_jitter=0.0,
+        perspective_deg=max(abs(yaw), abs(pitch)), perspective_prob=1.0,
+    )
+    out_img, label = _run(aug, dot, [yaw, pitch])
+    _assert_agrees(out_img, label, f"perspective yaw={yaw} pitch={pitch} at {dot}")
+
+
+def test_perspective_zero_angles_is_identity():
+    ds = _bare_dataset(AugmentationParams())
+    h = ds._perspective_matrix(0.0, 0.0)
+    assert np.allclose(h / h[2, 2], np.eye(3), atol=1e-9)
+
+
+def test_perspective_is_disabled_by_default():
+    """Enabling it changes the training distribution, so it must be opt-in."""
+    assert AugmentationParams().perspective_deg == 0.0
+
+
 def test_legacy_rotation_switch_is_off():
     """The attribution-only bug switch must never be committed enabled."""
     import data.dataset as dataset_mod

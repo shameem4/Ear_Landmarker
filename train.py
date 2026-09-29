@@ -51,6 +51,10 @@ def main() -> None:
     parser.add_argument("--resume", type=str, default=None,
                         help="Resume from checkpoint: 'last', 'best', or path to .ckpt")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--perspective-deg", type=float, default=0.0,
+                        help="Simulated out-of-plane turn in degrees (0 = off)")
+    parser.add_argument("--landmarks", type=str, default="landmarks.npy",
+                        help="Landmark array under data/preprocessed/")
     parser.add_argument("--run-name", type=str, default="EarLandmarker",
                         help="Names the checkpoint/log subdirectory, so concurrent "
                              "experiments do not overwrite each other")
@@ -69,6 +73,7 @@ def main() -> None:
         color_jitter={"brightness": 0.3, "contrast": 0.3, "saturation": 0.2, "hue": 0.05},
         bbox_jitter=0.1,
         bbox_jitter_prob=0.5,
+        perspective_deg=args.perspective_deg,
     )
 
     train_ds = EarLandmarkDataset(
@@ -76,17 +81,20 @@ def main() -> None:
         data_dir=DATA_DIR,
         image_size=args.image_size,
         augmentation=train_aug,
+        landmarks_file=args.landmarks,
     )
     val_ds = EarLandmarkDataset(
         split_csv=DATA_DIR / "val.csv",
         data_dir=DATA_DIR,
         image_size=args.image_size,
+        landmarks_file=args.landmarks,
     )
     test_csv = DATA_DIR / "test.csv"
     test_ds = EarLandmarkDataset(
         split_csv=test_csv,
         data_dir=DATA_DIR,
         image_size=args.image_size,
+        landmarks_file=args.landmarks,
     ) if test_csv.exists() else None
 
     loader_kwargs = dict(
