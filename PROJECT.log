@@ -444,3 +444,52 @@ FAILURE MODE TO WATCH: relaxing the tangential constraint lets predicted points
 bunch together along the contour, which would flatter Chamfer while destroying
 the point distribution. An anti-collapse term guards it, and a test asserts
 predicted segment lengths do not shrink.
+
+2026-09-29: tangential sweep + perspective sweep results
+
+TANGENTIAL SWEEP (all with perspective 35, so v3_persp is the tw=1.0 control).
+Judged against the criteria pre-registered before the runs.
+
+  run          tw    chamfer   normal   meas err   50deg contour   50deg meas
+  v3_persp    1.0     2.541p   2.802p     6.26%         3.371p        8.53%
+  v5_tang06   0.6     2.430p   2.660p     6.03%         3.329p        8.37%
+  v5_tang03   0.3     2.408p   2.581p     6.18%         3.203p        8.33%
+  v5_tang00   0.0     2.832p   2.768p    11.53%            --            --
+
+VERDICT: PASS at tw=0.3 and 0.6. Both improve Chamfer (-5.2% / -4.4%) AND
+measurement error (-1.3% / -3.7%) vs the same-perspective control, with pose
+robustness slightly better, which is exactly the pre-registered bar. A modest
+but real win, and the first thing to move tangential error at all.
+
+tw=0.0 FAILS badly: measurement error nearly doubles to 11.53%. The anti-collapse
+guard worked as designed (no bunching) but the failure came from the opposite
+direction -- predicted strips OVER-extend to 1.145x ground-truth length. Removing
+the tangential term entirely leaves the along-contour scale unconstrained in both
+directions; the guard only penalised shrinkage. Do not use tw=0.
+
+Raw NME behaved exactly as pre-registered: tw=0.0 gives test NME 0.0544 (terrible)
+while its normal component 0.0127 is the best of the sweep. NME is uninformative
+here, as stated in advance.
+
+PERSPECTIVE SWEEP -- point-to-contour error (px@192) by test yaw:
+
+  test yaw    aug0deg   aug20deg   aug35deg   aug50deg
+       0°      2.793p     2.937p     2.858p     2.770p
+      20°      3.239p     3.048p     2.981p     2.880p
+      35°      3.850p     3.281p     3.087p     2.913p
+      50°      4.760p     3.888p     3.345p     3.056p
+  degradation   +70%       +32%       +17%       +10%
+
+VERDICT: 50deg dominates at EVERY test yaw INCLUDING 0deg. More perspective
+augmentation is monotonically better and costs nothing frontally -- which
+contradicts the prediction that frontal metrics would favour lower values.
+The curve has not turned over, so 65 and 80 deg are now running to find where
+it does. 35deg (used for v3/v5) was an arbitrary guess and is NOT optimal.
+
+CONFOUND: the tangential sweep used perspective 35 while v6_persp50 used 50, so
+those two cannot be compared directly. Within matched perspective the tangential
+effect is real. v7_combined (perspective 50 + tangential 0.6) tests the
+combination, which is untested and expected to be best.
+
+Best single config so far: v6_persp50 -- meas err 5.93% frontal, 7.46% at 50deg
+yaw, vs v3_persp 6.26% / 8.53%.
