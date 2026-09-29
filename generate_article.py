@@ -1,6 +1,7 @@
 """Generate LinkedIn article as .docx for the Ear Landmarker project."""
 
 import io
+from pathlib import Path
 import tempfile
 
 from docx import Document
@@ -761,6 +762,6 @@ def build_article():
 
 if __name__ == "__main__":
     doc = build_article()
-    out = "C:/Users/shame/OneDrive/Desktop/ear_stuff/Ear_Landmarker/Ear_Landmarker_Article.docx"
+    out = str(Path(__file__).resolve().parent / "Ear_Landmarker_Article.docx")
     doc.save(out)
     print(f"Saved: {out}")

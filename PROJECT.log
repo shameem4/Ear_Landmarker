@@ -22,3 +22,862 @@ Training:
 Pipeline:
   - BlazeEar detector (128x128) -> ear ROI crop (1.3x expand) -> EarLandmarker (192x192) -> 55 landmarks
   - Webcam demo verified working in real-time
+
+2026-09-28: v2 -- correctness fixes before any accuracy work
+
+Bug found (result-altering):
+  - data/dataset.py rotation augmentation applied the TRANSPOSED rotation matrix
+    to landmarks. PIL rotates CCW ([[cos,sin],[-sin,cos]] in y-down image coords);
+    the code used [[cos,-sin],[sin,cos]], sending labels the opposite way.
+  - Error = 2x the rotation angle. Measured against actual image content
+    (gaussian-dot centroid): 10.1px @ 5deg, 20.5px @ 10deg, 30.4px @ 15deg.
+    Over the real aug distribution: mean 12.5px, p90 26.8px, max 43.4px at 192px.
+  - Rotation had no probability gate, so 100% of training samples were affected.
+  - Validation runs unaugmented, so no logged metric could ever reveal it.
+  - Verified: translation (0.20px) and bbox_jitter (0.13px) are CORRECT --
+    the bug was isolated to rotation.
+
+Other fixes:
+  - Clamping replaced with a visibility mask. Points pushed outside the frame were
+    clamped onto the border and supervised there; they are now masked out of both
+    loss and NME (WingLoss/AdaptiveWingLoss take an optional `visible` arg).
+  - Three-way 70/15/15 split (4142/861/861). v1 had no test set, so its reported
+    0.0307 was the early-stopping + checkpoint-selection metric.
+  - AudioEar3D confined to train (56 subjects x left/right are near-mirrors;
+    with horizontal flip on, random splitting leaked. Subject IDs unrecoverable
+    from the manifest, so the whole source stays in train).
+  - Per-region NME logged (helix/antihelix/concha/tragus) -- the article noted
+    this diagnostic was missing.
+  - ModelCheckpoint monitored "val/nme"; the "/" made Lightning create nested
+    directories per epoch. Now monitors a slash-free "val_nme" alias.
+  - All hardcoded Windows paths replaced with repo-relative resolution
+    (train/inference/export_onnx/split/validate/preprocess/generate_article).
+  - Added --run-name to isolate concurrent experiments.
+
+Guardrail:
+  - tests/test_augmentation.py (83 tests) asserts image content and labels move
+    together for rotation/translation/bbox_jitter/flip, by locating a rendered dot
+    via background-subtracted centroid. Verified it FAILS (24 cases) with the old
+    matrix restored and passes with the fix.
+
+v1 training curves recovered from runs/logs (version_2 = 100ep, version_3 = 500ep):
+  - 100ep: best val/nme 0.0351 @ ep92
+  - 500ep: best val/nme 0.0307 @ ep345, early stopped ep395
+  - Saturation: 0.0321 at 75% of run -> 0.0307 best. ~0.0014 over the last ~100
+    epochs, last-50 std 0.0003. Training length is not the binding constraint.
+  - "train-val gap 0.0014 = no overfitting" is not a valid inference: train NME is
+    measured on augmented data against CORRUPTED rotation labels, val on clean
+    unaugmented data. The two are not comparable.
+
+Status: v1 checkpoints archived to runs/archive_v1/ (published model preserved at
+runs/archive_v1/EarLandmarker_epoch=345_val/nme=0.0307.ckpt). Not yet retrained --
+GPU busy. Architecture change (GAP head -> soft-argmax) deliberately deferred until
+a clean baseline exists, so the two effects can be attributed separately.
+
+2026-09-28: v2 third run prepared (soft-argmax head) -- NOT YET TRAINED
+
+model/ear_landmarker.py:
+  - Refactored backbone into forward_features() returning (stage2, stage3, stage4).
+    Pure refactor: v1 state_dict keys are byte-identical and the archived v1
+    checkpoint still loads strict=True (asserted in tests/test_model.py).
+  - Added EarLandmarkerHeatmap: same backbone, heatmap head + soft-argmax.
+    Rationale: the GAP head collapses 6x6x192 -> 192 before regressing coords.
+    Global average pooling is permutation-invariant over spatial positions, so it
+    discards WHERE features are -- the one thing landmark localisation needs.
+    Soft-argmax (expectation of a spatial softmax) is differentiable and sub-pixel,
+    so the article's objection to heatmaps (argmax grid quantisation) does not apply.
+    Decoder: stage4 -1x1-> 96, up -> +stage3, up -> +stage2, BlazeBlock, 1x1 -> 55
+    heatmaps @ 24x24. Params 340,167 vs 312,958 (+8.7%).
+  - Bug caught during prep: zero-initialising to_heatmap.weight (the obvious way
+    to start predictions at image centre) leaves 129 of 131 parameter tensors with
+    NO gradient, because d(loss)/d(decoder) = dL/dheatmap * weight = 0. Only the
+    final 1x1 conv learns. Fixed with small-std normal init (std=0.01): heatmaps
+    still start near-flat (predictions mean 0.4995) but gradient reaches everything.
+    Locked in by test_heatmap_head_gradients_reach_the_backbone (verified to fail
+    with 129 starved tensors if zero-init is reintroduced).
+
+Plumbing:
+  - train.py: --arch {gap,heatmap} and --tau.
+  - export_onnx.py / inference.py: architecture is read from the checkpoint's saved
+    hyper_parameters, so a heatmap checkpoint loads and exports with no extra flag.
+  - Both archs verified to export to ONNX (opset 14) and match PyTorch under
+    onnxruntime to 1.8e-07. Sizes 1227 KB (gap) / 1343 KB (heatmap).
+    Note: the heatmap graph contains Range/Resize ops (from torch.arange and
+    bilinear upsample). Fine for ONNX Runtime Web; revisit if TFLite export
+    becomes a goal.
+
+tests/ now 97 tests (augmentation label correctness + model head contract).
+
+TODO (filed, blocked on results): revise the published LinkedIn article and
+generate_article.py once the three runs produce test NME. The article's 0.0307,
+its "12.6% improvement" narrative and its "no overfitting" claim all need
+correcting, and its stated reason for rejecting heatmaps no longer holds.
+
+Runs queued (GPU busy at time of writing, ~35 min each):
+  1. scripts/train_baseline_v1.py --epochs 500 --num-workers 6
+       -> v1 behaviour (bug enabled) on the new splits: the honest "before"
+  2. train.py --epochs 500 --num-workers 6 --run-name v2_fixed
+       -> bug fixed, GAP head: isolates the value of the bug fix
+  3. train.py --epochs 500 --num-workers 6 --run-name v2_heatmap --arch heatmap
+       -> bug fixed + soft-argmax head: isolates the value of the architecture
+  Run 1 vs 2 attributes the fix; 2 vs 3 attributes the architecture. Report test
+  NME, never val NME.
+
+2026-09-29: v2 results -- three runs, held-out test set
+
+Protocol: identical splits (4142/861/861), seed 42, 500 max epochs, patience 50.
+val drove early stopping + checkpoint selection; test evaluated once at the end.
+All three were SIGTERM'd mid-run by an unrelated process and resumed from
+last.ckpt (optimizer + scheduler state intact). Baseline's legacy-bug flag was
+verified still active after resume.
+
+  run           best val   @ep  last ep   TEST NME   test px
+  baseline_v1     0.0304   483      500     0.0301     5.78
+  v2_fixed        0.0302   409      460     0.0303     5.82
+  v2_heatmap      0.0286   315      366     0.0291     5.59
+
+Attribution (held-out test):
+  rotation fix      baseline -> v2_fixed  : +0.00023 NME = +0.044 px  (+0.76%)
+  soft-argmax head  v2_fixed -> v2_heatmap: -0.00122 NME = -0.234 px  (-4.01%)
+  combined          baseline -> v2_heatmap: -0.00099 NME = -0.190 px  (-3.28%)
+
+Per-region test NME:
+  region      baseline  v2_fixed   heatmap   hm vs fixed
+  helix         0.0338    0.0343    0.0335    -0.154 px
+  antihelix     0.0309    0.0312    0.0301    -0.197 px
+  concha        0.0251    0.0251    0.0231    -0.379 px
+  tragus        0.0278    0.0280    0.0268    -0.224 px
+  Helix is consistently the worst region across all three; concha the best.
+
+FINDINGS -- read these before citing any number:
+
+1. The rotation-label fix did NOT improve accuracy. It is 0.76% WORSE on test,
+   which is noise-level. The bug was real and measured (12.5px mean label error,
+   p90 26.8px), but fixing it bought nothing on this dataset.
+   Likely why: the injected error is zero-mean (angle is symmetric +/-15deg), so
+   it adds variance rather than bias, and absolute ear orientation is not
+   reliably inferable from a crop, so the model averages the noise out instead
+   of learning the wrong mapping. +/-15deg is also within the natural orientation
+   spread of the data. Keep the fix on correctness grounds, not accuracy grounds.
+
+2. The soft-argmax head is the only change that moved the metric: -4.01% relative
+   (-0.23px), better in all four regions, and it converged faster (best at epoch
+   315 vs 409; stopped at 366 vs 460). Costs +8.7% params, +11% FLOPs, few % wall.
+
+3. Noise floor estimate: baseline vs v2_fixed differ by 0.00023 NME. The heatmap
+   gain (0.00122) is ~5x that. Suggestive but SINGLE SEED -- repeat v2_fixed and
+   v2_heatmap with 2-3 seeds before publishing the architecture claim.
+
+4. v1's published 0.0307 was NOT badly optimistic after all. The val/test gap here
+   is tiny and inconsistent in sign (baseline: val 0.0304 / test 0.0301). The
+   criticism of selecting on val stands methodologically but was small in practice.
+   Not comparable head-to-head anyway: different splits, 4142 vs 4987 train images.
+
+5. STABILITY IS STILL UNMEASURED. The original v2 goal was accuracy AND stability,
+   but there is no video/jitter benchmark in this repo, so nothing here says
+   anything about frame-to-frame jitter. The heatmap head exposes per-point
+   confidence (model.heatmaps()) which is the principled input to temporal
+   smoothing, but that is untested. Needs a held-out video set + a jitter metric
+   (e.g. mean inter-frame landmark displacement on static-subject clips).
+
+Best model: runs/checkpoints/v2_heatmap/ (test NME 0.0291, 5.59px at 192px).
+Not yet exported to ONNX or wired into the demo.
+
+2026-09-29: stability (jitter) benchmark -- scripts/eval_jitter.py
+
+No video in the repo, so stability is measured by building a "virtual video" from
+each test still. Two perturbations, both leaving the true landmark positions
+unchanged, so any output movement is the model:
+
+  geometric   -- wobble the crop window (centre +/-3.1px of a 384px source,
+                 scale +/-2%), i.e. what an upstream detector's bbox does between
+                 frames. Predictions are mapped back through the exact inverse
+                 crop transform, so a perfectly equivariant model scores 0.
+  photometric -- geometry held byte-identical; only brightness (+/-3%) and pixel
+                 noise (std 0.01) vary. Needs no inverse mapping.
+
+Metrics in px at 192: spread = per-landmark std over frames; succ = mean
+successive-frame displacement (closest to perceived jitter).
+
+Full test set (861 images, 16 frames). Seeds 1 and 2 agree within 1%:
+
+  run            arch       GEO spread  GEO succ   PHO spread  PHO succ
+  baseline_v1    gap            0.620      1.162        0.294     0.554
+  v2_fixed       gap            0.586      1.095        0.237     0.446
+  v2_heatmap     heatmap        0.570      1.060        0.184     0.345
+
+  vs baseline:   v2_fixed    geo -5.8%  pho -19.5%
+                 v2_heatmap  geo -8.8%  pho -37.7%
+  soft-argmax vs GAP (v2_fixed -> v2_heatmap): geo -3.1%, pho -22.8%
+
+FINDINGS:
+
+1. The rotation fix DID improve stability (-19.5% photometric jitter) even though
+   it did not improve accuracy (+0.76% test NME). Plausible mechanism: training
+   against noisy labels pushes the model to lean on spurious cues, raising
+   sensitivity to input perturbation without shifting the conditional mean. This
+   is the real justification for the fix -- stability, not NME.
+
+2. The soft-argmax head improves stability further, and much more under
+   photometric perturbation (-22.8%) than geometric (-3.1%). Spatial softmax
+   averages over a distribution rather than reading a single pooled vector, which
+   is inherently less twitchy under pixel noise.
+
+3. GEOMETRIC JITTER DOMINATES AND IS BARELY IMPROVED BY ANYTHING WE DID.
+   It is 1.06-1.16px vs 0.34-0.55px photometric -- ~90-95% of total jitter by
+   magnitude -- and the full baseline->heatmap change only moves it -8.8%.
+   A ~1.8px (at 192) bbox wobble still moves landmarks ~1.1px in the best model.
+   => For the live demo, the dominant jitter source is upstream detector bbox
+   wobble. No landmarker-side change fixes that. The leverage is temporal
+   smoothing (the heatmap head's per-point confidence is the principled input)
+   or stabilising/smoothing the BlazeEar box between frames. Neither is done.
+
+CAVEAT: perturbation seeds are reproducible to <1%, but all three models come
+from a SINGLE TRAINING seed. The measurement is precise; the architecture
+comparison still needs training-seed replication.
+
+Harness validated: tests/test_jitter_harness.py substitutes an ideal equivariant
+model and asserts it scores ~0 (spread and succ < 1e-3 px) and that the inversion
+recovers true positions to 1e-5. Without this, an inversion bug would inflate
+every model equally and silently. Suite now 104 tests.
+
+2026-09-29: temporal + bbox smoothing (model/smoothing.py)
+
+One Euro filter (Casiez et al., CHI 2012) -- speed-adaptive low-pass, same class
+of filter MediaPipe uses for landmark streams. A fixed-alpha EMA trades jitter
+for lag at one fixed ratio; One Euro smooths hard when still and backs off when
+moving. Components: OneEuroFilter, LandmarkSmoother (confidence-weighted),
+BoxSmoother (centre/size parameterisation so the box cannot distort), EarTracker
+(nearest-centre association so two ears never swap filter state).
+
+Per-point confidence added: EarLandmarkerHeatmap.heatmap_confidence() maps the
+spatial std of the softmax to (0,1]. Measured on the trained model, spatial std
+is 0.03-0.11 (uniform would be 0.29), so ref_std=0.05 gives a usable confidence
+range of 0.12-0.55. Only the heatmap arch can provide this.
+
+BENCHMARK BUG FOUND AND FIXED: the first version phased a full pan cycle over
+the clip length, so a 20-frame clip was a 1.5 Hz oscillation -- far faster than
+any head. Every filter looked terrible and smoothing appeared to cost +28-99%
+error. Motion is now defined in absolute time (motion_hz=0.25, one sweep per 4s).
+Conclusions from the first version were wrong and are superseded.
+
+scripts/eval_smoothing.py scores two OPPOSED metrics so over-smoothing cannot
+win: err_px (vs a perfect-detector reference, includes lag) and jit_px
+(successive-difference mismatch). Results, v2_heatmap, min_cutoff=3.0 beta=0.4:
+
+  STATIC              err_px   jit_px   vs raw err  vs raw jit
+  raw                  0.997    1.259          --          --
+  box only             0.692    0.691      -30.6%      -45.1%
+  landmark only        0.650    0.391      -34.7%      -69.0%
+  box + landmark       0.522    0.246      -47.6%      -80.5%
+  box + lm + conf      0.486    0.109      -51.2%      -91.4%
+
+  MOVING (0.25 Hz)    err_px   jit_px   vs raw err  vs raw jit
+  raw                  1.088    1.384          --          --
+  box only             0.790    0.896      -27.4%      -35.3%
+  landmark only        0.787    0.577      -27.7%      -58.3%
+  box + landmark       0.679    0.472      -37.6%      -65.9%
+  box + lm + conf      0.892    0.402      -18.0%      -70.9%
+
+Smoothing improves BOTH metrics in BOTH scenarios -- it is not trading accuracy
+for smoothness. Note confidence weighting helps jitter but costs error under
+motion (-37.6% -> -18.0%), because low-confidence points are smoothed harder and
+therefore lag; conf_strength is set to 0.5 in the pipeline default as a
+compromise rather than the 1.0 used in the sweep.
+
+Wired into inference.py: boxes are smoothed BEFORE cropping (so the landmarker
+sees a steady input) and landmarks are smoothed in frame coords (so the filter
+sees real motion, not motion induced by the crop moving). Disable with
+EarLandmarkerPipeline(smooth=False).
+
+Not yet ported to docs/earlandmarker_inference.js (the web demo).
+
+2026-09-29: diagnosis of real-world failures + all four fixes
+
+Two causes found for "landmarks almost there but not quite" on real captures,
+both measured rather than assumed:
+
+1. TANGENTIAL DRIFT -- 72% of squared error is points sliding ALONG the contour,
+   not sitting off it (tangential 4.44px vs normal 2.48px on v2_heatmap).
+   It is a LABEL problem. Per-source, the model's tangential error tracks how
+   irregularly that source spaces its points:
+       source        spacing CV (helix)   tangential err
+       audioear2d          0.137             2.74 px
+       collectionB         0.250             4.96 px
+       collectionA         0.286             7.44 px
+   The heatmap head cut normal error 11% but tangential only 1% -- better
+   localisation cannot resolve an ambiguity that is in the annotations.
+
+2. OUT-OF-PLANE POSE IS OUT OF DISTRIBUTION. Simulated yaw (homography):
+       0deg 0.0294 | 20deg 0.0353 (+20%) | 40deg 0.0467 (+59%) | 50deg 0.0554 (+89%)
+   Real captures are at 43-53deg. Augmentation had NO perspective term at all.
+   The homography understates it: it models foreshortening but not 3D parallax
+   or self-occlusion, so real turned views are at least this bad.
+
+FIXES:
+
+a) model/measure.py -- contour-based anthropometry, index-free. Measures from
+   the arc-length-resampled polyline (caliper diameter + perpendicular extent)
+   instead of distance(point_3, point_16). Under the model's real 4.4px
+   tangential drift, ear-length error is +/-0.54mm vs +/-1.13mm index-based on a
+   70mm ear. Roughly 2x better, not the near-total immunity first expected --
+   the caliper still touches the contour extremes.
+
+b) Perspective augmentation (data/dataset.py, --perspective-deg). Plane rotated
+   about vertical/horizontal axes and reprojected. PIL's PERSPECTIVE takes the
+   INVERSE matrix, the same trap as the v1 rotation bug; tests assert image and
+   labels agree and were verified to fail (12 cases) when given the forward
+   matrix. Default 0.0 -- opt-in, since it changes the training distribution.
+
+c) data/canonicalize.py -- uniform arc-length label resampling. helix spacing CV
+   drops 0.21 -> 0.0096 and all four sources now agree.
+   TWO PROBLEMS FOUND AND FIXED DURING DEVELOPMENT:
+     - Linear resampling of a 15-20 vertex strip CUTS CORNERS, deforming the
+       contour by 2.09px mean / 5.31px p95 and shifting measurements 1.17mm on a
+       70mm ear -- comparable to the model's entire 2.48px normal error. Now
+       interpolates with PCHIP (monotone, no overshoot on the concha bowl),
+       giving 1.76px / 0.99mm. Much of the residual is a polyline-representation
+       artefact (two piecewise-linear approximations of one curve with vertices
+       in different places), not real distortion, so this is left for the
+       empirical comparison to settle rather than argued further.
+     - 4 real strips contain coincident vertices, making the arc-length
+       parameter non-monotonic; PCHIP rejects those outright. Duplicates are now
+       dropped before fitting.
+   CAVEAT: canonicalization changes what each INDEX means. Index-based
+   measurements must be re-derived; model/measure.py is index-free by design.
+
+d) Smoothing -- see previous entry.
+
+scripts/eval_contour.py: parameterisation-INVARIANT evaluation, required because
+NME cannot compare a canonical-label model against an original-label one (they
+predict different targets for the same index, so the canonical model would be
+penalised for being right). Scores symmetric Chamfer distance between contours,
+point-to-contour normal error, and contour-measurement error -- all index-free.
+
+Runs launched: v3_persp (heatmap + 35deg perspective) and v4_persp_canon
+(+ canonical labels). Whether canonicalization helps is an open empirical
+question; eval_contour.py will decide it. Suite now 153 tests.
+
+2026-09-29: v3/v4 results -- perspective aug WINS, canonicalization REJECTED
+
+Raw NME is NOT comparable across these runs (v4 predicts canonical targets), so
+everything below uses index-free metrics from scripts/eval_contour.py.
+
+FRONTAL test set (400 images):
+  run              arch      chamfer   normal   meas err
+  v2_fixed         gap        2.747p   3.004p     6.34%
+  v2_heatmap       heatmap    2.479p   2.704p     6.09%   <- best frontal
+  v3_persp         heatmap    2.541p   2.802p     6.26%
+  v4_persp_canon   heatmap    2.618p   2.796p     6.53%
+
+POSE ROBUSTNESS -- point-to-contour error vs simulated yaw (250 images):
+  yaw     v2_heatmap        v3_persp      v4_persp_canon
+   0°   2.793p   +0%     2.858p   +0%     2.908p   +0%
+  20°   3.239p  +16%     2.981p   +4%     2.959p   +2%
+  35°   3.850p  +38%     3.087p   +8%     3.008p   +3%
+  50°   4.760p  +70%     3.345p  +17%     3.426p  +18%
+
+CONCLUSIONS:
+
+1. PERSPECTIVE AUGMENTATION IS THE WIN for real captures. At 50deg yaw --
+   the range of the user's actual photos (43-53deg) -- it cuts error 30%
+   (4.760 -> 3.345 px). At 35deg, 20% (3.850 -> 3.087). The cost is 2% worse
+   frontal (2.793 -> 2.858). For a turned-head use case this trade is strongly
+   favourable; for a frontal-only use case it is not.
+   This also validates the diagnosis: pose OOD was a real cause, and closing it
+   in augmentation closed most of the gap.
+
+2. CANONICALIZATION IS REJECTED. v4 is worse than v3 on every frontal metric
+   (chamfer 2.618 vs 2.541, meas err 6.53% vs 6.26%) and a wash on pose (better
+   at 20-35deg, worse at 50deg). It does not pay for rewriting every label,
+   breaking index semantics, and the added preprocessing step.
+   The diagnosis that drove it was sound -- tangential error IS 72% of the total
+   and DOES track per-source spacing irregularity -- but the fix does not follow
+   from the diagnosis. Most likely the original vertex placements carry real
+   anatomical information that uniform spacing discards, so consistency is
+   bought at the price of anatomy. Keep data/canonicalize.py as a documented
+   negative result; do not use it.
+
+3. Tangential error remains the largest single error term and is still
+   unaddressed. Contour-based measurement (model/measure.py) sidesteps it for
+   the measurement use case, which is the practical answer. Fixing it at source
+   would need re-annotation to a single convention, not resampling.
+
+RECOMMENDED PRODUCTION STACK:
+  model        runs/checkpoints/v3_persp  (heatmap head + 35deg perspective aug)
+  measurement  model/measure.py           (index-free contour anthropometry)
+  smoothing    model/smoothing.py         (enabled by default in inference.py)
+  NOT used     data/canonicalize.py       (negative result, see above)
+
+OPEN: --perspective-deg 35 was a guess, never swept. Single training seed
+throughout. Web demo (docs/) not yet updated to v3 or to smoothing.
+
+2026-09-29: tangential error attempt #2 -- PRE-REGISTERED criteria
+
+Written BEFORE running anything, because down-weighting tangential error would
+mechanically improve any metric that contains it. Choosing the metric after
+seeing results would be self-serving.
+
+Hypothesis: tangential label spread is largely irreducible annotation noise
+(different conventions per source, no anchoring feature along a smooth contour).
+Wing loss currently penalises it as hard as normal error, so the model spends
+capacity fitting noise. Down-weighting the tangential residual component should
+improve SHAPE accuracy and stability, not just the number being optimised.
+
+PRIMARY metrics (index-free, decided now):
+  - contour measurement error (%)   <- the actual user-facing quantity
+  - symmetric Chamfer distance      <- shape agreement
+SECONDARY:
+  - point-to-contour (normal) error
+  - pose robustness at 35/50 deg yaw
+  - jitter (photometric + geometric)
+
+EXPECTED TO GET WORSE, and that is acceptable:
+  - raw NME against original labels. NME contains the tangential term we are
+    deliberately de-emphasising, so a rise there is the mechanism working, not a
+    regression. It is NOT evidence of success either -- it is uninformative.
+
+SUCCESS = measurement error AND Chamfer both improve vs v3_persp, with pose
+robustness not worse. Anything less and this is another negative result.
+
+FAILURE MODE TO WATCH: relaxing the tangential constraint lets predicted points
+bunch together along the contour, which would flatter Chamfer while destroying
+the point distribution. An anti-collapse term guards it, and a test asserts
+predicted segment lengths do not shrink.
+
+2026-09-29: tangential sweep + perspective sweep results
+
+TANGENTIAL SWEEP (all with perspective 35, so v3_persp is the tw=1.0 control).
+Judged against the criteria pre-registered before the runs.
+
+  run          tw    chamfer   normal   meas err   50deg contour   50deg meas
+  v3_persp    1.0     2.541p   2.802p     6.26%         3.371p        8.53%
+  v5_tang06   0.6     2.430p   2.660p     6.03%         3.329p        8.37%
+  v5_tang03   0.3     2.408p   2.581p     6.18%         3.203p        8.33%
+  v5_tang00   0.0     2.832p   2.768p    11.53%            --            --
+
+VERDICT: PASS at tw=0.3 and 0.6. Both improve Chamfer (-5.2% / -4.4%) AND
+measurement error (-1.3% / -3.7%) vs the same-perspective control, with pose
+robustness slightly better, which is exactly the pre-registered bar. A modest
+but real win, and the first thing to move tangential error at all.
+
+tw=0.0 FAILS badly: measurement error nearly doubles to 11.53%. The anti-collapse
+guard worked as designed (no bunching) but the failure came from the opposite
+direction -- predicted strips OVER-extend to 1.145x ground-truth length. Removing
+the tangential term entirely leaves the along-contour scale unconstrained in both
+directions; the guard only penalised shrinkage. Do not use tw=0.
+
+Raw NME behaved exactly as pre-registered: tw=0.0 gives test NME 0.0544 (terrible)
+while its normal component 0.0127 is the best of the sweep. NME is uninformative
+here, as stated in advance.
+
+PERSPECTIVE SWEEP -- point-to-contour error (px@192) by test yaw:
+
+  test yaw    aug0deg   aug20deg   aug35deg   aug50deg
+       0°      2.793p     2.937p     2.858p     2.770p
+      20°      3.239p     3.048p     2.981p     2.880p
+      35°      3.850p     3.281p     3.087p     2.913p
+      50°      4.760p     3.888p     3.345p     3.056p
+  degradation   +70%       +32%       +17%       +10%
+
+VERDICT: 50deg dominates at EVERY test yaw INCLUDING 0deg. More perspective
+augmentation is monotonically better and costs nothing frontally -- which
+contradicts the prediction that frontal metrics would favour lower values.
+The curve has not turned over, so 65 and 80 deg are now running to find where
+it does. 35deg (used for v3/v5) was an arbitrary guess and is NOT optimal.
+
+CONFOUND: the tangential sweep used perspective 35 while v6_persp50 used 50, so
+those two cannot be compared directly. Within matched perspective the tangential
+effect is real. v7_combined (perspective 50 + tangential 0.6) tests the
+combination, which is untested and expected to be best.
+
+Best single config so far: v6_persp50 -- meas err 5.93% frontal, 7.46% at 50deg
+yaw, vs v3_persp 6.26% / 8.53%.
+
+2026-09-29: FINAL sweep results -- perspective plateaus ~65deg, combination fails
+
+CONTOUR ERROR (px@192) / MEASUREMENT ERROR (%) by test yaw:
+
+  yaw     heatmap      persp35     persp50     persp65     persp80    combined
+   0°  2.809 6.20%  2.854 6.36%  2.816 6.11%  2.833 6.16%  2.867 6.23%  2.799 6.20%
+  35°  3.906 8.07%  3.087 6.88%  2.948 6.36%  2.909 6.24%  2.964 6.44%  2.956 6.51%
+  50°  4.909 11.6%  3.371 8.53%  3.054 7.46%  2.946 7.30%  2.962 7.41%  3.076 7.58%
+  65°  6.808 20.7%  4.485 15.8%  3.429 11.4%  2.759 9.17%  2.731 8.78%  3.306 11.8%
+
+  degradation 0->50deg:  +74.8%  +18.1%  +8.4%  +4.0%  +3.3%  +9.9%
+
+1. PERSPECTIVE PLATEAUS AROUND 65 DEG. 50->65 still helps (7.46 -> 7.30% at
+   50deg yaw, 11.4 -> 9.17% at 65deg); 65->80 does not (7.30 -> 7.41%) and costs
+   slightly more frontally. Optimum for the 43-53deg capture range is 65deg.
+   The earlier 35deg was a guess and was well short.
+
+2. THE COMBINATION FAILS TO COMPOUND. v7_combined (persp 50 + tangential 0.6) is
+   no better than persp50 alone anywhere: 6.20 vs 6.11% frontal, 7.58 vs 7.46% at
+   50deg, 11.76 vs 11.40% at 65deg. The tangential gain measured at perspective 35
+   (6.03 vs 6.26%) did NOT reproduce at perspective 50.
+   Most likely reading: strong perspective augmentation already supplies the
+   regularisation that tangential down-weighting was providing, so the two are
+   substitutes rather than complements. The differences are small enough
+   (~0.1-0.2pp, single seed) that "no benefit" is better supported than "worse".
+   CONFOUND: v7 selected on val_nme_normal and stopped at epoch 269; persp50
+   selected on val_nme and ran to ~378. Some of the gap may be selection/length,
+   not the loss.
+
+3. Tangential weighting therefore stands as a real but NON-ADDITIVE result: it
+   wins at matched perspective 35, and is redundant once perspective is tuned.
+   It is not in the recommended stack.
+
+FINAL RECOMMENDED STACK:
+  model        runs/checkpoints/v6_persp65   (heatmap head, 65deg perspective aug)
+  measurement  model/measure.py              (index-free contour anthropometry)
+  smoothing    model/smoothing.py            (on by default in inference.py)
+  NOT used     data/canonicalize.py          (negative result)
+  NOT used     --tangential-weight           (real at persp 35, redundant at 65)
+
+v6_persp65 vs the v1-equivalent baseline at the user's capture angles:
+  contour error at 50deg yaw : 4.909p -> 2.946p   (-40%)
+  measurement error at 50deg : 11.57% -> 7.30%    (-37%)
+  measurement error frontal  :  6.20% -> 6.16%    (flat)
+  plus 66-80% less frame-to-frame jitter from smoothing.
+
+OPEN: every config is a single seed; the persp50/65/80 differences at the user's
+angles are small enough to warrant seed replication before publishing. Web demo
+still runs v1 and has no smoothing.
+
+2026-09-29: web demo updated to v6_persp65 + smoothing
+
+docs/EarLandmarker_web.onnx re-exported from
+runs/checkpoints/v6_persp65/EarLandmarker_410_nme=0.0290.ckpt (1353 KB, was
+1262 KB). The export wrapper now emits TWO outputs -- landmarks (1,55,2) and
+per-point confidence (1,55) -- so the browser smoother can weight uncertain
+points. ONNX/PyTorch parity 1.1e-06 (landmarks) and 2.1e-07 (confidence).
+
+docs/smoothing.js: port of model/smoothing.py (OneEuroFilter, LandmarkSmoother,
+BoxSmoother, EarTracker). Wired into the pipeline the same way as Python --
+boxes smoothed BEFORE cropping, landmarks after in frame coords. On by default;
+disable with new EarLandmarkerPipeline({ smooth: false }).
+
+Verified in a real browser against a locally served copy:
+  - pipeline loads, ORT reports "Landmarker outputs: {0: landmarks, 1: confidence}"
+    so the two-output model is picked up
+  - full detect() produces 55 landmarks + 55 confidences, range 0.004-0.241
+  - all 9 smoothing checks mirroring the Python tests pass in-browser:
+    passthrough, convergence without drift, noise reduction (0.0104 -> 0.0026),
+    bounded lag on a ramp (0.0099), zero/negative dt safety, box shape
+    preservation, two-ear track separation, no swap on reordered detections,
+    and confidence weighting (confident point moves 0.183 vs uncertain 0.053)
+
+BUG FOUND DURING THE PORT: the scripted patch matched the same three-line
+pattern in both the constructor and dispose(), injecting tracker-construction
+code into dispose() where `options` is not in scope. It would have thrown at
+runtime on every dispose. Caught by grepping for duplicate insertions rather
+than trusting the patch.
+
+NOTE: runs/test_output.jpg is v1's annotated output, not a photo, so BlazeEar
+detects nothing in it at the default 0.70 threshold. It is not a usable
+end-to-end test fixture. The repo has no clean photo-with-a-head fixture; adding
+one would make the web path testable end to end.
+
+Still v1-era in docs/: index.html copy still describes the old model/metrics.
+
+2026-09-29: demo bug #1 -- duplicate detections on one ear
+
+Symptom: live webcam drew TWO boxes on a single ear (72.1% and 91.6%), and
+therefore two landmark sets on top of each other, which reads as "the landmarks
+collapsed into a blob".
+
+Isolated the landmarker first, to avoid blaming the wrong stage: fed a known ear
+crop straight to the ONNX model in-browser, bypassing the detector. Output spread
+0.812 x 0.794 against ground truth 0.768 x 0.770, full range 0.095-0.907, healthy
+confidence 0.137-0.520. The model, the export and the JS preprocessing are all
+correct, so the fault is upstream in detection/cropping.
+
+Two wrong guesses before the real cause, both checked and discarded:
+  - "JS NMS is missing the confidence sort that Python has" -- it is not, the JS
+    sorts on line 11 of the candidate block.
+  - estimated the screenshot box geometry and computed IoU 0.466, which the old
+    threshold would already have suppressed. Estimating pixel coordinates off a
+    screenshot is not evidence; it disagreed with the observed behaviour, which
+    means the real boxes are more extreme than the estimate.
+
+ROOT CAUSE: plain IoU cannot suppress a nested duplicate. A small box inside a
+larger one scores IoU = areaSmall/areaLarge, which drops below any sane threshold
+once the larger box is ~3x the smaller. Both survive, both get landmarks drawn.
+
+FIX: suppress on EITHER IoU > 0.3 OR intersection-over-minimum > 0.6, in both
+docs/earlandmarker_inference.js and inference.py (they had the same weakness).
+IoMin catches containment and stays ~0 for two genuinely different ears, which
+are far apart in frame.
+
+Verified in-browser on four synthetic cases: nested (IoU 0.225 / IoMin 1.00)
+collapses, near-duplicate collapses, two separate ears BOTH survive, and the
+highest-confidence box is the one kept. tests/test_nms.py adds 7 Python tests
+including one asserting the pair survives with io_min disabled, so the new term
+is provably load-bearing.
+
+Also: landmarks now draw as small unfilled rings (radius 1.8, 1px stroke) instead
+of filled radius-3 discs. At 55 points on a small ear the filled discs merged
+into a solid blob and hid where each landmark actually sat -- which is part of
+why the duplicate-detection bug looked like a landmark failure.
+
+INTRODUCED AND FIXED IN THE SAME SESSION: the Python edit referenced
+NMS_IOMIN_THRESH before defining it. py_compile passes (syntax only) but the
+default argument is evaluated at def time, so `import inference` raised
+NameError. Caught by actually importing the module rather than trusting compile.
+
+STILL OPEN: the exact geometry of the real duplicate pair is unconfirmed -- the
+debug logging (new `debug: true` option) prints IoU/IoMin for any surviving pair,
+so the next webcam run will confirm whether IoMin is what suppresses it.
+
+fixtures/ added (gitignored) for real photos with a head in frame. The repo had
+no such fixture, which is why this was only caught by eye.
+
+2026-09-29: pipeline tested on four real capture frames (fixtures/)
+
+RESULT: the duplicate detection did NOT reproduce. At the default 0.70 threshold
+all four frames give exactly ONE detection (conf 0.88-0.95), and old NMS
+(io_min disabled) and new NMS agree. Also unchanged when the frames are upscaled
+1.8x and 2.4x toward native webcam resolution, and stable across 10 smoothed
+frames (landmark spread fixed at 63x93 px).
+
+So the IoMin fix is unit-tested and correct in principle but is NOT yet shown to
+fix the observed bug -- the real duplicate is intermittent and pose-specific, and
+none of these four frames contains it. The `debug: true` option now logs IoU and
+IoMin for any surviving pair, so the next occurrence will identify which term
+suppresses it. Do not claim the duplicate is fixed until that is seen.
+
+Lowering the threshold to 0.30 produces a flood of spurious boxes (38/15/6/11)
+scattered around the frame with IoU 0.00 against the ear box -- false positives
+on hair and background, NOT nested duplicates. IoMin removes some (38->31 etc.)
+but that is incidental.
+
+SEPARATE FINDING -- ROI_EXPAND 1.3 IS TOO TIGHT:
+Measured how much of the crop the predicted landmarks occupy, against the
+training distribution (ear fills 0.777 of frame, p95 0.879, over 5,870 samples):
+
+  ROI_EXPAND   s1    s2    s3    s4    mean
+        1.3   0.95  0.94  0.86  0.79   0.886   <- current, above the p95 of training
+        1.7   0.89  0.80  0.71  0.59   0.750   <- closest to training
+        2.1   0.72  0.65  0.57  0.49   0.608
+
+At 1.3 the ear fills 0.886 of the crop, tighter than 95% of the training data,
+and two frames sit at 0.94-0.95 i.e. saturating the crop. Landmark height also
+grows with expansion on s1/s2 (83->102, 92->103 px), consistent with the ear
+being clipped at 1.3. s2 was additionally crop-clipped at the image edge at 1.3
+and 1.7.
+
+CAVEAT: occupancy is computed from PREDICTED landmarks, which is partly circular
+-- the model tends to spread over its crop. The variation (0.95 down to 0.49) is
+too large for that to be the whole story, but this needs validating against
+ground truth before ROI_EXPAND is changed. It is a hypothesis, not a result.
+
+NOT changed yet: ROI_EXPAND stays 1.3 in both pipelines pending that validation.
+
+2026-09-29: duplicate detection ROOT CAUSE CONFIRMED from live logging
+
+The `debug: true` logging captured 104 surviving duplicate pairs from a real
+webcam run. Measured:
+    IoU   min 0.188  median 0.289  max 0.300
+    IoMin min 0.388  median 0.483  max 0.585
+
+The pairs sit JUST UNDER BOTH thresholds: IoU never exceeds 0.300 (the
+threshold) and IoMin never reaches 0.60. So the first version of this fix caught
+0 of 104 -- correct mechanism, wrong calibration. Only real data exposed that;
+the synthetic cases I validated against were far more extreme than reality.
+
+Threshold sweep against the real pairs:
+    IoMin > 0.60 : 0/104
+    IoMin > 0.50 : 36/104
+    IoMin > 0.45 : 88/104
+    IoMin > 0.40 : 101/104
+    IoMin > 0.35 : 104/104   <- chosen
+
+0.35 catches all 104 with margin below the observed minimum of 0.388, while two
+genuinely different ears measure IoMin ~0.00 (they are a head-width apart), so
+the two cases remain cleanly separable. Applied to both docs/ and inference.py.
+
+tests/test_nms.py now carries 9 of the real logged pairs as regression fixtures,
+plus a test asserting IoU alone catches at most 1 of them -- so if anyone raises
+the IoMin threshold back up, the suite fails with the real geometry. Note the
+logged boxes are integer-rounded, so recomputed IoU lands slightly off the logged
+value (one pair computes 0.304 vs a logged 0.299); the tests assert about the
+bulk rather than every pair. Suite now 181 tests.
+
+ROI_EXPAND VALIDATION -- INCONCLUSIVE, NOT CHANGED
+
+Two attempts on the held-out test set:
+
+1. First sweep was CONFOUNDED. Only images with spare margin can be cropped wide
+   without padding, and those are overwhelmingly the synthetic audioear2d set
+   (ears fill 0.657 of frame) while collectionB (0.853) only appears at tight
+   framings. So "wider is better" was measuring an easier subset, not a real
+   effect: f=0.62 had n=36 all-audioear2d at error 1.48, f=0.94 had n=347 incl.
+   collectionB at 3.17.
+
+2. Paired re-run (only samples supporting EVERY framing) is unconfounded but
+   collapses to 63/861 images, ALL audioear2d. On that set contour error rises
+   monotonically with tighter framing (1.52 at f=0.62 to 2.35 at f=0.94) and the
+   ordering is IDENTICAL at yaw 0/25/45 -- so pose does not shift the optimum.
+   But audioear2d was TRAINED at 0.657 occupancy, so its optimum sitting at the
+   low end may simply be "test at the framing this source was trained at".
+
+The test set is built from pre-cropped ear images, so it structurally cannot
+evaluate wide framings for the tight sources. This question cannot be settled
+with the data we have.
+
+Independent check on the four REAL capture frames (no ground truth needed):
+prediction spread under detector-box jitter, lower = more stable.
+    expand  occupancy   s1     s2     s3     s4    mean
+      1.3     0.883   0.544  0.699  0.356  0.496  0.524
+      1.5     0.826   0.457  0.426  0.367  0.414  0.416
+      1.7     0.754   0.465  0.364  0.325  0.484  0.409
+      1.9     0.675   0.398  0.384  0.340  0.585  0.427
+      2.1     0.609   0.369  0.390  0.364  0.724  0.462
+Stability is best around 1.5-1.7 and worst at the current 1.3, with a shallow
+optimum -- but 1.9/2.1 get worse on s4 while still improving on s1, i.e. the
+per-image optima disagree. n=4, one subject, one distance.
+
+VERDICT: suggestive but not established. ROI_EXPAND stays 1.3. To settle it
+properly we need real full-frame photos WITH ground-truth landmarks across
+subjects and distances -- which is a small annotation task, not a tuning run.
+
+2026-09-29: ROI_EXPAND SETTLED -- 1.3 is correct, the 1.7 hypothesis was WRONG
+
+Found the real data already on disk. BlazeEar/data/yolo11_ears holds 7,157
+full-scene images with ground-truth ear boxes ("Ear Detection from Full Face
+image", Open Images derived) plus ~4,300 more across five other bundled ear
+datasets, 22 image/label directories in total. Real scenes: varied pose,
+distance, lighting, multiple people, ear boxes spanning 2.4%-33% of image width.
+
+This made the internet download unnecessary and it has been deleted. That attempt
+returned 14 detections from 56 images of which only four were usable modern ears;
+the rest were marble Roman busts and false positives on painted faces.
+scripts/build_face_testset.py is kept but marked superseded.
+
+THE MEASUREMENT (scripts/build_local_testset.py, 800 images, 380 matched ears):
+
+  true-ear-extent / detector-box-extent
+      mean 0.999   median 0.982   p25 0.827   p75 1.155
+
+The detector box tracks the true ear extent almost exactly (ratio ~1.0). The
+implied expansion to land the ear at the landmarker's training occupancy of
+0.777 is therefore
+
+      ROI_EXPAND = 0.982 / 0.777 = 1.26   (median)
+                 = 0.999 / 0.777 = 1.29   (mean)
+
+The current 1.30 puts the ear at 0.756 of the crop, against a training value of
+0.777. IT IS ALREADY RIGHT, to within a couple of percent.
+
+MY 1.7 HYPOTHESIS WAS AN ARTIFACT, exactly as suspected when it was challenged.
+It rested on occupancy 0.886 measured on four frames of one subject, from
+PREDICTED landmarks -- circular, tiny sample, one framing. Against ground truth
+over 380 matched ears from hundreds of subjects the ratio is 0.98, not the ~1.15
+that a 1.7 expansion would require. The jitter-stability curve that also favoured
+1.5-1.7 was measuring something real (prediction variance) but that is not the
+same as being correctly framed, and it should not have been treated as
+corroboration. ROI_EXPAND stays 1.30 and this line of investigation is closed.
+
+TWO OTHER FINDINGS FROM THE SAME RUN:
+
+1. DETECTOR RECALL IS 47.5% of annotated ears (380/800 at IoU>=0.3). Half the
+   annotated ears are missed. Confidence on what it does find is healthy
+   (mean 0.848, p5 0.714). This is a much larger lever on end-to-end quality
+   than anything tuned in the landmarker so far, and it is a BlazeEar issue,
+   not an EarLandmarker one. Caveat: this dataset is hard (tiny, occluded and
+   rear-view ears) so 47.5% is a floor, not a verdict.
+
+2. DUPLICATE RATE IS 1.5% (12 of 800 GT ears had >1 overlapping detection),
+   which matches the intermittent behaviour seen live -- rare per frame, but at
+   30fps it shows up constantly. Consistent with the IoMin fix being worth
+   having while being hard to reproduce on stills.
+
+CAVEAT on this dataset: annotations are incomplete -- in multi-person scenes only
+some ears are boxed. So an unmatched detection is not necessarily a false
+positive, and no false-positive rate is reported.
+
+2026-09-29: seed replication -- persp50 and persp65 are NOT separable
+
+Held-out test NME, three seeds each:
+
+  config     seed42    seed1     seed2      mean       std
+  persp50   0.02900   0.02896   0.02939   0.02912   0.00024
+  persp65   0.02923   0.02948   0.02886   0.02919   0.00031
+
+  difference between configs : 0.00007
+  pooled within-config std   : 0.00028   -> 0.26 sigma
+  seed spread within a config: 0.00062   -> 9x the between-config difference
+
+The two are equivalent on frontal test NME. The earlier single-seed pose-robustness
+advantage for persp65 (7.30% vs 7.46% at 50deg yaw) is NOT contradicted, since
+frontal test cannot see it, but it is also not confirmed -- it was one seed and
+the gap was 2% relative.
+
+WHAT THIS IMPLIES FOR EARLIER SINGLE-SEED CONCLUSIONS. Measured seed noise on
+test NME is 0.00028, about 1% relative. Sorting past results by that yardstick:
+
+  SAFE (effect >> noise):
+    - perspective augmentation at pose: 4.760 -> 3.056 px at 50deg yaw (-36%)
+    - heatmap head vs GAP head: -4.0% test NME, plus better in all four regions
+    - smoothing: jitter -66 to -80%
+    - the rotation-label bug: 12.5px mean label corruption, measured directly
+
+  SUSPECT (effect comparable to noise, single seed):
+    - persp50 vs persp65 anywhere: now shown not separable frontally
+    - tangential weighting: chamfer -4.4%/-5.2% is probably real, but the
+      measurement-error gain of -1.3% (tw=0.3) is about one sigma and should not
+      be relied on. It passed its pre-registered criteria on ONE seed; that bar
+      was set before seed noise had been measured.
+    - v7_combined being "no better" than persp50: differences were 0.1-0.2pp,
+      i.e. inside noise, so "no benefit" remains the right reading but "worse"
+      was never supportable.
+
+Practical upshot: persp65 stays the recommended model on the pose-robustness
+argument, but the choice between 50 and 65 does not matter much, and any future
+claim of a sub-2% improvement needs 3 seeds before it is stated.
+
+2026-09-29: synthetic source ingested as an OPTIONAL, REVERSIBLE training input
+
+sythc_data-002.zip contains sythetic_anno.npz with 10,002 samples x 55 landmarks.
+kp_3d[:, :, :2] are direct 2D coordinates in the 480x480 renders; verified by
+overlay against render.png and render_background.jpg, and 100% of all 550,110
+keypoints fall inside frame. Mesh topology is shared across every sample (2,800
+verts / 5,518 faces / identical connectivity hash), so vertex k -- and therefore
+landmark k -- is the same anatomical point in every sample.
+
+CORRECTION to an earlier claim: the synthetic labels are NOT more uniformly
+spaced than the human ones. Measured spacing CV is 0.294/0.307/0.243/0.236
+(helix/antihelix/concha/tragus) against 0.25-0.30 for the human sources. What
+they do have is exact CORRESPONDENCE -- no cross-dataset disagreement about what
+point 7 means. That distinction also explains why canonicalization failed:
+uniform spacing was the wrong target, consistent anatomy is the right one.
+
+INGESTION (scripts/ingest_synthetic.py) -- 9,356 of 10,002 kept, 646 skipped as
+uncroppable (ear too near the render edge). Uses render_background.jpg, the
+composite on hair/head, not the isolated render. Each render is cropped so the
+ear fills 0.777 of the frame, matching the real training distribution exactly
+(achieved mean 0.777, p5 0.776, p95 0.778); without this the synthetic ears
+would sit at 0.637 and shift the framing the model learns.
+
+REVERSION DESIGN, since synthetic data regressing things is a real risk:
+  - everything lives in data/synthetic/, its own images + manifest + landmarks
+  - data/preprocessed and the real train/val/test splits are NEVER touched
+  - training ignores it unless --synthetic-ratio > 0 (default 0.0)
+  - synthetic NEVER enters val or test, so the held-out numbers stay purely real
+    and any regression is immediately visible on the same metrics as before
+  - to revert: omit the flag, or delete data/synthetic/. That is all.
+
+BALANCE: --synthetic-ratio 1.0 subsamples synthetic to match the real count
+exactly (4,142 + 4,142 = 8,284, 50% synthetic). Left unbalanced it would have
+been 9,356 vs 4,142 = 69% synthetic, and audioear2d makes the real side already
+34% synthetic, so the mix would have been dominated by rendered data.
+
+DOMAIN GAP IS VISIBLE. The crops are clearly CGI -- uniformly smooth shading,
+one base mesh, and some composites have hard edges against their background.
+This is the reason for the balance and the real-only evaluation, not an
+afterthought.
+
+EXPERIMENT RUNNING: 3 seeds (42/1/2) of heatmap + perspective 65 +
+--synthetic-ratio 1.0, against the existing 3-seed control at the same config
+(test NME 0.02919 +/- 0.00031). Three seeds because measured seed noise is
+0.00028 and a single run could not distinguish a real effect from noise.

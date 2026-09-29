@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -21,16 +22,18 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from model.ear_landmarker import EarLandmarker
+from model.ear_landmarker import EarLandmarker, EarLandmarkerHeatmap
+from model.smoothing import EarTracker
 
 # BlazeEar lives in a sibling directory
-BLAZEEAR_DIR = Path("C:/Users/shame/OneDrive/Desktop/ear_stuff/BlazeEar")
-PROJECT = Path("C:/Users/shame/OneDrive/Desktop/ear_stuff/Ear Landmarker")
+BLAZEEAR_DIR = Path(os.environ.get("BLAZEEAR_DIR", Path(__file__).resolve().parents[1] / "BlazeEar"))
+PROJECT = Path(__file__).resolve().parent
 
 LANDMARKER_INPUT_SIZE = 192
 DETECTOR_INPUT_SIZE = 128
 ROI_EXPAND = 1.3  # expand detected bbox by 30% for context
 NMS_IOU_THRESH = 0.3  # suppress duplicate detections on same ear
+NMS_IOMIN_THRESH = 0.35  # also suppress when overlap covers this much of the SMALLER box
 
 
 # ---------------------------------------------------------------------------
@@ -64,10 +67,23 @@ class EarDetector:
 
         Returns:
             (N, 5) array of [ymin, xmin, ymax, xmax, confidence] in pixel coords.
+
+        BlazeEar.process() actually returns (N, 17): box in columns 0-3, six
+        BlazeFace-style keypoints in 4-15, and confidence in the LAST column.
+        Reading column 4 as the confidence -- as this file used to -- picks up a
+        keypoint x-coordinate instead, which is in the hundreds of pixels rather
+        than [0, 1]. That made NMS sort by a keypoint and report nonsense scores.
+        Normalise here so the rest of the pipeline sees the documented shape.
         """
         detections = self.model.process(frame_rgb)
         if isinstance(detections, torch.Tensor):
             detections = detections.cpu().numpy()
+        detections = np.asarray(detections, dtype=np.float64)
+        if detections.size == 0:
+            return np.zeros((0, 5))
+        detections = np.atleast_2d(detections)
+        if detections.shape[1] > 5:
+            detections = np.column_stack([detections[:, :4], detections[:, -1]])
         return detections
 
 
@@ -80,9 +96,18 @@ class LandmarkPredictor:
 
     def __init__(self, weights_path: str | Path, device: str = "cpu") -> None:
         self.device = torch.device(device)
-        self.model = EarLandmarker(num_landmarks=55)
 
         ckpt = torch.load(str(weights_path), map_location="cpu", weights_only=True)
+        # Architecture comes from the checkpoint's saved hyperparameters, so a
+        # heatmap-head checkpoint loads without passing a matching flag.
+        hparams = ckpt.get("hyper_parameters", {}) or {}
+        if hparams.get("arch", "gap") == "heatmap":
+            self.model = EarLandmarkerHeatmap(
+                num_landmarks=55, tau=hparams.get("tau", 1.0),
+            )
+        else:
+            self.model = EarLandmarker(num_landmarks=55)
+
         state = ckpt.get("state_dict", ckpt)
         # Strip "model." prefix from Lightning checkpoint keys
         state = {k.removeprefix("model."): v for k, v in state.items()
@@ -91,14 +116,17 @@ class LandmarkPredictor:
         self.model.to(self.device).eval()
 
     @torch.no_grad()
-    def predict(self, crop_rgb: np.ndarray) -> np.ndarray:
+    def predict(self, crop_rgb: np.ndarray, with_confidence: bool = False):
         """Predict 55 landmarks on a cropped ear image.
 
         Args:
             crop_rgb: (H, W, 3) uint8 RGB ear crop.
+            with_confidence: Also return per-point confidence. Only the heatmap
+                architecture can produce it; the GAP head returns None.
 
         Returns:
-            (55, 2) float32 landmarks in pixel coords of the crop.
+            (55, 2) float32 landmarks in pixel coords of the crop, or a
+            (landmarks, confidence) tuple when `with_confidence` is set.
         """
         h, w = crop_rgb.shape[:2]
         tensor = torch.from_numpy(crop_rgb).float().permute(2, 0, 1) / 255.0
@@ -107,11 +135,17 @@ class LandmarkPredictor:
         tensor = (tensor - 0.5) / 0.5  # normalize to [-1, 1]
         tensor = tensor.to(self.device)
 
-        out = self.model(tensor)  # (1, 110)
+        conf = None
+        if with_confidence and hasattr(self.model, "predict_with_confidence"):
+            out, c = self.model.predict_with_confidence(tensor)
+            conf = c.cpu().numpy().reshape(-1)
+        else:
+            out = self.model(tensor)  # (1, 110)
+
         lm = out.cpu().numpy().reshape(55, 2)
         lm[:, 0] *= w
         lm[:, 1] *= h
-        return lm
+        return (lm, conf) if with_confidence else lm
 
 
 # ---------------------------------------------------------------------------
@@ -127,14 +161,29 @@ class EarLandmarkerPipeline:
         landmarker_weights: str | Path,
         device: str = "auto",
         detector_confidence: float | None = None,
+        smooth: bool = True,
+        smoothing_kwargs: dict | None = None,
     ) -> None:
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.detector = EarDetector(detector_weights, device, detector_confidence)
         self.landmarker = LandmarkPredictor(landmarker_weights, device)
+        # Defaults tuned on scripts/eval_smoothing.py: these cut jitter ~66-80%
+        # while also REDUCING error against a perfect-detector reference, in both
+        # the static and realistic-motion scenarios.
+        self.tracker = EarTracker(**(smoothing_kwargs or {
+            "landmark_kwargs": {"min_cutoff": 3.0, "beta": 0.4, "conf_strength": 0.5},
+            "box_kwargs": {"min_cutoff": 3.0, "beta": 0.4,
+                           "size_min_cutoff": 1.5, "size_beta": 0.2},
+        })) if smooth else None
 
-    def __call__(self, frame_rgb: np.ndarray) -> List[dict]:
+    def __call__(self, frame_rgb: np.ndarray, timestamp: float | None = None) -> List[dict]:
         """Run full pipeline on an RGB frame.
+
+        Args:
+            frame_rgb: (H, W, 3) uint8 RGB frame.
+            timestamp: Monotonic time in seconds. Required for smoothing; when
+                the tracker is enabled and this is None, wall-clock is used.
 
         Returns:
             List of dicts, each with:
@@ -148,9 +197,22 @@ class EarLandmarkerPipeline:
         # Suppress duplicate boxes (secondary NMS on denormalized detections)
         detections = self._nms(detections)
 
+        # Smooth the detector boxes before cropping. The jitter benchmark showed
+        # box wobble is ~90% of frame-to-frame jitter, so this is where the win
+        # is -- a steady crop means the landmarker sees a consistent input.
+        track_ids: List[int] = []
+        if self.tracker is not None:
+            t = time.perf_counter() if timestamp is None else timestamp
+            boxes = [np.asarray(d[:4], dtype=np.float64) for d in detections]
+            track_ids = self.tracker.assign(boxes)
+            detections = [
+                np.concatenate([self.tracker.smooth_box(tid, b, t), d[4:]])
+                for tid, b, d in zip(track_ids, boxes, detections)
+            ]
+
         results = []
-        for det in detections:
-            ymin, xmin, ymax, xmax, conf = det[:5]
+        for k, det in enumerate(detections):
+            ymin, xmin, ymax, xmax, conf = det[:5]  # normalised in EarDetector.detect
 
             # Expand bbox for context
             bw, bh = xmax - xmin, ymax - ymin
@@ -165,12 +227,20 @@ class EarLandmarkerPipeline:
                 continue
 
             crop = frame_rgb[y1:y2, x1:x2]
-            lm_crop = self.landmarker.predict(crop)
+            lm_crop, point_conf = self.landmarker.predict(crop, with_confidence=True)
 
             # Map landmarks back to full frame coords
             lm_frame = lm_crop.copy()
             lm_frame[:, 0] += x1
             lm_frame[:, 1] += y1
+
+            # Smooth in frame coords, so the filter sees real motion rather than
+            # motion induced by the crop moving underneath it.
+            if self.tracker is not None:
+                t = time.perf_counter() if timestamp is None else timestamp
+                lm_frame = self.tracker.smooth_landmarks(
+                    track_ids[k], lm_frame, t, point_conf,
+                )
 
             results.append({
                 "bbox": np.array([ymin, xmin, ymax, xmax]),
@@ -181,8 +251,13 @@ class EarLandmarkerPipeline:
         return results
 
     @staticmethod
-    def _nms(detections: np.ndarray, iou_thresh: float = NMS_IOU_THRESH) -> np.ndarray:
-        """Standard greedy NMS to remove duplicate detections on the same ear."""
+    def _nms(detections: np.ndarray, iou_thresh: float = NMS_IOU_THRESH,
+             io_min_thresh: float = NMS_IOMIN_THRESH) -> np.ndarray:
+        """Greedy NMS removing duplicate detections on the same ear.
+
+        Suppresses on EITHER IoU or intersection-over-minimum; see the comment
+        at the io_min computation for why IoU alone is not enough.
+        """
         if len(detections) <= 1:
             return detections
 
@@ -212,7 +287,17 @@ class EarLandmarkerPipeline:
             union = areas[i] + areas[rest] - inter
             iou = inter / np.maximum(union, 1e-6)
 
-            order = rest[iou <= iou_thresh]
+            # Plain IoU misses the duplicates this detector actually produces on
+            # a single ear: a small box inside a larger one scores
+            # IoU = areaSmall/areaLarge, which drops below any sane threshold
+            # once the larger box is ~3x the smaller, so both survive and two
+            # landmark sets get drawn on one ear. Intersection-over-minimum
+            # catches containment, and stays ~0 for two genuinely different
+            # ears, which are far apart in frame.
+            min_area = np.minimum(areas[i], areas[rest])
+            io_min = inter / np.maximum(min_area, 1e-6)
+
+            order = rest[(iou <= iou_thresh) & (io_min <= io_min_thresh)]
 
         return detections[keep]
 

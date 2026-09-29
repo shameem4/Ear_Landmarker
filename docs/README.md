@@ -34,9 +34,14 @@ The demo loads two ONNX models:
 | Model | Input | Output | Purpose |
 |-------|-------|--------|---------|
 | `BlazeEar_web.onnx` | (1, 3, 128, 128) | boxes (896, 4) + scores (896,) | Ear detection |
-| `EarLandmarker_web.onnx` | (1, 3, 192, 192) | landmarks (1, 55, 2) | Landmark regression |
+| `EarLandmarker_web.onnx` | (1, 3, 192, 192) | landmarks (1, 55, 2) + confidence (1, 55) | Landmark prediction |
 
-Pipeline: BlazeEar detection -> NMS -> ROI crop (1.3x expand) -> EarLandmarker -> 55 landmarks mapped to frame coordinates.
+Pipeline: BlazeEar detection -> NMS -> box smoothing -> ROI crop (1.3x expand) -> EarLandmarker -> 55 landmarks mapped to frame coordinates -> landmark smoothing.
+
+The landmarker exports two outputs. `landmarks` are normalised [0,1] crop
+coordinates; `confidence` is a per-landmark score derived from the heatmap's
+spatial spread, used to weight temporal smoothing so uncertain points are
+smoothed harder. Opset 14.
 
 ## Usage in Your Project
 
@@ -49,6 +54,8 @@ import { EarLandmarkerPipeline } from './earlandmarker_inference.js';
 const pipeline = new EarLandmarkerPipeline({
     confidenceThreshold: 0.70,
     iouThreshold: 0.3,
+    ioMinThreshold: 0.35,   // catches nested duplicate boxes
+    smooth: true,           // temporal smoothing; set false for stills
 });
 
 await pipeline.load('BlazeEar_web.onnx', 'EarLandmarker_web.onnx');
@@ -77,15 +84,26 @@ const pipeline = new EarLandmarkerPipeline(options);
 **Options:**
 - `confidenceThreshold` (default: 0.70) - Minimum detection confidence
 - `iouThreshold` (default: 0.3) - NMS IoU threshold
+- `ioMinThreshold` (default: 0.35) - NMS intersection-over-minimum threshold.
+  Suppresses a box nested inside another on the same ear, which plain IoU misses:
+  a small box inside a 3x larger one scores IoU below any sane threshold. 0.35 is
+  calibrated against 104 duplicate pairs logged from real webcam runs.
+- `smooth` (default: true) - One Euro temporal smoothing of boxes and landmarks.
+  Set `false` for single images; call `reset()` when switching sources.
+- `smoothing` (default: {}) - Overrides passed to the underlying filters
+  (see `smoothing.js`)
+- `debug` (default: false) - Log suppressed duplicate pairs to the console
 
 **Methods:**
 - `load(detectorPath, landmarkerPath)` - Load both ONNX models
 - `detect(source)` - Run full pipeline on image/video/canvas
+- `reset()` - Clear smoothing/tracking state, e.g. webcam -> image
 - `drawResults(ctx, results, options)` - Draw boxes and landmarks on canvas
 
 **Draw options:**
 - `lineWidth` (default: 2) - Bbox line width
-- `pointRadius` (default: 3) - Landmark dot radius
+- `pointRadius` (default: 1.8) - Landmark ring radius
+- `pointLineWidth` (default: 1) - Landmark ring stroke width
 - `showBbox` (default: true) - Draw bounding boxes
 - `showConfidence` (default: true) - Show confidence labels
 - `fontSize` (default: 14) - Label font size
@@ -105,3 +123,6 @@ const pipeline = new EarLandmarkerPipeline(options);
 python export_onnx.py
 python export_onnx.py --checkpoint path/to/model.ckpt
 ```
+
+The shipped model is `v6_persp65` (test NME 0.0293). See [../RESULTS.md](../RESULTS.md)
+for why that checkpoint rather than the nominally better one.

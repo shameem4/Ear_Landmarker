@@ -9,8 +9,16 @@ import pytorch_lightning as pl
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-from model.ear_landmarker import EarLandmarker
-from model.losses import WingLoss
+from model.ear_landmarker import EarLandmarker, EarLandmarkerHeatmap
+from model.losses import WingLoss, TangentialWeightedWingLoss, _contour_frames
+
+# (name, start_idx, end_idx) -- linestrip groups, end exclusive
+LANDMARK_REGIONS = [
+    ("helix", 0, 20),
+    ("antihelix", 20, 35),
+    ("concha", 35, 50),
+    ("tragus", 50, 55),
+]
 
 
 class EarLandmarkerModule(pl.LightningModule):
@@ -24,6 +32,9 @@ class EarLandmarkerModule(pl.LightningModule):
         wing_w: Wing loss width parameter.
         wing_epsilon: Wing loss curvature parameter.
         blazeear_ckpt: Optional path to BlazeEar checkpoint for backbone init.
+        arch: "gap" for the v1 GAP+FC coordinate head, "heatmap" for the
+            soft-argmax head over 24x24 heatmaps.
+        tau: Soft-argmax softmax temperature (arch="heatmap" only).
     """
 
     def __init__(
@@ -35,12 +46,30 @@ class EarLandmarkerModule(pl.LightningModule):
         wing_w: float = 0.04,
         wing_epsilon: float = 0.01,
         blazeear_ckpt: Optional[str] = None,
+        arch: str = "gap",
+        tau: float = 1.0,
+        tangential_weight: float = 1.0,
+        spacing_weight: float = 0.0,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
 
-        self.model = EarLandmarker(num_landmarks=num_landmarks)
-        self.criterion = WingLoss(w=wing_w, epsilon=wing_epsilon)
+        if arch == "gap":
+            self.model = EarLandmarker(num_landmarks=num_landmarks)
+        elif arch == "heatmap":
+            self.model = EarLandmarkerHeatmap(num_landmarks=num_landmarks, tau=tau)
+        else:
+            raise ValueError(f"unknown arch {arch!r}, expected 'gap' or 'heatmap'")
+        # tangential_weight < 1 discounts residual along the GT contour, where most
+        # of the label noise lives. 1.0 reproduces plain isotropic Wing loss.
+        if tangential_weight >= 1.0 and spacing_weight <= 0.0:
+            self.criterion = WingLoss(w=wing_w, epsilon=wing_epsilon)
+        else:
+            self.criterion = TangentialWeightedWingLoss(
+                w=wing_w, epsilon=wing_epsilon,
+                tangential_weight=tangential_weight,
+                spacing_weight=spacing_weight,
+            )
 
         if blazeear_ckpt:
             n = self.model.load_blazeear_backbone(blazeear_ckpt)
@@ -52,18 +81,38 @@ class EarLandmarkerModule(pl.LightningModule):
     def _shared_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         images = batch["image"]
         targets = batch["landmarks"]
+        visible = batch.get("visible")
         preds = self.model(images)
 
-        loss = self.criterion(preds, targets)
+        loss = self.criterion(preds, targets, visible)
 
-        # Per-point NME (Normalized Mean Error) as fraction of [0,1] range
+        # Per-point NME (Normalized Mean Error) as fraction of [0,1] range.
+        # Averaged over visible points only, so it matches what was supervised.
         with torch.no_grad():
             preds_2d = preds.view(-1, self.hparams.num_landmarks, 2)
             targets_2d = targets.view(-1, self.hparams.num_landmarks, 2)
             per_point_err = torch.norm(preds_2d - targets_2d, dim=-1)  # (B, 55)
-            nme = per_point_err.mean()
+            if visible is None:
+                nme = per_point_err.mean()
+            else:
+                nme = (per_point_err * visible).sum() / visible.sum().clamp_min(1.0)
 
-        return {"loss": loss, "nme": nme}
+            # Split NME along/off the GT contour. 72% of squared error is
+            # tangential and largely annotation noise, so nme_normal is the
+            # cleaner signal for model selection; plain nme rewards fitting noise.
+            tan, nrm = _contour_frames(targets_2d)
+            resid = preds_2d - targets_2d
+            d_tan = (resid * tan).sum(-1).abs()
+            d_nrm = (resid * nrm).sum(-1).abs()
+            if visible is None:
+                nme_n, nme_t = d_nrm.mean(), d_tan.mean()
+            else:
+                den = visible.sum().clamp_min(1.0)
+                nme_n = (d_nrm * visible).sum() / den
+                nme_t = (d_tan * visible).sum() / den
+
+        return {"loss": loss, "nme": nme, "nme_normal": nme_n,
+                "nme_tangential": nme_t, "per_point_err": per_point_err}
 
     def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         result = self._shared_step(batch)
@@ -75,6 +124,30 @@ class EarLandmarkerModule(pl.LightningModule):
         result = self._shared_step(batch)
         self.log("val/loss", result["loss"], prog_bar=True, sync_dist=True)
         self.log("val/nme", result["nme"], prog_bar=True, sync_dist=True)
+        # Slash-free alias: ModelCheckpoint interpolates the monitored metric into
+        # the filename, and a "/" there makes Lightning create nested directories.
+        self.log("val_nme", result["nme"], sync_dist=True)
+        self.log("val/nme_normal", result["nme_normal"], sync_dist=True)
+        self.log("val/nme_tangential", result["nme_tangential"], sync_dist=True)
+        self.log("val_nme_normal", result["nme_normal"], sync_dist=True)
+        self._log_region_nme("val", result["per_point_err"])
+
+    def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> None:
+        result = self._shared_step(batch)
+        self.log("test/loss", result["loss"], sync_dist=True)
+        self.log("test/nme", result["nme"], prog_bar=True, sync_dist=True)
+        self.log("test/nme_normal", result["nme_normal"], sync_dist=True)
+        self.log("test/nme_tangential", result["nme_tangential"], sync_dist=True)
+        self._log_region_nme("test", result["per_point_err"])
+
+    def _log_region_nme(self, stage: str, per_point_err: torch.Tensor) -> None:
+        """Log NME broken down by anatomical region (helix/antihelix/concha/tragus)."""
+        for name, lo, hi in LANDMARK_REGIONS:
+            self.log(
+                f"{stage}/nme_{name}",
+                per_point_err[:, lo:hi].mean(),
+                sync_dist=True,
+            )
 
     def configure_optimizers(self) -> Dict[str, Any]:
         optimizer = AdamW(

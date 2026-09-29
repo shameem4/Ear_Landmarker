@@ -19,16 +19,28 @@ import torch
 import onnx
 from onnxsim import simplify
 
-from model.ear_landmarker import EarLandmarker
+from model.ear_landmarker import EarLandmarker, EarLandmarkerHeatmap
 from inference import find_best_checkpoint
 
-PROJECT = Path("C:/Users/shame/OneDrive/Desktop/ear_stuff/Ear Landmarker")
+PROJECT = Path(__file__).resolve().parent
 
 
 def load_model(checkpoint_path: Path) -> EarLandmarker:
-    """Load EarLandmarker weights from a Lightning checkpoint."""
-    model = EarLandmarker(num_landmarks=55)
+    """Load EarLandmarker weights from a Lightning checkpoint.
+
+    The architecture is read from the checkpoint's saved hyperparameters, so a
+    heatmap-head checkpoint exports correctly without passing a matching flag.
+    """
     ckpt = torch.load(str(checkpoint_path), map_location="cpu", weights_only=True)
+    hparams = ckpt.get("hyper_parameters", {}) or {}
+    arch = hparams.get("arch", "gap")
+
+    if arch == "heatmap":
+        model = EarLandmarkerHeatmap(num_landmarks=55, tau=hparams.get("tau", 1.0))
+    else:
+        model = EarLandmarker(num_landmarks=55)
+    print(f"Checkpoint architecture: {arch}")
+
     state = ckpt.get("state_dict", ckpt)
     state = {k.removeprefix("model."): v for k, v in state.items()
              if k.startswith("model.")} or state

@@ -14,6 +14,8 @@
  *   // Returns: Array of { bbox, confidence, landmarks }
  */
 
+import { EarTracker } from './smoothing.js';
+
 const ort = (typeof window !== 'undefined' && window.ort) ||
             (typeof globalThis !== 'undefined' && globalThis.ort) ||
             (typeof require !== 'undefined' ? require('onnxruntime-web') : null);
@@ -40,6 +42,15 @@ class EarLandmarkerPipeline {
     constructor(options = {}) {
         this.confidenceThreshold = options.confidenceThreshold ?? 0.70;
         this.iouThreshold = options.iouThreshold ?? 0.3;
+        // Suppress a box whose overlap covers this much of the SMALLER box.
+        // Calibrated on 104 duplicate pairs logged from a live webcam run: they
+        // measured IoU 0.19-0.30 and IoMin 0.39-0.59, i.e. they sat just under
+        // BOTH a 0.30 IoU and a 0.60 IoMin threshold, which is why an earlier
+        // 0.60 setting never fired. 0.35 catches all 104 with margin below the
+        // observed minimum of 0.388, while two genuinely different ears measure
+        // ~0.00 (they are a head-width apart), so the two cases stay separable.
+        this.ioMinThreshold = options.ioMinThreshold ?? 0.35;
+        this.debug = options.debug ?? false;
         this.minAspectRatio = options.minAspectRatio ?? 0.35;
         this.maxAspectRatio = options.maxAspectRatio ?? 1.4;
         this.minSizeFrac = options.minSizeFrac ?? 0.03;
@@ -47,7 +58,16 @@ class EarLandmarkerPipeline {
         this.detectorSession = null;
         this.landmarkerSession = null;
         this.isLoaded = false;
+        // Temporal smoothing. Box wobble is ~90% of frame-to-frame jitter, so
+        // boxes are smoothed BEFORE cropping and landmarks after, in frame
+        // coords. Pass { smooth: false } to disable.
+        this.tracker = (options.smooth ?? true)
+            ? new EarTracker(options.smoothing ?? {})
+            : null;
     }
+
+    /** Clear smoothing state, e.g. when switching between webcam and an image. */
+    resetSmoothing() { if (this.tracker) this.tracker.reset(); }
 
     /**
      * Load both ONNX models
@@ -81,18 +101,31 @@ class EarLandmarkerPipeline {
      * @param {HTMLImageElement|HTMLVideoElement|HTMLCanvasElement} source
      * @returns {Promise<Array>} Array of { bbox, confidence, landmarks }
      */
-    async detect(source) {
+    async detect(source, timestamp = null) {
         if (!this.isLoaded) throw new Error('Models not loaded. Call load() first.');
 
         const { canvas, width, height } = this._sourceToCanvas(source);
         const ctx = canvas.getContext('2d');
 
         // Stage 1: BlazeEar detection
-        const detections = await this._runDetector(canvas, width, height);
+        let detections = await this._runDetector(canvas, width, height);
+
+        // Smooth the boxes before cropping: a steady crop means the landmarker
+        // sees a consistent input frame to frame, which is where most of the
+        // visible jitter comes from.
+        const t = (timestamp ?? performance.now()) / 1000;
+        let trackIds = [];
+        if (this.tracker) {
+            trackIds = this.tracker.assign(detections);
+            detections = detections.map((d, i) => ({
+                ...d, ...this.tracker.smoothBox(trackIds[i], d, t),
+            }));
+        }
 
         // Stage 2: For each detection, crop and run landmarker
         const results = [];
-        for (const det of detections) {
+        for (let di = 0; di < detections.length; di++) {
+            const det = detections[di];
             // Expand bbox for context
             const bw = det.xmax - det.xmin;
             const bh = det.ymax - det.ymin;
@@ -115,18 +148,27 @@ class EarLandmarkerPipeline {
             cropCanvas.getContext('2d').drawImage(canvas, x1, y1, cropW, cropH, 0, 0, cropW, cropH);
 
             // Run landmarker on crop
-            const landmarks = await this._runLandmarker(cropCanvas, cropW, cropH);
+            const { landmarks, pointConfidence } =
+                await this._runLandmarker(cropCanvas, cropW, cropH);
 
             // Map landmarks back to full frame coords
-            const frameLandmarks = landmarks.map(pt => ({
+            let frameLandmarks = landmarks.map(pt => ({
                 x: pt.x * cropW + x1,
                 y: pt.y * cropH + y1,
             }));
+
+            // Smooth in frame coords, so the filter sees real motion rather
+            // than motion induced by the crop moving underneath it.
+            if (this.tracker) {
+                frameLandmarks = this.tracker.smoothLandmarks(
+                    trackIds[di], frameLandmarks, t, pointConfidence);
+            }
 
             results.push({
                 bbox: { xmin: det.xmin, ymin: det.ymin, xmax: det.xmax, ymax: det.ymax },
                 confidence: det.confidence,
                 landmarks: frameLandmarks,
+                pointConfidence,
             });
         }
 
@@ -244,6 +286,9 @@ class EarLandmarkerPipeline {
 
         const results = await this.landmarkerSession.run(feeds);
         const lmData = results.landmarks.data;  // (1, 55, 2) flattened
+        // The heatmap model also emits per-point confidence; a GAP-head model
+        // exported earlier does not, so treat it as optional.
+        const pointConfidence = results.confidence ? results.confidence.data : null;
 
         const landmarks = [];
         for (let i = 0; i < 55; i++) {
@@ -252,7 +297,7 @@ class EarLandmarkerPipeline {
                 y: lmData[i * 2 + 1],
             });
         }
-        return landmarks;
+        return { landmarks, pointConfidence };
     }
 
     /** @private */
@@ -264,12 +309,48 @@ class EarLandmarkerPipeline {
             selected.push(candidates[i]);
             for (let j = i + 1; j < candidates.length; j++) {
                 if (suppressed.has(j)) continue;
-                if (this._iou(candidates[i], candidates[j]) > this.iouThreshold) {
+                // Plain IoU misses the nested / strongly-offset duplicates the
+                // detector produces on a single ear: a small box inside a large
+                // one scores IoU = areaSmall/areaLarge, which falls under any
+                // reasonable threshold once the larger box is ~3x the smaller.
+                // Intersection-over-minimum catches exactly that case, while
+                // staying near zero for two genuinely different ears, which are
+                // far apart in frame.
+                const iou = this._iou(candidates[i], candidates[j]);
+                const iomin = this._ioMin(candidates[i], candidates[j]);
+                if (iou > this.iouThreshold || iomin > this.ioMinThreshold) {
                     suppressed.add(j);
                 }
             }
         }
+        if (this.debug && selected.length > 1) {
+            for (let i = 0; i < selected.length; i++) {
+                for (let j = i + 1; j < selected.length; j++) {
+                    console.log('[nms] surviving pair',
+                        { a: this._boxStr(selected[i]), b: this._boxStr(selected[j]),
+                          iou: +this._iou(selected[i], selected[j]).toFixed(3),
+                          ioMin: +this._ioMin(selected[i], selected[j]).toFixed(3) });
+                }
+            }
+        }
         return selected;
+    }
+
+    /** @private Intersection over the smaller box's area: catches containment. */
+    _ioMin(a, b) {
+        const x1 = Math.max(a.xmin, b.xmin), y1 = Math.max(a.ymin, b.ymin);
+        const x2 = Math.min(a.xmax, b.xmax), y2 = Math.min(a.ymax, b.ymax);
+        const inter = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+        const areaA = (a.xmax - a.xmin) * (a.ymax - a.ymin);
+        const areaB = (b.xmax - b.xmin) * (b.ymax - b.ymin);
+        const minArea = Math.min(areaA, areaB);
+        return minArea > 0 ? inter / minArea : 0;
+    }
+
+    /** @private */
+    _boxStr(d) {
+        return [Math.round(d.xmin), Math.round(d.ymin), Math.round(d.xmax),
+                Math.round(d.ymax), +d.confidence.toFixed(3)].join(',');
     }
 
     /** @private */
@@ -312,7 +393,8 @@ class EarLandmarkerPipeline {
      */
     drawResults(ctx, results, options = {}) {
         const lineWidth = options.lineWidth || 2;
-        const pointRadius = options.pointRadius || 3;
+        const pointRadius = options.pointRadius ?? 1.8;
+        const pointLineWidth = options.pointLineWidth ?? 1;
         const showBbox = options.showBbox ?? true;
         const showConfidence = options.showConfidence ?? true;
         const fontSize = options.fontSize || 14;
@@ -350,11 +432,13 @@ class EarLandmarkerPipeline {
                 }
                 ctx.stroke();
 
-                ctx.fillStyle = group.color;
+                // Unfilled rings: at 55 points on a small ear, filled discs merge
+                // into a blob and hide where each landmark actually sits.
+                ctx.lineWidth = pointLineWidth;
                 for (const pt of pts) {
                     ctx.beginPath();
                     ctx.arc(pt.x, pt.y, pointRadius, 0, 2 * Math.PI);
-                    ctx.fill();
+                    ctx.stroke();
                 }
             }
         }
@@ -364,6 +448,7 @@ class EarLandmarkerPipeline {
         this.detectorSession = null;
         this.landmarkerSession = null;
         this.isLoaded = false;
+        if (this.tracker) this.tracker.reset();
     }
 }
 

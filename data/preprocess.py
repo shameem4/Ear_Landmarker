@@ -15,6 +15,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import argparse
 import csv
 import hashlib
@@ -32,8 +33,8 @@ from tqdm import tqdm
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-EAR_STUFF = Path("C:/Users/shame/OneDrive/Desktop/ear_stuff")
-PROJECT = EAR_STUFF / "Ear Landmarker"
+EAR_STUFF = Path(os.environ.get("EAR_STUFF", Path(__file__).resolve().parents[2]))
+PROJECT = Path(__file__).resolve().parents[1]
 RAW_DIR = PROJECT / "data" / "raw"
 PREP_DIR = PROJECT / "data" / "preprocessed"
 IMG_DIR = PREP_DIR / "images"
