@@ -12,3 +12,8 @@
 
 # optional synthetic training source (regenerate with scripts/ingest_synthetic.py)
 /data/synthetic/
+
+# article authoring -- drafting artifacts, not part of the model repo
+/generate_article.py
+/Ear_Landmarker_Article.docx
+/ChatGPT Image*.png
