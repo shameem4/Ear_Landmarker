@@ -43,9 +43,13 @@ class EarLandmarkerPipeline {
         this.confidenceThreshold = options.confidenceThreshold ?? 0.70;
         this.iouThreshold = options.iouThreshold ?? 0.3;
         // Suppress a box whose overlap covers this much of the SMALLER box.
-        // Two detections on one ear overlap heavily relative to the smaller one
-        // even when their IoU is low; two different ears do not.
-        this.ioMinThreshold = options.ioMinThreshold ?? 0.6;
+        // Calibrated on 104 duplicate pairs logged from a live webcam run: they
+        // measured IoU 0.19-0.30 and IoMin 0.39-0.59, i.e. they sat just under
+        // BOTH a 0.30 IoU and a 0.60 IoMin threshold, which is why an earlier
+        // 0.60 setting never fired. 0.35 catches all 104 with margin below the
+        // observed minimum of 0.388, while two genuinely different ears measure
+        // ~0.00 (they are a head-width apart), so the two cases stay separable.
+        this.ioMinThreshold = options.ioMinThreshold ?? 0.35;
         this.debug = options.debug ?? false;
         this.minAspectRatio = options.minAspectRatio ?? 0.35;
         this.maxAspectRatio = options.maxAspectRatio ?? 1.4;

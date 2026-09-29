@@ -33,7 +33,7 @@ LANDMARKER_INPUT_SIZE = 192
 DETECTOR_INPUT_SIZE = 128
 ROI_EXPAND = 1.3  # expand detected bbox by 30% for context
 NMS_IOU_THRESH = 0.3  # suppress duplicate detections on same ear
-NMS_IOMIN_THRESH = 0.6  # also suppress when overlap covers this much of the SMALLER box
+NMS_IOMIN_THRESH = 0.35  # also suppress when overlap covers this much of the SMALLER box
 
 
 # ---------------------------------------------------------------------------

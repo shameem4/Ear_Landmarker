@@ -672,3 +672,71 @@ too large for that to be the whole story, but this needs validating against
 ground truth before ROI_EXPAND is changed. It is a hypothesis, not a result.
 
 NOT changed yet: ROI_EXPAND stays 1.3 in both pipelines pending that validation.
+
+2026-09-29: duplicate detection ROOT CAUSE CONFIRMED from live logging
+
+The `debug: true` logging captured 104 surviving duplicate pairs from a real
+webcam run. Measured:
+    IoU   min 0.188  median 0.289  max 0.300
+    IoMin min 0.388  median 0.483  max 0.585
+
+The pairs sit JUST UNDER BOTH thresholds: IoU never exceeds 0.300 (the
+threshold) and IoMin never reaches 0.60. So the first version of this fix caught
+0 of 104 -- correct mechanism, wrong calibration. Only real data exposed that;
+the synthetic cases I validated against were far more extreme than reality.
+
+Threshold sweep against the real pairs:
+    IoMin > 0.60 : 0/104
+    IoMin > 0.50 : 36/104
+    IoMin > 0.45 : 88/104
+    IoMin > 0.40 : 101/104
+    IoMin > 0.35 : 104/104   <- chosen
+
+0.35 catches all 104 with margin below the observed minimum of 0.388, while two
+genuinely different ears measure IoMin ~0.00 (they are a head-width apart), so
+the two cases remain cleanly separable. Applied to both docs/ and inference.py.
+
+tests/test_nms.py now carries 9 of the real logged pairs as regression fixtures,
+plus a test asserting IoU alone catches at most 1 of them -- so if anyone raises
+the IoMin threshold back up, the suite fails with the real geometry. Note the
+logged boxes are integer-rounded, so recomputed IoU lands slightly off the logged
+value (one pair computes 0.304 vs a logged 0.299); the tests assert about the
+bulk rather than every pair. Suite now 181 tests.
+
+ROI_EXPAND VALIDATION -- INCONCLUSIVE, NOT CHANGED
+
+Two attempts on the held-out test set:
+
+1. First sweep was CONFOUNDED. Only images with spare margin can be cropped wide
+   without padding, and those are overwhelmingly the synthetic audioear2d set
+   (ears fill 0.657 of frame) while collectionB (0.853) only appears at tight
+   framings. So "wider is better" was measuring an easier subset, not a real
+   effect: f=0.62 had n=36 all-audioear2d at error 1.48, f=0.94 had n=347 incl.
+   collectionB at 3.17.
+
+2. Paired re-run (only samples supporting EVERY framing) is unconfounded but
+   collapses to 63/861 images, ALL audioear2d. On that set contour error rises
+   monotonically with tighter framing (1.52 at f=0.62 to 2.35 at f=0.94) and the
+   ordering is IDENTICAL at yaw 0/25/45 -- so pose does not shift the optimum.
+   But audioear2d was TRAINED at 0.657 occupancy, so its optimum sitting at the
+   low end may simply be "test at the framing this source was trained at".
+
+The test set is built from pre-cropped ear images, so it structurally cannot
+evaluate wide framings for the tight sources. This question cannot be settled
+with the data we have.
+
+Independent check on the four REAL capture frames (no ground truth needed):
+prediction spread under detector-box jitter, lower = more stable.
+    expand  occupancy   s1     s2     s3     s4    mean
+      1.3     0.883   0.544  0.699  0.356  0.496  0.524
+      1.5     0.826   0.457  0.426  0.367  0.414  0.416
+      1.7     0.754   0.465  0.364  0.325  0.484  0.409
+      1.9     0.675   0.398  0.384  0.340  0.585  0.427
+      2.1     0.609   0.369  0.390  0.364  0.724  0.462
+Stability is best around 1.5-1.7 and worst at the current 1.3, with a shallow
+optimum -- but 1.9/2.1 get worse on s4 while still improving on s1, i.e. the
+per-image optima disagree. n=4, one subject, one distance.
+
+VERDICT: suggestive but not established. ROI_EXPAND stays 1.3. To settle it
+properly we need real full-frame photos WITH ground-truth landmarks across
+subjects and distances -- which is a small annotation task, not a tuning run.
