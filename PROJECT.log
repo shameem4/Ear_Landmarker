@@ -122,3 +122,63 @@ Runs queued (GPU busy at time of writing, ~35 min each):
        -> bug fixed + soft-argmax head: isolates the value of the architecture
   Run 1 vs 2 attributes the fix; 2 vs 3 attributes the architecture. Report test
   NME, never val NME.
+
+2026-09-29: v2 results -- three runs, held-out test set
+
+Protocol: identical splits (4142/861/861), seed 42, 500 max epochs, patience 50.
+val drove early stopping + checkpoint selection; test evaluated once at the end.
+All three were SIGTERM'd mid-run by an unrelated process and resumed from
+last.ckpt (optimizer + scheduler state intact). Baseline's legacy-bug flag was
+verified still active after resume.
+
+  run           best val   @ep  last ep   TEST NME   test px
+  baseline_v1     0.0304   483      500     0.0301     5.78
+  v2_fixed        0.0302   409      460     0.0303     5.82
+  v2_heatmap      0.0286   315      366     0.0291     5.59
+
+Attribution (held-out test):
+  rotation fix      baseline -> v2_fixed  : +0.00023 NME = +0.044 px  (+0.76%)
+  soft-argmax head  v2_fixed -> v2_heatmap: -0.00122 NME = -0.234 px  (-4.01%)
+  combined          baseline -> v2_heatmap: -0.00099 NME = -0.190 px  (-3.28%)
+
+Per-region test NME:
+  region      baseline  v2_fixed   heatmap   hm vs fixed
+  helix         0.0338    0.0343    0.0335    -0.154 px
+  antihelix     0.0309    0.0312    0.0301    -0.197 px
+  concha        0.0251    0.0251    0.0231    -0.379 px
+  tragus        0.0278    0.0280    0.0268    -0.224 px
+  Helix is consistently the worst region across all three; concha the best.
+
+FINDINGS -- read these before citing any number:
+
+1. The rotation-label fix did NOT improve accuracy. It is 0.76% WORSE on test,
+   which is noise-level. The bug was real and measured (12.5px mean label error,
+   p90 26.8px), but fixing it bought nothing on this dataset.
+   Likely why: the injected error is zero-mean (angle is symmetric +/-15deg), so
+   it adds variance rather than bias, and absolute ear orientation is not
+   reliably inferable from a crop, so the model averages the noise out instead
+   of learning the wrong mapping. +/-15deg is also within the natural orientation
+   spread of the data. Keep the fix on correctness grounds, not accuracy grounds.
+
+2. The soft-argmax head is the only change that moved the metric: -4.01% relative
+   (-0.23px), better in all four regions, and it converged faster (best at epoch
+   315 vs 409; stopped at 366 vs 460). Costs +8.7% params, +11% FLOPs, few % wall.
+
+3. Noise floor estimate: baseline vs v2_fixed differ by 0.00023 NME. The heatmap
+   gain (0.00122) is ~5x that. Suggestive but SINGLE SEED -- repeat v2_fixed and
+   v2_heatmap with 2-3 seeds before publishing the architecture claim.
+
+4. v1's published 0.0307 was NOT badly optimistic after all. The val/test gap here
+   is tiny and inconsistent in sign (baseline: val 0.0304 / test 0.0301). The
+   criticism of selecting on val stands methodologically but was small in practice.
+   Not comparable head-to-head anyway: different splits, 4142 vs 4987 train images.
+
+5. STABILITY IS STILL UNMEASURED. The original v2 goal was accuracy AND stability,
+   but there is no video/jitter benchmark in this repo, so nothing here says
+   anything about frame-to-frame jitter. The heatmap head exposes per-point
+   confidence (model.heatmaps()) which is the principled input to temporal
+   smoothing, but that is untested. Needs a held-out video set + a jitter metric
+   (e.g. mean inter-frame landmark displacement on static-subject clips).
+
+Best model: runs/checkpoints/v2_heatmap/ (test NME 0.0291, 5.59px at 192px).
+Not yet exported to ONNX or wired into the demo.
