@@ -2,7 +2,9 @@
 
 **[Live Demo](https://shameem4.github.io/Ear_Landmarker/)** | **[GitHub Repo](https://github.com/shameem4/Ear_Landmarker)**
 
-Real-time 55-point ear landmark regression using a BlazeBlock backbone (FaceMesh architecture pattern). Runs as a two-stage pipeline: BlazeEar detector finds ears, then EarLandmarker regresses landmarks on each crop.
+Real-time 55-point ear landmark regression using a BlazeBlock backbone (FaceMesh architecture pattern). Runs as a two-stage pipeline: BlazeEar detector finds ears, then EarLandmarker predicts landmarks on each crop via a soft-argmax heatmap head.
+
+**Test NME 0.029** (861 held-out samples) at 340K parameters. See [RESULTS.md](RESULTS.md) for the full v2 experiment log, including the seed-noise floor that several candidate improvements failed to clear.
 
 ## Pipeline
 
@@ -10,7 +12,21 @@ Real-time 55-point ear landmark regression using a BlazeBlock backbone (FaceMesh
 Webcam/Image -> BlazeEar detector (128x128) -> ROI crop (1.3x expand) -> EarLandmarker (192x192) -> 55 landmarks
 ```
 
-The detector (BlazeEar, separate project) produces bounding boxes with NMS. Each box is expanded 30% for context, cropped, and fed to the landmarker.
+The detector (BlazeEar, separate project) produces bounding boxes with NMS. Each box is expanded 30% for context, cropped, and fed to the landmarker. The 1.3x
+expansion is not a guess -- measured against ground-truth boxes over 380 matched
+ears it is the value that lands the ear at the landmarker's training occupancy of
+0.777.
+
+NMS suppresses on IoU **or intersection-over-minimum** (threshold 0.35). Plain IoU
+cannot catch a small box nested inside a larger one on the same ear, which is what
+produced doubled boxes and overlapping landmark sets in the live demo. The
+threshold is calibrated against 104 duplicate pairs logged from real webcam runs,
+9 of which are regression fixtures in `tests/test_nms.py`.
+
+On video, boxes are smoothed **before** cropping and landmarks after, in frame
+coordinates, with One Euro filters (Casiez et al., CHI 2012) -- box wobble is
+roughly 90% of frame-to-frame jitter. This cuts jitter 66-80% and reduces error
+at the same time. See `model/smoothing.py` and its JS port `docs/smoothing.js`.
 
 ## Architecture
 
@@ -24,10 +40,21 @@ EarLandmarker follows the MediaPipe FaceMesh pattern -- depthwise separable Blaz
 | stage2  | 48 -> 96 | 48->24  | 4      |
 | stage3  | 96 -> 128| 24->12  | 4      |
 | stage4  | 128->192 | 12->6   | 3      |
-| head    | 192->110 | GAP+FC  | -      |
+| head    | -> 55    | see below | -    |
 
-- **312K parameters** -- designed for real-time inference
-- Output: 55 x 2 coordinates in [0, 1], mapped back to frame pixels
+Two heads are implemented, selected with `--arch`:
+
+| Head | Params | Test NME | How it predicts |
+|------|--------|----------|-----------------|
+| `heatmap` (default, shipped) | 340K | **0.0291** | Decoder fuses stage4->stage3->stage2 to 55 x 24x24 heatmaps, then soft-argmax (DSNT) |
+| `gap` (v1 architecture) | 312K | 0.0301 | Global average pool -> FC -> 110 sigmoid coordinates |
+
+The soft-argmax head is worth -4.0% test NME and -11.5% on the off-contour
+(`nme_normal`) component, comfortably above the 1% seed-noise floor. It also
+yields a free per-landmark confidence from heatmap spatial spread, exported as a
+second ONNX output.
+
+- Output: 55 x 2 coordinates in [0, 1], mapped back to frame pixels, plus 55 confidences
 - BlazeBlock: DepthwiseConv -> BN -> PointwiseConv -> BN -> Skip -> ReLU
 
 ## Landmark Layout
@@ -70,8 +97,19 @@ across train/eval would leak.
 | Optimizer | AdamW (lr=1e-3, wd=1e-4) |
 | Schedule | Cosine annealing |
 | Precision | 16-mixed AMP |
-| Augmentation | Horizontal flip, translation (5%), rotation (+/-15 deg), color jitter, bbox jitter (10%) |
+| Augmentation | Horizontal flip, translation (5%), rotation (+/-15 deg), **perspective (65 deg)**, color jitter, bbox jitter (10%) |
 | Early stopping | Patience 50 on val_nme |
+
+Perspective augmentation cuts contour error at 50 deg yaw by 36% while leaving
+the near-frontal test number unchanged -- the test split cannot see what it is
+for. `--perspective-deg 65` is what the shipped model was trained with; 50 and 65
+are not statistically separable, so neither is claimed better.
+
+Optional, off by default: `--tangential-weight` discounts residual along the
+ground-truth contour (where most label noise lives) and improves `nme_normal` but
+not total NME; `--synthetic-ratio` mixes in the ingested synthetic renders, which
+measurably regressed accuracy and should stay at 0. Both are documented in
+[RESULTS.md](RESULTS.md).
 
 Augmentation labels are covered by `tests/test_augmentation.py`, which asserts that
 image content and landmark labels move together for every geometric augmentation.
@@ -82,6 +120,10 @@ by the inverse rotation, mislabelling every rotated sample by ~12.5px mean (p90
 26.8px) at 192px; and the figure was the early-stopping/checkpoint-selection metric
 on a two-way split, with no held-out test set. v2 re-baselines on the corrected
 pipeline and reports test NME.
+
+Fixing the rotation bug did **not** improve accuracy -- it cut jitter 19.5%. The
+v2 accuracy gain comes from the soft-argmax head. [RESULTS.md](RESULTS.md) records
+which changes cleared the seed-noise floor and which did not.
 
 ## Usage
 
@@ -99,6 +141,11 @@ python train.py
 python train.py --epochs 500 --batch-size 128 --lr 1e-3
 python train.py --resume best
 python train.py --run-name my_experiment    # isolates checkpoints/logs
+python train.py --arch heatmap --perspective-deg 65    # the shipped configuration
+
+# Score checkpoints on the held-out test split
+python scripts/eval_test.py
+python scripts/eval_test.py v6_persp65
 
 # Tests (augmentation label correctness)
 python -m pytest tests/ -v
@@ -113,11 +160,24 @@ python data/split.py
 
 | Metric | Value |
 |--------|-------|
-| val NME | 0.0307 |
-| GPU inference | 579 FPS |
-| CPU inference | 226 FPS |
-| Parameters | 312K |
+| **test NME, shipped web model** (`v6_persp65`) | **0.0293** (~5.6px at 192px) |
+| test NME, best checkpoint (`v2_heatmap`) | 0.0291 |
+| test NME, off-contour component | 0.0129 |
+| Seed-to-seed spread (3 seeds) | +/- 0.0003 (~1% relative) |
+| Parameters | 340K |
 | Input size | 192x192 |
+
+The web demo ships `v6_persp65` rather than the nominally better `v2_heatmap`
+because the 0.0002 difference is under the seed spread, while perspective
+augmentation's off-axis robustness (-36% contour error at 50 deg yaw) is real and
+matters for webcam use.
+
+Reported on the 861-sample held-out test split, scored once per run. Reproduce
+with `python scripts/eval_test.py`. The v1 figure of 0.0307 was a validation
+number on a two-way split and is not comparable; see [RESULTS.md](RESULTS.md).
+
+FPS figures from v1 (579 GPU / 226 CPU) are not carried over -- the heatmap head
+adds a decoder and they have not been re-measured.
 
 ## Dependencies
 
