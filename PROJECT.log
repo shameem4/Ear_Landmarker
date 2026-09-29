@@ -835,3 +835,49 @@ test NME is 0.00028, about 1% relative. Sorting past results by that yardstick:
 Practical upshot: persp65 stays the recommended model on the pose-robustness
 argument, but the choice between 50 and 65 does not matter much, and any future
 claim of a sub-2% improvement needs 3 seeds before it is stated.
+
+2026-09-29: synthetic source ingested as an OPTIONAL, REVERSIBLE training input
+
+sythc_data-002.zip contains sythetic_anno.npz with 10,002 samples x 55 landmarks.
+kp_3d[:, :, :2] are direct 2D coordinates in the 480x480 renders; verified by
+overlay against render.png and render_background.jpg, and 100% of all 550,110
+keypoints fall inside frame. Mesh topology is shared across every sample (2,800
+verts / 5,518 faces / identical connectivity hash), so vertex k -- and therefore
+landmark k -- is the same anatomical point in every sample.
+
+CORRECTION to an earlier claim: the synthetic labels are NOT more uniformly
+spaced than the human ones. Measured spacing CV is 0.294/0.307/0.243/0.236
+(helix/antihelix/concha/tragus) against 0.25-0.30 for the human sources. What
+they do have is exact CORRESPONDENCE -- no cross-dataset disagreement about what
+point 7 means. That distinction also explains why canonicalization failed:
+uniform spacing was the wrong target, consistent anatomy is the right one.
+
+INGESTION (scripts/ingest_synthetic.py) -- 9,356 of 10,002 kept, 646 skipped as
+uncroppable (ear too near the render edge). Uses render_background.jpg, the
+composite on hair/head, not the isolated render. Each render is cropped so the
+ear fills 0.777 of the frame, matching the real training distribution exactly
+(achieved mean 0.777, p5 0.776, p95 0.778); without this the synthetic ears
+would sit at 0.637 and shift the framing the model learns.
+
+REVERSION DESIGN, since synthetic data regressing things is a real risk:
+  - everything lives in data/synthetic/, its own images + manifest + landmarks
+  - data/preprocessed and the real train/val/test splits are NEVER touched
+  - training ignores it unless --synthetic-ratio > 0 (default 0.0)
+  - synthetic NEVER enters val or test, so the held-out numbers stay purely real
+    and any regression is immediately visible on the same metrics as before
+  - to revert: omit the flag, or delete data/synthetic/. That is all.
+
+BALANCE: --synthetic-ratio 1.0 subsamples synthetic to match the real count
+exactly (4,142 + 4,142 = 8,284, 50% synthetic). Left unbalanced it would have
+been 9,356 vs 4,142 = 69% synthetic, and audioear2d makes the real side already
+34% synthetic, so the mix would have been dominated by rendered data.
+
+DOMAIN GAP IS VISIBLE. The crops are clearly CGI -- uniformly smooth shading,
+one base mesh, and some composites have hard edges against their background.
+This is the reason for the balance and the real-only evaluation, not an
+afterthought.
+
+EXPERIMENT RUNNING: 3 seeds (42/1/2) of heatmap + perspective 65 +
+--synthetic-ratio 1.0, against the existing 3-seed control at the same config
+(test NME 0.02919 +/- 0.00031). Three seeds because measured seed noise is
+0.00028 and a single run could not distinguish a real effect from noise.

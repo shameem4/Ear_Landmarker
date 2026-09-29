@@ -64,6 +64,11 @@ def main() -> None:
                         help="Simulated out-of-plane turn in degrees (0 = off)")
     parser.add_argument("--landmarks", type=str, default="landmarks.npy",
                         help="Landmark array under data/preprocessed/")
+    parser.add_argument("--synthetic-ratio", type=float, default=0.0,
+                        help="Synthetic samples per real training sample. 0 (the "
+                             "default) is off; 1.0 balances synthetic against real. "
+                             "Synthetic NEVER enters val or test, so the held-out "
+                             "metrics stay purely real and a regression is visible.")
     parser.add_argument("--run-name", type=str, default="EarLandmarker",
                         help="Names the checkpoint/log subdirectory, so concurrent "
                              "experiments do not overwrite each other")
@@ -111,6 +116,35 @@ def main() -> None:
         persistent_workers=args.num_workers > 0,
         prefetch_factor=3 if args.num_workers > 0 else None,
     )
+    # Optional synthetic source. Kept in its own directory with its own manifest
+    # and landmarks, so reverting is either omitting the flag or deleting
+    # data/synthetic -- the real splits are never modified.
+    if args.synthetic_ratio > 0:
+        synth_dir = PROJECT / "data" / "synthetic"
+        if not (synth_dir / "train.csv").exists():
+            raise FileNotFoundError(
+                f"{synth_dir}/train.csv not found -- run scripts/ingest_synthetic.py")
+        synth_full = EarLandmarkDataset(
+            split_csv=synth_dir / "train.csv",
+            data_dir=synth_dir,
+            image_size=args.image_size,
+            augmentation=train_aug,
+        )
+        n_want = int(round(len(train_ds) * args.synthetic_ratio))
+        if n_want < len(synth_full):
+            g = torch.Generator().manual_seed(args.seed)
+            keep = torch.randperm(len(synth_full), generator=g)[:n_want].tolist()
+            synth_ds = torch.utils.data.Subset(synth_full, keep)
+        else:
+            synth_ds = synth_full
+        real_n, synth_n = len(train_ds), len(synth_ds)
+        train_ds = torch.utils.data.ConcatDataset([train_ds, synth_ds])
+        print(f"training mix: {real_n} real + {synth_n} synthetic "
+              f"= {len(train_ds)} ({synth_n/len(train_ds)*100:.0f}% synthetic)")
+        print(f"  val/test remain 100% real, so any regression shows there")
+    else:
+        print(f"training on {len(train_ds)} real samples (synthetic off)")
+
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True, **loader_kwargs,
     )

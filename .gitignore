@@ -9,3 +9,6 @@
 
 # downloaded face test set (third-party images, see metadata.json for licences)
 /data/face_testset/
+
+# optional synthetic training source (regenerate with scripts/ingest_synthetic.py)
+/data/synthetic/
