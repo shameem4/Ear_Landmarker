@@ -795,3 +795,43 @@ TWO OTHER FINDINGS FROM THE SAME RUN:
 CAVEAT on this dataset: annotations are incomplete -- in multi-person scenes only
 some ears are boxed. So an unmatched detection is not necessarily a false
 positive, and no false-positive rate is reported.
+
+2026-09-29: seed replication -- persp50 and persp65 are NOT separable
+
+Held-out test NME, three seeds each:
+
+  config     seed42    seed1     seed2      mean       std
+  persp50   0.02900   0.02896   0.02939   0.02912   0.00024
+  persp65   0.02923   0.02948   0.02886   0.02919   0.00031
+
+  difference between configs : 0.00007
+  pooled within-config std   : 0.00028   -> 0.26 sigma
+  seed spread within a config: 0.00062   -> 9x the between-config difference
+
+The two are equivalent on frontal test NME. The earlier single-seed pose-robustness
+advantage for persp65 (7.30% vs 7.46% at 50deg yaw) is NOT contradicted, since
+frontal test cannot see it, but it is also not confirmed -- it was one seed and
+the gap was 2% relative.
+
+WHAT THIS IMPLIES FOR EARLIER SINGLE-SEED CONCLUSIONS. Measured seed noise on
+test NME is 0.00028, about 1% relative. Sorting past results by that yardstick:
+
+  SAFE (effect >> noise):
+    - perspective augmentation at pose: 4.760 -> 3.056 px at 50deg yaw (-36%)
+    - heatmap head vs GAP head: -4.0% test NME, plus better in all four regions
+    - smoothing: jitter -66 to -80%
+    - the rotation-label bug: 12.5px mean label corruption, measured directly
+
+  SUSPECT (effect comparable to noise, single seed):
+    - persp50 vs persp65 anywhere: now shown not separable frontally
+    - tangential weighting: chamfer -4.4%/-5.2% is probably real, but the
+      measurement-error gain of -1.3% (tw=0.3) is about one sigma and should not
+      be relied on. It passed its pre-registered criteria on ONE seed; that bar
+      was set before seed noise had been measured.
+    - v7_combined being "no better" than persp50: differences were 0.1-0.2pp,
+      i.e. inside noise, so "no benefit" remains the right reading but "worse"
+      was never supportable.
+
+Practical upshot: persp65 stays the recommended model on the pose-robustness
+argument, but the choice between 50 and 65 does not matter much, and any future
+claim of a sub-2% improvement needs 3 seeds before it is stated.
