@@ -33,11 +33,29 @@ CKPT_DIR = ROOT / "runs" / "checkpoints"
 
 
 def best_ckpt(run: str) -> Path | None:
-    """Lowest-NME checkpoint for a run, by the nme= field in its filename."""
+    """Lowest-NME checkpoint for a run.
+
+    Selected by the score ModelCheckpoint stored INSIDE the file, not by the
+    nme= field in the filename. The filename is rounded to 4 decimals, and every
+    run here has two or three checkpoints tied at that precision -- picking by
+    filename resolved the tie on glob order, so this reported a different
+    checkpoint than the one train.py tested and the numbers did not reproduce.
+    """
     cks = [c for c in (CKPT_DIR / run).glob("*.ckpt") if "nme=" in c.name]
     if not cks:
         return None
-    return min(cks, key=lambda c: float(c.stem.split("nme=")[1]))
+
+    def score(c: Path) -> float:
+        try:
+            ck = torch.load(str(c), map_location="cpu", weights_only=False)
+            for v in (ck.get("callbacks") or {}).values():
+                if isinstance(v, dict) and v.get("current_score") is not None:
+                    return float(v["current_score"])
+        except Exception:
+            pass
+        return float(c.stem.split("nme=")[1])   # fall back to the rounded name
+
+    return min(cks, key=score)
 
 
 def main() -> None:

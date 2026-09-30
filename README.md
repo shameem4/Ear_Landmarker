@@ -25,14 +25,22 @@ out 19% too small on the worst capture measured.
 So the pipeline crops, predicts, measures the resulting occupancy, and re-crops
 if the ear is not sitting at the 0.777 the model was trained on. This is the
 ROI-from-landmarks refinement MediaPipe uses for face and hand tracking. One
-refinement pass is enough:
+refinement pass is enough.
 
-| capture | true ear / det box | fixed 1.3x | adaptive |
-|---------|--------------------|------------|----------|
-| A | 1.53 | 19% too small | 0.6% |
-| B | 1.37 | 10.6% | 0.1% |
-| C | 1.21 | 7.2% | 0.9% |
-| D | 1.02 | 1.6% | 1.6% (no refinement needed) |
+Scored against real ground truth on the test split, with the detector box
+artificially tightened to span the observed range:
+
+| ear / det box | fixed 1.3x NME | adaptive NME | change |
+|---------------|----------------|--------------|--------|
+| 1.00 (box already covers the ear) | 0.0454 | 0.0461 | **+1.5%** |
+| 1.20 | 0.0475 | 0.0464 | -2.3% |
+| 1.40 | 0.0628 | 0.0473 | -24.6% |
+| 1.53 (tightest observed) | 0.0747 | 0.0449 | **-39.9%** |
+
+The claim is not that refinement is more accurate in general -- it is that the
+pipeline stops caring how tight the detector box is. Adaptive holds ~0.045 across
+the whole range while the fixed policy degrades 65%. It costs **1.5% when the box
+already frames the ear correctly**, which is the price of the extra pass.
 
 Cost is bounded: framing that is already correct exits after one pass, and on
 video each track seeds from the expansion that worked last frame, so the steady
@@ -323,7 +331,7 @@ enough.
 
 | Metric | Value |
 |--------|-------|
-| **test NME, shipped web model** (`v6_persp65`) | **0.0293** (~5.6px at 192px) |
+| **test NME, shipped web model** (`v6_persp65`) | **0.0292** (~5.6px at 192px) |
 | test NME, best checkpoint (`v2_heatmap`) | 0.0291 |
 | test NME, off-contour component | 0.0129 |
 | Seed-to-seed spread (3 seeds) | +/- 0.0003 (~1% relative) |
@@ -331,7 +339,7 @@ enough.
 | Input size | 192x192 |
 
 The web demo ships `v6_persp65` rather than the nominally better `v2_heatmap`
-because the 0.0002 difference is under the seed spread, while perspective
+because the 0.0001 difference is under the seed spread, while perspective
 augmentation's off-axis robustness (-36% contour error at 50 deg yaw) is real and
 matters for webcam use.
 

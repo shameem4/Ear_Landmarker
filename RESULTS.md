@@ -149,6 +149,49 @@ reported `tragus_to_antitragus` computed from the superior crus, and measured th
 concha across a span five structures wide. Fixed, with `IBUG_REGIONS` as the
 authoritative mapping and `tests/test_landmark_naming.py` locking it.
 
+## Cynic pass: what a review of this file found
+
+Reviewed after the fact, several claims above did not survive contact.
+
+**The adaptive-ROI validation was circular.** It measured error against the
+model's own converged fixed point, which the refinement reaches by construction --
+that shows convergence, not accuracy. Re-run against real ground truth on the
+test split, with the detector box artificially tightened, the fix does hold and
+the honest framing is different: adaptive keeps NME at ~0.045 regardless of how
+tight the box is, while the fixed policy degrades from 0.0454 to 0.0747 (65%)
+across the observed ratio range. It also **costs 1.5% when the box already frames
+the ear correctly**, which the original write-up did not mention.
+
+**`scripts/eval_test.py` did not reproduce the logged numbers**, despite this
+file telling readers to reproduce with it. It picked the best checkpoint by the
+`nme=` field in the filename, which is rounded to four decimals -- and every run
+here has two or three checkpoints tied at that precision, so the tie fell to glob
+order and a different checkpoint than train.py had tested. Now selected by the
+full-precision score stored inside the checkpoint; the numbers match the logged
+`test/nme` exactly. The shipped model is 0.0292, not the 0.0293 previously
+reported here.
+
+**The corrected tragus measurement broke the module's own premise.** `measure.py`
+exists to be index-free, and the first version of the naming fix took a max over
+raw point sets -- reintroducing exactly the tangential sensitivity it removes.
+The test that was supposed to cover it used degenerate input (all tragus points
+identical) and could not have caught it. Both are fixed.
+
+**A cached ROI expansion could leak across sources.** The per-track cache was
+keyed by track id, but `EarTracker.reset()` restarts ids at 0, so after switching
+webcam to image an unrelated ear would inherit a stale expansion. The cache also
+grew for the life of the process. Both fixed, in the Python and JS pipelines.
+
+**Smaller:** `docs/README.md` documented a `reset()` method that did not exist
+(the real one was `resetSmoothing()`); an alias now makes the documented name
+real. And the "+26 tests" figure in one commit message was inflated -- 23 of
+those are one file-scan guard parametrised across source files, so the genuinely
+new assertions number about 25.
+
+Not challenged by the review: the rotation bug, the soft-argmax gain, the
+smoothing results, the NMS calibration and the synthetic negative result all rest
+on held-out or logged measurements that still check out.
+
 ## Known limitation
 
 The **BlazeEar detector recalls 47.5%** of annotated ears (duplicate rate 1.5%

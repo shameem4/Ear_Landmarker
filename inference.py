@@ -253,6 +253,17 @@ class EarLandmarkerPipeline:
         self.refine_roi = refine_roi
         self._roi_expand: dict[int, float] = {}
 
+    def reset(self) -> None:
+        """Clear smoothing and ROI state, e.g. when switching video sources.
+
+        Required, not optional: EarTracker.reset() restarts track ids at 0, so a
+        cached ROI expansion keyed by id would be inherited by an unrelated ear
+        in the next source.
+        """
+        if self.tracker is not None:
+            self.tracker.reset()
+        self._roi_expand.clear()
+
     def __call__(self, frame_rgb: np.ndarray, timestamp: float | None = None) -> List[dict]:
         """Run full pipeline on an RGB frame.
 
@@ -287,6 +298,7 @@ class EarLandmarkerPipeline:
             ]
 
         results = []
+        live: set[int] = set()
         for k, det in enumerate(detections):
             ymin, xmin, ymax, xmax, conf = det[:5]  # normalised in EarDetector.detect
 
@@ -326,6 +338,7 @@ class EarLandmarkerPipeline:
                 continue
             if tid is not None and max(bw, bh) > 0:
                 self._roi_expand[tid] = side / max(bw, bh)
+                live.add(tid)
 
             # Smooth in frame coords, so the filter sees real motion rather than
             # motion induced by the crop moving underneath it.
@@ -340,6 +353,12 @@ class EarLandmarkerPipeline:
                 "confidence": float(conf),
                 "landmarks": lm_frame,
             })
+
+        # Track ids increment forever, so without this the cache grows for the
+        # life of the process on any stream where ears come and go.
+        if track_ids:
+            for tid in [k for k in self._roi_expand if k not in live]:
+                del self._roi_expand[tid]
 
         return results
 

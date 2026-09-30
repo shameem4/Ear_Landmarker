@@ -95,7 +95,20 @@ class EarLandmarkerPipeline {
     }
 
     /** Clear smoothing state, e.g. when switching between webcam and an image. */
-    resetSmoothing() { if (this.tracker) this.tracker.reset(); }
+    /**
+     * Clear smoothing and ROI state, e.g. when switching webcam -> image.
+     * Clearing _roiExpand is required, not tidiness: EarTracker.reset()
+     * restarts track ids at 0, so a cached expansion keyed by id would be
+     * inherited by an unrelated ear in the next source.
+     */
+    resetSmoothing() {
+        if (this.tracker) this.tracker.reset();
+        this._roiExpand.clear();
+        this._roiExpand.clear();
+    }
+
+    /** Alias, since "reset" is what the docs and most callers reach for. */
+    reset() { this.resetSmoothing(); }
 
     /**
      * Load both ONNX models
@@ -152,6 +165,7 @@ class EarLandmarkerPipeline {
 
         // Stage 2: For each detection, crop and run landmarker
         const results = [];
+        const liveTracks = new Set();
         for (let di = 0; di < detections.length; di++) {
             const det = detections[di];
             // Expand bbox for context
@@ -219,6 +233,7 @@ class EarLandmarkerPipeline {
             if (!frameLandmarks) continue;
             if (tid !== undefined && Math.max(bw, bh) > 0) {
                 this._roiExpand.set(tid, side / Math.max(bw, bh));
+                liveTracks.add(tid);
             }
 
             // Smooth in frame coords, so the filter sees real motion rather
@@ -234,6 +249,14 @@ class EarLandmarkerPipeline {
                 landmarks: frameLandmarks,
                 pointConfidence,
             });
+        }
+
+        // Track ids increment forever, so without this the cache grows for the
+        // life of the page on any stream where ears come and go.
+        if (trackIds) {
+            for (const tid of [...this._roiExpand.keys()]) {
+                if (!liveTracks.has(tid)) this._roiExpand.delete(tid);
+            }
         }
 
         return results;

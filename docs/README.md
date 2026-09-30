@@ -139,5 +139,5 @@ python export_onnx.py
 python export_onnx.py --checkpoint path/to/model.ckpt
 ```
 
-The shipped model is `v6_persp65` (test NME 0.0293). See [../RESULTS.md](../RESULTS.md)
+The shipped model is `v6_persp65` (test NME 0.0292). See [../RESULTS.md](../RESULTS.md)
 for why that checkpoint rather than the nominally better one.

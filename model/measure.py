@@ -159,11 +159,14 @@ def measure_ear(landmarks: np.ndarray, n_resample: int = 200) -> dict[str, float
     concha_height, c_axis = caliper_length(concha)
     concha_width = width_perpendicular_to(concha, c_axis)
 
-    # Tragus to antitragus: the span across the intertragic notch, measured
-    # between the two structures themselves rather than along a strip that
-    # happens to contain them. Taken as the maximum separation between the two
-    # point sets, which is the intertragic width in the usual sense.
-    tr, at = region("tragus"), region("antitragus")
+    # Tragus to antitragus: the span across the intertragic notch, between the
+    # two structures themselves rather than along a strip that merely contains
+    # them. Both are arc-length resampled first, so the result does not depend
+    # on where their vertices happen to sit -- taking the max over the raw
+    # points would reintroduce exactly the tangential sensitivity this module
+    # exists to remove.
+    tr = resample_polyline(region("tragus"), n_resample)
+    at = resample_polyline(region("antitragus"), n_resample)
     tragus_span = float(np.linalg.norm(tr[:, None, :] - at[None, :, :], axis=-1).max())
 
     return {

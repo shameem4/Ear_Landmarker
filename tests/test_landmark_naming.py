@@ -95,3 +95,38 @@ def test_concha_measurement_uses_concha_points_only():
 
     assert after["concha_height"] == pytest.approx(base["concha_height"])
     assert after["concha_width"] == pytest.approx(base["concha_width"])
+
+
+def test_tragus_span_is_invariant_to_vertex_sliding():
+    """measure.py exists to be index-free, so this measurement must not change
+    when points slide ALONG their own contour.
+
+    The first version of this fix took the max over the raw point sets, which
+    reintroduced exactly the tangential sensitivity the module removes. The
+    earlier naming test used degenerate input (all tragus points identical) and
+    so could not have caught it.
+    """
+    lm = np.zeros((55, 2), dtype=np.float64)
+    lm[:, 0] = np.linspace(0, 1, 55)
+    lm[:, 1] = 0.5
+
+    ta, tb = IBUG_REGIONS["tragus"]
+    aa, ab = IBUG_REGIONS["antitragus"]
+    # tragus as a slanted segment, antitragus as another -- genuine extent
+    lm[ta:tb] = np.stack([np.linspace(0.50, 0.54, tb - ta),
+                          np.linspace(0.50, 0.58, tb - ta)], 1)
+    lm[aa:ab] = np.stack([np.linspace(0.60, 0.64, ab - aa),
+                          np.linspace(0.50, 0.56, ab - aa)], 1)
+    base = measure_ear(lm)["tragus_to_antitragus"]
+
+    # same two contours, vertices redistributed along them (endpoints fixed)
+    slid = lm.copy()
+    slid[ta:tb] = np.stack([np.linspace(0.50, 0.54, tb - ta) ** 1.0,
+                            np.linspace(0.50, 0.58, tb - ta)], 1)
+    t0, t1 = lm[ta], lm[tb - 1]
+    frac = np.array([0.0, 0.7, 0.85, 1.0])[: tb - ta]
+    slid[ta:tb] = t0 + frac[:, None] * (t1 - t0)
+    after = measure_ear(slid)["tragus_to_antitragus"]
+
+    assert after == pytest.approx(base, rel=0.02), (
+        "measurement moved when vertices slid along an unchanged contour")
