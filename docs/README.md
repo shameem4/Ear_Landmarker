@@ -11,10 +11,12 @@ Two-stage pipeline: BlazeEar detects ears, EarLandmarker regresses 55 landmarks 
    python export_onnx.py
    ```
 
-2. **Copy the BlazeEar detector model**:
+2. **Copy the detector models** (both stages, plus the JS that drives them):
    ```bash
-   cp ../BlazeEar/docs/BlazeEar_web.onnx docs/
+   cp ../BlazeEar/docs/BlazeEar_web.onnx ../BlazeEar/docs/BlazeFace_web.onnx docs/
+   cp ../BlazeEar/docs/blazeear_inference.js docs/
    ```
+   Regenerate them from BlazeEar with `python export_two_stage_web.py`.
 
 3. **Start a local server**:
    ```bash
@@ -33,7 +35,8 @@ The demo loads two ONNX models:
 
 | Model | Input | Output | Purpose |
 |-------|-------|--------|---------|
-| `BlazeEar_web.onnx` | (1, 3, 128, 128) | boxes (896, 4) + scores (896,) | Ear detection |
+| `BlazeFace_web.onnx` | (1, 3, 128, 128) + scale/pad | boxes (N, 4) + scores (N,) | Face detection (stage 1) |
+| `BlazeEar_web.onnx` | (1, 3, 128, 128) + scale/pad | boxes (N, 4) + scores (N,) | Ear detection on the face crop (stage 2) |
 | `EarLandmarker_web.onnx` | (1, 3, 192, 192) | landmarks (1, 55, 2) + confidence (1, 55) | Landmark prediction |
 
 Pipeline: BlazeEar detection -> NMS -> box smoothing -> ROI crop -> EarLandmarker
@@ -65,7 +68,8 @@ const pipeline = new EarLandmarkerPipeline({
     smooth: true,           // temporal smoothing; set false for stills
 });
 
-await pipeline.load('BlazeEar_web.onnx', 'EarLandmarker_web.onnx');
+await pipeline.load('BlazeFace_web.onnx', 'BlazeEar_web.onnx',
+                   'EarLandmarker_web.onnx');
 
 // Detect from video, canvas, or image element
 const results = await pipeline.detect(videoElement);
@@ -106,7 +110,9 @@ const pipeline = new EarLandmarkerPipeline(options);
 - `debug` (default: false) - Log suppressed duplicate pairs to the console
 
 **Methods:**
-- `load(detectorPath, landmarkerPath)` - Load both ONNX models
+- `load(facePath, detectorPath, landmarkerPath)` - Load all three ONNX models.
+  Detection is two-stage as of BlazeEar v2, so a face graph is required; calling
+  it with two arguments throws rather than silently mis-detecting.
 - `detect(source)` - Run full pipeline on image/video/canvas
 - `reset()` - Clear smoothing/tracking state, e.g. webcam -> image
 - `drawResults(ctx, results, options)` - Draw boxes and landmarks on canvas

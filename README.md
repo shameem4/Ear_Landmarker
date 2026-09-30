@@ -9,18 +9,45 @@ Real-time 55-point ear landmark regression using a BlazeBlock backbone (FaceMesh
 ## Pipeline
 
 ```
-Webcam/Image -> BlazeEar detector (128x128) -> ROI crop (1.3x expand) -> EarLandmarker (192x192) -> 55 landmarks
+Webcam/Image -> BlazeFace (128x128) -> face crop (1.5x) -> BlazeEar (128x128)
+             -> ROI crop -> EarLandmarker (192x192) -> 55 landmarks
 ```
 
-The detector (BlazeEar, separate project) produces bounding boxes with NMS. Each
-box is expanded for context, cropped, and fed to the landmarker.
+Detection is **two-stage**, as of BlazeEar v2. BlazeFace locates the head on the
+full frame, and the ear model runs on a square crop at 1.5x the face box. A whole
+frame squeezed into 128x128 leaves the median ear about 14 pixels across;
+cropping to a face first makes it 32. Measured here on 500 annotated full scenes:
+
+| detector | ear recall (IoU>=0.3) |
+|----------|------------------------|
+| pre-v2 single-stage | 47.6% |
+| **v2 two-stage** | **78.6%** |
+
+The cost is a recall ceiling -- an ear whose face BlazeFace misses never reaches
+stage two, 1.4% of images here. BlazeEar measured a full-frame fallback for those
+and found it a wash.
+
+Detection is delegated to BlazeEar's own `blazeear_inference.js` and
+`evaluate_two_stage.load_ear_model` rather than reimplemented. v2 replaced the
+folded backbone with a trainable-BatchNorm one *and* fitted new ear anchors, so a
+hand-rolled `BlazeEar()` either fails to load or silently decodes boxes at the
+wrong scale. The browser ONNX contract changed too, from 896 raw anchors to
+already-decoded, already-suppressed boxes.
+
+Each detector box is then expanded for context, cropped, and fed to the
+landmarker.
 
 **The crop is derived from the landmarks, not from the detector box.** A fixed
 expansion cannot work, because the detector box is not a fixed fraction of the
-ear: on real captures the ratio of true ear extent to box extent runs 1.02 to
-1.53. Where the box is tight, a 1.3x crop is *smaller than the ear*, so the
-landmarks jam against the crop border and can never reach the rim -- the ear came
-out 19% too small on the worst capture measured.
+ear. Against ground truth on 500 annotated scenes the ratio of true ear extent to
+box extent spans p10 0.83 to p90 1.15 (median 0.98), and on close-up captures it
+reaches 1.53. Where the box is tight, a 1.3x crop is *smaller than the ear*, so
+the landmarks jam against the crop border and can never reach the rim.
+
+v2's boxes are more consistent than the pre-v2 detector's (p10-p90 0.83-1.15
+against 0.72-1.28), so refinement fires less often -- but the spread still
+straddles any single constant, and the tight tail is where the visible failures
+were.
 
 So the pipeline crops, predicts, measures the resulting occupancy, and re-crops
 if the ear is not sitting at the 0.777 the model was trained on. This is the
@@ -296,6 +323,22 @@ python data/validate.py
 python data/split.py
 ```
 
+### Refreshing the detector from BlazeEar
+
+BlazeEar is a sibling repo; this one consumes its weights and its browser
+pipeline. After updating it:
+
+```bash
+cp ../BlazeEar/docs/BlazeEar_web.onnx ../BlazeEar/docs/BlazeFace_web.onnx docs/
+cp ../BlazeEar/docs/blazeear_inference.js docs/
+python -m pytest tests/ -q
+```
+
+`docs/blazeear_inference.js` is a verbatim copy, not a fork -- do not edit it
+here. The Python side reads BlazeEar's checkpoints directly through its own
+loaders, so it needs no copy step; set `BLAZEEAR_DIR` if the repo is not a
+sibling directory.
+
 ### Web demo
 
 The browser pipeline is the same one the [live demo](https://shameem4.github.io/Ear_Landmarker/)
@@ -341,6 +384,7 @@ enough.
 | Metric | Value |
 |--------|-------|
 | **test NME, shipped web model** (`v6_persp65`) | **0.0292** (~5.6px at 192px) |
+| detector ear recall, IoU>=0.3 (BlazeEar v2 two-stage) | 78.6% |
 | test NME, best checkpoint (`v2_heatmap`) | 0.0291 |
 | test NME, off-contour component | 0.0129 |
 | Seed-to-seed spread (3 seeds) | +/- 0.0003 (~1% relative) |

@@ -202,12 +202,19 @@
             </div>
             <div style="margin-top: 15px; font-size: 12px; color: #888;">
                 <p><strong>Pipeline:</strong></p>
-                <p>BlazeEar (128x128) &rarr; NMS &rarr; ROI crop &rarr; EarLandmarker (192x192) &rarr; refine ROI from landmarks &rarr; 55 landmarks &rarr; temporal smoothing</p>
+                <p>BlazeFace (128x128) &rarr; face crop (1.5&times;) &rarr; BlazeEar (128x128) &rarr; NMS &rarr; ROI crop &rarr; EarLandmarker (192x192) &rarr; refine ROI from landmarks &rarr; 55 landmarks &rarr; temporal smoothing</p>
                 <p><strong>Models:</strong></p>
                 <ul>
-                    <li><code>BlazeEar_web.onnx</code> - Ear detector</li>
+                    <li><code>BlazeFace_web.onnx</code> - Face detector (stage 1)</li>
+                    <li><code>BlazeEar_web.onnx</code> - Ear detector, crop-trained (stage 2)</li>
                     <li><code>EarLandmarker_web.onnx</code> - Landmark predictor</li>
                 </ul>
+                <p><strong>Detection:</strong></p>
+                <p>Two-stage, as of BlazeEar v2. A whole frame squeezed into
+                128&times;128 leaves the median ear about 14px across; cropping to a
+                face first makes it 32. Measured on 500 annotated scenes, ear
+                recall at IoU&ge;0.3 goes 47.6% &rarr; 78.6%. The cost is a ceiling:
+                an ear whose face is missed never reaches stage two.</p>
                 <p><strong>Architecture:</strong></p>
                 <p>BlazeBlock backbone (FaceMesh pattern), 340K params, soft-argmax
                 heatmap head, Wing loss, perspective augmentation.
@@ -265,7 +272,8 @@
                 pipeline = new EarLandmarkerPipeline({
                     confidenceThreshold: parseFloat(confSlider.value),
                 });
-                await pipeline.load('BlazeEar_web.onnx', 'EarLandmarker_web.onnx');
+                await pipeline.load('BlazeFace_web.onnx', 'BlazeEar_web.onnx',
+                                    'EarLandmarker_web.onnx');
 
                 statusEl.textContent = 'Models loaded -- ready';
                 statusEl.style.background = '#155724';

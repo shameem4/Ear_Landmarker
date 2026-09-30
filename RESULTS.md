@@ -206,8 +206,43 @@ Not challenged by the review: the rotation bug, the soft-argmax gain, the
 smoothing results, the NMS calibration and the synthetic negative result all rest
 on held-out or logged measurements that still check out.
 
+## Detector: BlazeEar v2 (two-stage)
+
+The limitation recorded here previously -- "the detector recalls 47.5% and is the
+binding constraint" -- has been addressed upstream. BlazeEar v2 restored the
+MediaPipe two-stage pattern: BlazeFace on the full frame, then the ear model on a
+square crop at 1.5x the face box.
+
+Re-measured here on 500 annotated full scenes, with the same harness that
+produced the original 47.5%:
+
+| detector | ear recall (IoU>=0.3) | GT ear / box, median | p10-p90 |
+|----------|------------------------|----------------------|---------|
+| pre-v2 single-stage | 47.6% | 0.981 | 0.715-1.280 |
+| **v2 two-stage** | **78.6%** | 0.984 | **0.827-1.153** |
+
+Recall up 65% relative. The old figure reproducing at 47.6% is a useful check on
+the harness. Two things follow for this repo:
+
+- **The box convention did not change** (median 0.981 -> 0.984), so ROI_EXPAND
+  1.3 and the adaptive refinement remain correctly calibrated. Predicted ear
+  heights on the four capture fixtures are unchanged to within 1%.
+- **The boxes are more consistent**, p10-p90 narrowing from 0.72-1.28 to
+  0.83-1.15, so the refinement fires less often. It is still load-bearing: the
+  spread straddles any single constant.
+
+Caveat: these images come from BlazeEar's own training corpus, so both recall
+figures are optimistic. The comparison between them, and the ratio, are what this
+measures. BlazeEar's own held-out numbers (mAP@0.5 0.179 -> 0.581 on images no
+model in that repo trained on) are the ones to cite for the detector itself.
+
+The update was also a **breaking change**: v2 replaced the folded backbone with a
+trainable-BatchNorm one and fitted new ear anchors, so this repo's hand-rolled
+`BlazeEar()` construction raised on load. Detection now defers to BlazeEar's own
+`load_ear_model` / `blazeear_inference.js` instead of duplicating them.
+
 ## Known limitation
 
-The **BlazeEar detector recalls 47.5%** of annotated ears (duplicate rate 1.5%
-after the IoMin fix). The landmarker is no longer the binding constraint on
-end-to-end quality; the detector is. That is separate work.
+Detector recall is now 78.6% on this set rather than 47.5%, so the landmarker and
+the detector are closer to balanced. The remaining ceiling is faces BlazeFace
+misses (1.4% of images), which no second stage can recover.

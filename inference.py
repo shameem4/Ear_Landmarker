@@ -34,6 +34,13 @@ DETECTOR_INPUT_SIZE = 128
 ROI_EXPAND = 1.3  # expand detected bbox by 30% for context
 NMS_IOU_THRESH = 0.3  # suppress duplicate detections on same ear
 NMS_IOMIN_THRESH = 0.35  # also suppress when overlap covers this much of the SMALLER box
+DETECTOR_CONFIDENCE = 0.70
+
+# BlazeEar v2 ships a two-stage pipeline and the ear model is trained on FACE
+# CROPS, not full frames. runs/checkpoints/ still holds the pre-v2 single-stage
+# model; it loads through a different backbone and different anchors, so the
+# path decides both. Override with --detector-weights.
+DETECTOR_WEIGHTS = "runs/checkpoints_crop/BlazeEar_best.pth"
 
 # Adaptive ROI refinement.
 #
@@ -68,26 +75,87 @@ ROI_EXPAND_MAX = 2.5
 # BlazeEar detector wrapper (lightweight, avoids importing full BlazeEar pkg)
 # ---------------------------------------------------------------------------
 
+def _as_boxes(detections) -> np.ndarray:
+    """BlazeEar.process() output -> (N, 5) [ymin, xmin, ymax, xmax, conf].
+
+    process() returns (N, 17): box in columns 0-3, six BlazeFace-style keypoints
+    in 4-15, and confidence in the LAST column. Reading column 4 as the
+    confidence -- as this file used to -- picks up a keypoint x-coordinate, in
+    the hundreds of pixels rather than [0, 1], which made NMS sort by a keypoint
+    and report nonsense scores.
+    """
+    if isinstance(detections, torch.Tensor):
+        detections = detections.cpu().numpy()
+    detections = np.asarray(detections, dtype=np.float64)
+    if detections.size == 0:
+        return np.zeros((0, 5))
+    detections = np.atleast_2d(detections)
+    if detections.shape[1] > 5:
+        detections = np.column_stack([detections[:, :4], detections[:, -1]])
+    return detections
+
+
 class EarDetector:
-    """Wraps BlazeEar for detection-only use."""
+    """BlazeEar's two-stage detector: BlazeFace on the frame, ears on each crop.
+
+    Asking one 128x128 detector to find an ear in a whole frame gives it a
+    median 14-pixel target; cropping to a face first makes it 32. Measured on
+    500 annotated full scenes, recall at IoU>=0.3 goes 47.6% -> 78.6%.
+
+    The cost is a recall ceiling -- an ear whose face is missed never reaches
+    the second stage, 1.4% of images here -- which BlazeEar measured and found
+    not worth a full-frame fallback, since those ears are a median 4.4px.
+
+    Model construction, anchor choice and crop geometry are all deferred to
+    BlazeEar's own helpers rather than reimplemented. That matters: v2 replaced
+    the folded backbone with a trainable-BatchNorm one AND fitted new ear
+    anchors, so a hand-rolled `BlazeEar()` + `generate_anchors(anchor_options)`
+    now either fails to load or silently decodes boxes at the wrong scale.
+
+    Pass two_stage=False to run the ear model on the full frame, which is what
+    this did before and is only correct for a pre-v2 checkpoint.
+    """
 
     def __init__(self, weights_path: str | Path, device: str = "cpu",
-                 confidence: float | None = None) -> None:
+                 confidence: float | None = None, two_stage: bool = True,
+                 face_weights: str | Path | None = None,
+                 legacy_anchors: bool | None = None) -> None:
         sys.path.insert(0, str(BLAZEEAR_DIR))
-        from blazeear import BlazeEar  # type: ignore
-        from utils.anchor_utils import anchor_options  # type: ignore
+        import make_face_crops                                  # type: ignore
+        from evaluate_two_stage import load_ear_model          # type: ignore
+        from make_face_crops import crop_window, load_face_detector  # type: ignore
+        from utils.config import (                              # type: ignore
+            FACE_CROP_EXPAND, FACE_CROP_MAX_FACES, FACE_CROP_THRESHOLD,
+        )
+
+        # BlazeEar's scripts run with their repo as the working directory, so
+        # its face weights path is relative. Absolutise it rather than chdir,
+        # which would be a process-wide side effect from a constructor.
+        if not Path(make_face_crops.FACE_WEIGHTS).is_absolute():
+            make_face_crops.FACE_WEIGHTS = str(BLAZEEAR_DIR / make_face_crops.FACE_WEIGHTS)
 
         self.device = torch.device(device)
-        self.model = BlazeEar()
-        if confidence is not None:
-            self.model.min_score_thresh = confidence
+        self._crop_window = crop_window
+        self.expand = FACE_CROP_EXPAND
+        self.max_faces = FACE_CROP_MAX_FACES
 
-        ckpt = torch.load(str(weights_path), map_location="cpu", weights_only=False)
-        state = ckpt.get("model_state_dict", ckpt)
-        self.model.load_state_dict(state, strict=True)
-        self.model.to(self.device).eval()
-        # Generate anchors after .to(device) so they land on the right device
-        self.model.generate_anchors(anchor_options)
+        # A pre-v2 checkpoint was trained against the original square anchors;
+        # decoding it through the fitted ear priors yields wrong-scale boxes
+        # rather than an error, so infer it from the path unless told.
+        if legacy_anchors is None:
+            legacy_anchors = "checkpoints_crop" not in str(weights_path) and \
+                             "checkpoints_v2" not in str(weights_path)
+        self.model = load_ear_model(
+            str(weights_path),
+            DETECTOR_CONFIDENCE if confidence is None else confidence,
+            str(self.device), legacy_anchors=legacy_anchors)
+
+        self.two_stage = two_stage
+        self.face = load_face_detector(
+            score_threshold=FACE_CROP_THRESHOLD, device=str(self.device),
+        ) if two_stage else None
+        if face_weights is not None and self.face is not None:
+            self.face.min_score_thresh = float(FACE_CROP_THRESHOLD)
 
     @torch.no_grad()
     def detect(self, frame_rgb: np.ndarray) -> np.ndarray:
@@ -95,24 +163,31 @@ class EarDetector:
 
         Returns:
             (N, 5) array of [ymin, xmin, ymax, xmax, confidence] in pixel coords.
-
-        BlazeEar.process() actually returns (N, 17): box in columns 0-3, six
-        BlazeFace-style keypoints in 4-15, and confidence in the LAST column.
-        Reading column 4 as the confidence -- as this file used to -- picks up a
-        keypoint x-coordinate instead, which is in the hundreds of pixels rather
-        than [0, 1]. That made NMS sort by a keypoint and report nonsense scores.
-        Normalise here so the rest of the pipeline sees the documented shape.
         """
-        detections = self.model.process(frame_rgb)
-        if isinstance(detections, torch.Tensor):
-            detections = detections.cpu().numpy()
-        detections = np.asarray(detections, dtype=np.float64)
-        if detections.size == 0:
+        if not self.two_stage:
+            return _as_boxes(self.model.process(frame_rgb))
+
+        faces = self.face.process(frame_rgb)
+        if isinstance(faces, torch.Tensor):
+            faces = faces.cpu().numpy()
+        faces = np.atleast_2d(np.asarray(faces)) if np.size(faces) else np.zeros((0, 17))
+
+        out = []
+        for face in faces[: self.max_faces]:
+            x0, y0, side = self._crop_window(face, self.expand, frame_rgb.shape)
+            patch = frame_rgb[y0:y0 + side, x0:x0 + side]
+            if patch.size == 0:
+                continue
+            det = _as_boxes(self.model.process(patch))
+            if not len(det):
+                continue
+            det[:, :4] += np.array([y0, x0, y0, x0], dtype=np.float64)
+            out.append(det)
+        if not out:
             return np.zeros((0, 5))
-        detections = np.atleast_2d(detections)
-        if detections.shape[1] > 5:
-            detections = np.column_stack([detections[:, :4], detections[:, -1]])
-        return detections
+        # Overlapping face crops can each report the same ear; the pipeline's
+        # own NMS (IoU + IoMin) runs downstream and handles it.
+        return np.concatenate(out, axis=0)
 
 
 # ---------------------------------------------------------------------------
@@ -469,33 +544,47 @@ def draw_results(frame_bgr: np.ndarray, results: List[dict]) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def find_best_checkpoint() -> Path:
-    """Find the best landmarker checkpoint by NME in filename."""
+    """Best landmarker checkpoint under runs/checkpoints, at any depth.
+
+    Two fixes over the previous version, which found nothing once --run-name
+    started putting checkpoints in per-run subdirectories:
+      - it searched flat for "EarLandmarker_*.ckpt" and recursively only for
+        "nme=*.ckpt", and the real filenames ("EarLandmarker_410_nme=...")
+        match neither pattern recursively;
+      - it ranked by the nme= field in the name, which is rounded to four
+        decimals, so runs with several checkpoints tied at that precision were
+        resolved by directory order. The score ModelCheckpoint stores inside
+        the file is exact, so prefer it.
+    """
     ckpt_dir = PROJECT / "runs" / "checkpoints"
-    # Search both flat and nested (old val/nme created subdirs on Windows)
-    candidates = list(ckpt_dir.glob("EarLandmarker_*.ckpt"))
-    candidates += list(ckpt_dir.rglob("nme=*.ckpt"))
-    # Also check for last.ckpt
-    last = ckpt_dir / "last.ckpt"
-    if not candidates and last.exists():
-        return last
+    candidates = sorted(ckpt_dir.rglob("EarLandmarker_*.ckpt"))
+    candidates += [c for c in ckpt_dir.rglob("*.ckpt")
+                   if "nme=" in c.name and c not in candidates]
     if not candidates:
-        raise FileNotFoundError(f"No checkpoints found in {ckpt_dir}")
-    best = candidates[0]
-    best_nme = 999.0
-    for c in candidates:
+        last = ckpt_dir / "last.ckpt"
+        if last.exists():
+            return last
+        raise FileNotFoundError(f"No checkpoints found under {ckpt_dir}")
+
+    def score(c: Path) -> float:
         try:
-            nme = float(c.stem.split("nme=")[1])
-            if nme < best_nme:
-                best_nme = nme
-                best = c
+            ck = torch.load(str(c), map_location="cpu", weights_only=False)
+            for v in (ck.get("callbacks") or {}).values():
+                if isinstance(v, dict) and v.get("current_score") is not None:
+                    return float(v["current_score"])
+        except Exception:
+            pass
+        try:
+            return float(c.stem.split("nme=")[1])
         except (IndexError, ValueError):
-            continue
-    return best
+            return float("inf")
+
+    return min(candidates, key=score)
 
 
 def run_image(args: argparse.Namespace) -> None:
     """Run on a single image and display / save result."""
-    detector_weights = args.detector_weights or BLAZEEAR_DIR / "runs/checkpoints/BlazeEar_best.pth"
+    detector_weights = args.detector_weights or BLAZEEAR_DIR / DETECTOR_WEIGHTS
     landmarker_weights = args.landmarker_weights or find_best_checkpoint()
 
     pipeline = EarLandmarkerPipeline(
@@ -524,7 +613,7 @@ def run_image(args: argparse.Namespace) -> None:
 
 def run_webcam(args: argparse.Namespace) -> None:
     """Run on webcam with real-time display."""
-    detector_weights = args.detector_weights or BLAZEEAR_DIR / "runs/checkpoints/BlazeEar_best.pth"
+    detector_weights = args.detector_weights or BLAZEEAR_DIR / DETECTOR_WEIGHTS
     landmarker_weights = args.landmarker_weights or find_best_checkpoint()
 
     pipeline = EarLandmarkerPipeline(
@@ -582,7 +671,7 @@ def main() -> None:
         p.add_argument("--confidence", type=float, default=None,
                        help="Detector confidence threshold (default: use BlazeEar model default)")
         p.add_argument("--detector-weights", type=str, default=None,
-                       help="BlazeEar weights (default: BlazeEar/runs/checkpoints/BlazeEar_best.pth)")
+                       help=f"BlazeEar weights (default: BlazeEar/{DETECTOR_WEIGHTS})")
         p.add_argument("--landmarker-weights", type=str, default=None,
                        help="EarLandmarker weights (default: best checkpoint)")
 
