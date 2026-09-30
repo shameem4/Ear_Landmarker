@@ -20,6 +20,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from inference import (  # noqa: E402
+    ROI_EXPAND_MAX,
+    ROI_EXPAND_MIN,
+    ROI_MAX_REFINE,
     ROI_OCC_TOL,
     ROI_SATURATED,
     TRAIN_OCCUPANCY,
@@ -103,3 +106,62 @@ def test_js_and_python_constants_agree():
     for name, value in (("TRAIN_OCCUPANCY", TRAIN_OCCUPANCY), ("ROI_OCC_TOL", ROI_OCC_TOL),
                         ("ROI_SATURATED", ROI_SATURATED)):
         assert f"const {name} = {value}" in js, f"{name} missing or different in the JS port"
+
+
+# --- runaway protection -------------------------------------------------------
+#
+# The refinement caches its result per track and seeds the next frame from it.
+# That is a positive feedback loop whenever the landmarker reports a saturated
+# extent -- which is what a confused model does on motion blur, an occluded ear,
+# or a false-positive box. Unclamped it measured ~1.53x growth per frame,
+# reaching 38x the detector box within eight frames and never recovering, since
+# each enlargement makes the ear smaller in the crop.
+
+
+
+def _frame(side_seed, observe, box):
+    """One frame of the real loop, including the clamp."""
+    side = side_seed
+    for attempt in range(ROI_MAX_REFINE + 1):
+        ext = observe(side)
+        if attempt == ROI_MAX_REFINE:
+            break
+        if abs(ext / side - TRAIN_OCCUPANCY) <= ROI_OCC_TOL:
+            break
+        side = min(max(refine_roi_side(side, ext), box * ROI_EXPAND_MIN),
+                   box * ROI_EXPAND_MAX)
+    return side
+
+
+def test_permanently_saturated_model_does_not_run_away():
+    """The regression: eight frames used to reach 38x the detector box."""
+    box = 67.0
+    side = box * 1.3
+    for _ in range(30):
+        side = _frame(side, lambda s: 0.95 * s, box)
+    assert side <= box * ROI_EXPAND_MAX * 1.001, (
+        f"expansion ran away to {side / box:.1f}x the detector box")
+
+
+def test_healthy_case_still_converges_and_is_not_clipped_by_the_clamp():
+    """The clamp must not interfere with the real capture it was built for:
+    a 102px ear behind a 67px box needs ~1.99x, inside the bound."""
+    box, true_ear = 67.0, 102.0
+    side = box * 1.3
+    for _ in range(6):
+        side = _frame(side, lambda s: min(true_ear, 0.95 * s), box)
+    assert side / box == pytest.approx(1.99, abs=0.15)
+    assert side < box * ROI_EXPAND_MAX, "the real case must not need the clamp"
+    assert true_ear / side == pytest.approx(TRAIN_OCCUPANCY, abs=ROI_OCC_TOL)
+
+
+def test_clamp_bounds_are_ordered_and_cover_the_observed_range():
+    """Observed ear/box ratios span 1.02-1.53, needing 1.31-1.97 expansion."""
+    assert ROI_EXPAND_MIN < ROI_EXPAND_MAX
+    assert ROI_EXPAND_MIN <= 1.31 and ROI_EXPAND_MAX >= 1.97
+
+
+def test_js_clamp_matches_python():
+    js = (Path(__file__).resolve().parents[1] / "docs" / "earlandmarker_inference.js").read_text()
+    assert f"const ROI_EXPAND_MIN = {ROI_EXPAND_MIN}" in js
+    assert f"const ROI_EXPAND_MAX = {ROI_EXPAND_MAX}" in js

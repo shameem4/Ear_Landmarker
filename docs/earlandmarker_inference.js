@@ -48,6 +48,15 @@ const ROI_OCC_TOL = 0.06;       // skip refinement when occupancy is already thi
 const ROI_SATURATED = 0.88;     // above this the ear is clipped, so extent under-reads
 const ROI_SAT_BOOST = 1.25;     // ...so grow faster than the measurement implies
 const ROI_MAX_REFINE = 1;       // refinement passes; 1 lands within 1% of the fixed point
+// Hard bounds on the expansion, as a multiple of the detector box extent.
+// Without these the refinement is a positive feedback loop: a landmarker that
+// reports a saturated extent (motion blur, an occluded ear, a false-positive
+// box) grows the crop, the grown value is cached, and the next frame seeds from
+// it -- ~1.53x per frame, 38x within eight frames, with no recovery. The upper
+// bound also keeps the crop inside the band where over-wide framing is cheap:
+// drift is ~0 at 1.7x but 17.7% by 2.5x.
+const ROI_EXPAND_MIN = 1.0;
+const ROI_EXPAND_MAX = 2.5;
 
 /** Next ROI side so the ear lands at the training occupancy. */
 function refineRoiSide(side, extent) {
@@ -176,8 +185,8 @@ class EarLandmarkerPipeline {
             // Seed from what this track needed last frame, so video settles to
             // one pass instead of paying for refinement on every frame.
             const tid = trackIds ? trackIds[di] : undefined;
-            let side = Math.max(bw, bh) *
-                (this._roiExpand.get(tid) ?? ROI_EXPAND);
+            let side = Math.max(bw, bh) * Math.min(Math.max(
+                this._roiExpand.get(tid) ?? ROI_EXPAND, ROI_EXPAND_MIN), ROI_EXPAND_MAX);
             let roiX = cx, roiY = cy;
             let frameLandmarks = null, pointConfidence = null;
 
@@ -225,7 +234,10 @@ class EarLandmarkerPipeline {
                 const extent = Math.max(exX, exY);
                 if (Math.abs(extent / n - TRAIN_OCCUPANCY) <= ROI_OCC_TOL) break;
 
-                side = refineRoiSide(n, extent);
+                const boxExtent = Math.max(bw, bh);
+                side = Math.min(Math.max(refineRoiSide(n, extent),
+                                         boxExtent * ROI_EXPAND_MIN),
+                                boxExtent * ROI_EXPAND_MAX);
                 roiX = (Math.min(...xs) + Math.max(...xs)) / 2;
                 roiY = (Math.min(...ys) + Math.max(...ys)) / 2;
             }

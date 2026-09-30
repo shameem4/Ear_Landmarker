@@ -52,6 +52,16 @@ ROI_OCC_TOL = 0.06        # skip refinement when occupancy is already this close
 ROI_SATURATED = 0.88      # above this the ear is clipped, so measured extent under-reads
 ROI_SAT_BOOST = 1.25      # ...so grow more aggressively than the measurement implies
 ROI_MAX_REFINE = 1        # refinement passes; 1 lands within 1% of the fixed point
+# Hard bounds on the expansion, as a multiple of the detector box extent.
+# Without these the refinement is a positive feedback loop: a landmarker that
+# reports a saturated extent (confused by motion blur, an occluded ear, or a
+# false-positive box) grows the crop, the grown value is cached, and the next
+# frame seeds from it -- measured at ~1.53x per frame, reaching 38x in eight
+# frames with no recovery, since the enlarged crop makes the ear smaller still.
+# The upper bound also keeps the crop inside the band where over-wide framing
+# was measured to be cheap: drift is ~0 at 1.7x but 17.7% by 2.5x.
+ROI_EXPAND_MIN = 1.0
+ROI_EXPAND_MAX = 2.5
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +320,7 @@ class EarLandmarkerPipeline:
             # settles to one pass instead of paying for refinement every frame.
             tid = track_ids[k] if track_ids else None
             expand = self._roi_expand.get(tid, ROI_EXPAND) if tid is not None else ROI_EXPAND
+            expand = min(max(expand, ROI_EXPAND_MIN), ROI_EXPAND_MAX)
             side = max(bw, bh) * expand
 
             lm_frame = point_conf = None
@@ -330,7 +341,9 @@ class EarLandmarkerPipeline:
                 extent = float(max(np.ptp(lm_frame[:, 0]), np.ptp(lm_frame[:, 1])))
                 if abs(extent / side - TRAIN_OCCUPANCY) <= ROI_OCC_TOL:
                     break  # already framed the way the model was trained
-                side = refine_roi_side(side, extent)
+                side = float(np.clip(refine_roi_side(side, extent),
+                                     max(bw, bh) * ROI_EXPAND_MIN,
+                                     max(bw, bh) * ROI_EXPAND_MAX))
                 cx = float((lm_frame[:, 0].min() + lm_frame[:, 0].max()) / 2)
                 cy = float((lm_frame[:, 1].min() + lm_frame[:, 1].max()) / 2)
 

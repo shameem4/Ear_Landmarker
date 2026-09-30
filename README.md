@@ -47,6 +47,15 @@ video each track seeds from the expansion that worked last frame, so the steady
 state is one pass. Pass `refine_roi=False` (`refineRoi: false` in JS) for the old
 single-pass behaviour.
 
+The expansion is **clamped to 1.0-2.5x the detector box**, which is not cosmetic.
+Seeding each frame from the previous one makes the refinement a feedback loop:
+when the landmarker reports a saturated extent -- what it does on motion blur, an
+occluded ear or a false-positive box -- the crop grows, the grown value is
+cached, and the next frame starts larger still. Measured unclamped at ~1.53x per
+frame, reaching 38x the detector box within eight frames with no recovery, since
+each enlargement makes the ear smaller in the crop. The upper bound also keeps
+the crop inside the band where over-wide framing is cheap.
+
 Crops stay **square and grey-128 padded** at frame edges rather than being
 clamped, since a clamped window is non-square and resizing it to 192x192
 stretches the ear along one axis -- worth 17% NME on edge cases.

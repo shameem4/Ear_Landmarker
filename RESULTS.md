@@ -182,11 +182,25 @@ keyed by track id, but `EarTracker.reset()` restarts ids at 0, so after switchin
 webcam to image an unrelated ear would inherit a stale expansion. The cache also
 grew for the life of the process. Both fixed, in the Python and JS pipelines.
 
+**The refinement could run away on video.** Each frame seeds its ROI from the
+previous frame's cached expansion, which makes the loop self-reinforcing: a
+landmarker reporting a saturated extent grows the crop, the grown value is
+cached, and the next frame starts larger. Measured at ~1.53x growth per frame,
+reaching **38x the detector box within eight frames**, with no recovery -- each
+enlargement shrinks the ear in the crop, which keeps the model saturated. The
+earlier 30-frame check missed it because every detection in it was good. The
+expansion is now clamped to 1.0-2.5x, which leaves the real captures untouched
+(they converge to ~1.99x) and keeps the crop inside the measured-cheap band.
+
 **Smaller:** `docs/README.md` documented a `reset()` method that did not exist
 (the real one was `resetSmoothing()`); an alias now makes the documented name
 real. And the "+26 tests" figure in one commit message was inflated -- 23 of
 those are one file-scan guard parametrised across source files, so the genuinely
 new assertions number about 25.
+
+Verified and unchanged: the iBUG landmark semantics were re-checked against the
+primary source (ibug.doc.ic.ac.uk), not the search summary they were first taken
+from, and match.
 
 Not challenged by the review: the rotation bug, the soft-argmax gain, the
 smoothing results, the NMS calibration and the synthetic negative result all rest
