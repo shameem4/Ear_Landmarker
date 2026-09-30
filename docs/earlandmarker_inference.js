@@ -350,6 +350,10 @@ class EarLandmarkerPipeline {
 
         // Convert to CHW, normalize to [-1, 1]
         for (let i = 0; i < size * size; i++) {
+            // [-1, 1]: data/dataset.py does to_tensor() -> [0,1] then
+            // normalize(mean=0.5, std=0.5), so this is the range the model was
+            // trained on. Feeding [0,1] instead costs 15.6% test NME, and the
+            // graph accepts it silently.
             tensorData[i] = (pixels[i * 4] / 255.0 - 0.5) / 0.5;
             tensorData[size * size + i] = (pixels[i * 4 + 1] / 255.0 - 0.5) / 0.5;
             tensorData[2 * size * size + i] = (pixels[i * 4 + 2] / 255.0 - 0.5) / 0.5;

@@ -59,15 +59,15 @@ artificially tightened to span the observed range:
 
 | ear / det box | fixed 1.3x NME | adaptive NME | change |
 |---------------|----------------|--------------|--------|
-| 1.00 (box already covers the ear) | 0.0454 | 0.0461 | **+1.5%** |
-| 1.20 | 0.0475 | 0.0464 | -2.3% |
-| 1.40 | 0.0628 | 0.0473 | -24.6% |
-| 1.53 (tightest observed) | 0.0747 | 0.0449 | **-39.9%** |
+| 1.00 (box already covers the ear) | 0.0400 | 0.0399 | -0.3% |
+| 1.20 | 0.0405 | 0.0407 | +0.6% |
+| 1.40 | 0.0535 | 0.0417 | -22.1% |
+| 1.53 (tightest observed) | 0.0657 | 0.0394 | **-39.9%** |
 
 The claim is not that refinement is more accurate in general -- it is that the
-pipeline stops caring how tight the detector box is. Adaptive holds ~0.045 across
-the whole range while the fixed policy degrades 65%. It costs **1.5% when the box
-already frames the ear correctly**, which is the price of the extra pass.
+pipeline stops caring how tight the detector box is. Adaptive holds ~0.040 across
+the whole range while the fixed policy degrades 64%. Where the box already frames
+the ear correctly it is a wash, within +/-0.6%.
 
 Cost is bounded: framing that is already correct exits after one pass, and on
 video each track seeds from the expansion that worked last frame, so the steady

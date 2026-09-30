@@ -157,10 +157,15 @@ Reviewed after the fact, several claims above did not survive contact.
 model's own converged fixed point, which the refinement reaches by construction --
 that shows convergence, not accuracy. Re-run against real ground truth on the
 test split, with the detector box artificially tightened, the fix does hold and
-the honest framing is different: adaptive keeps NME at ~0.045 regardless of how
-tight the box is, while the fixed policy degrades from 0.0454 to 0.0747 (65%)
-across the observed ratio range. It also **costs 1.5% when the box already frames
-the ear correctly**, which the original write-up did not mention.
+the honest framing is different: adaptive keeps NME at ~0.040 regardless of how
+tight the box is, while the fixed policy degrades from 0.0400 to 0.0657 (64%)
+across the observed ratio range. Where the box already frames the ear correctly
+the two are a wash, within +/-0.6%.
+
+(That re-run was itself repeated later. The first version fed the model [0, 1]
+input when it is trained on [-1, 1], which handicapped both arms; the numbers
+above are the corrected ones. The conclusion did not change, but the "+1.5% cost
+at correct framing" first reported here was an artifact of that error.)
 
 **`scripts/eval_test.py` did not reproduce the logged numbers**, despite this
 file telling readers to reproduce with it. It picked the best checkpoint by the

@@ -235,7 +235,10 @@ class LandmarkPredictor:
         tensor = torch.from_numpy(crop_rgb).float().permute(2, 0, 1) / 255.0
         tensor = F.interpolate(tensor.unsqueeze(0), size=(LANDMARKER_INPUT_SIZE, LANDMARKER_INPUT_SIZE),
                                mode="bilinear", align_corners=False)
-        tensor = (tensor - 0.5) / 0.5  # normalize to [-1, 1]
+        # [-1, 1], matching data/dataset.py: to_tensor() -> [0,1], then
+        # normalize(mean=0.5, std=0.5). Feeding [0,1] instead costs 15.6% test
+        # NME (0.0288 -> 0.0341 on 400 held-out samples) and raises no error.
+        tensor = (tensor - 0.5) / 0.5
         tensor = tensor.to(self.device)
 
         conf = None
@@ -543,28 +546,40 @@ def draw_results(frame_bgr: np.ndarray, results: List[dict]) -> np.ndarray:
 # CLI modes
 # ---------------------------------------------------------------------------
 
-def find_best_checkpoint() -> Path:
-    """Best landmarker checkpoint under runs/checkpoints, at any depth.
+# The run the shipped model comes from. Checkpoint scores are NOT comparable
+# across runs -- v5_tang* was trained with a tangential-weighted loss and
+# monitored val_nme_normal, so it posts a lower val_nme while scoring WORSE on
+# test (0.0296 against 0.0292). Ranking every run together therefore picks a
+# model that should not ship, which is exactly what an earlier version of
+# find_best_checkpoint() did once it learned to search recursively.
+SHIPPED_RUN = "v6_persp65"
 
-    Two fixes over the previous version, which found nothing once --run-name
-    started putting checkpoints in per-run subdirectories:
-      - it searched flat for "EarLandmarker_*.ckpt" and recursively only for
-        "nme=*.ckpt", and the real filenames ("EarLandmarker_410_nme=...")
-        match neither pattern recursively;
-      - it ranked by the nme= field in the name, which is rounded to four
-        decimals, so runs with several checkpoints tied at that precision were
-        resolved by directory order. The score ModelCheckpoint stores inside
-        the file is exact, so prefer it.
+
+def find_best_checkpoint(run: str | None = SHIPPED_RUN) -> Path:
+    """Best landmarker checkpoint for one run, by the score inside the file.
+
+    Scoped to `run` by default, because scores are not comparable between runs
+    (see SHIPPED_RUN). Pass run=None to search every run, which is only
+    meaningful for runs that share a training objective.
+
+    Ranked by the score ModelCheckpoint stores inside the file, not by the nme=
+    field in the name: that is rounded to four decimals and every run here has
+    two or three checkpoints tied at it, so ranking by name resolved the tie on
+    directory order and could return a checkpoint other than the best.
     """
     ckpt_dir = PROJECT / "runs" / "checkpoints"
-    candidates = sorted(ckpt_dir.rglob("EarLandmarker_*.ckpt"))
-    candidates += [c for c in ckpt_dir.rglob("*.ckpt")
-                   if "nme=" in c.name and c not in candidates]
+    search_dir = ckpt_dir / run if run else ckpt_dir
+    if run and not search_dir.is_dir():
+        raise FileNotFoundError(
+            f"Run {run!r} not found under {ckpt_dir}. Pass --checkpoint "
+            f"explicitly, or find_best_checkpoint(run=None) to search all runs.")
+
+    candidates = sorted(c for c in search_dir.rglob("*.ckpt") if "nme=" in c.name)
     if not candidates:
-        last = ckpt_dir / "last.ckpt"
+        last = search_dir / "last.ckpt"
         if last.exists():
             return last
-        raise FileNotFoundError(f"No checkpoints found under {ckpt_dir}")
+        raise FileNotFoundError(f"No checkpoints found under {search_dir}")
 
     def score(c: Path) -> float:
         try:
