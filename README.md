@@ -450,6 +450,29 @@ carried over because the heatmap head adds a decoder and they have never been
 re-measured. Nobody should quote a performance number this repo has not produced
 since the architecture changed.
 
+### Queued: does backbone pretraining help?
+
+Set up but not run -- `scripts/run_pretrain_experiment.sh`, pre-registered, six
+runs.
+
+The question was whether loading MediaPipe FaceMesh or BlazeEar weights to
+bootstrap training would help. Measuring first showed it cannot be asked
+directly: against the shipped backbone (5x5 depthwise, 24-48-96-128-192) only
+**0.9% of parameters** are shape-compatible with any donor on disk, and FaceMesh
+shares 15% by shape with *zero* name correspondence. The ladders are
+incompatible end to end -- donor 3x3 depthwise and 24-28-32-36-42-48-56-64-72-80-88,
+ours 5x5 and doubling.
+
+So an A/B on the shipped architecture would read as "pretraining does not help"
+when it only showed the weights never arrived. `--backbone blazeear` mirrors
+BlazeEar v2's backbone1 block for block, which lets 59% of the backbone actually
+transfer, and the experiment runs that architecture twice -- random init against
+transferred -- changing nothing else.
+
+Caveat worth keeping in view: the mirrored backbone is 82K params against the
+shipped 340K, because the donor tops out at 88 channels. It answers "does
+pretraining help", not "should this architecture ship".
+
 **What is deliberately not on this list:** further perspective-angle tuning
 (persp50 and persp65 are 0.26 sigma apart -- not separable), contour
 canonicalization (tried, deformed the shape more than it fixed), and ROI_EXPAND

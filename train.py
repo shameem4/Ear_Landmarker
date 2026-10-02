@@ -44,6 +44,13 @@ def main() -> None:
     parser.add_argument("--arch", type=str, default="gap", choices=["gap", "heatmap"],
                         help="gap: GAP+FC coordinate regression (v1). "
                              "heatmap: soft-argmax over 24x24 heatmaps.")
+    parser.add_argument("--backbone", type=str, default="default",
+                        choices=["default", "blazeear"],
+                        help="'default' is the shipped backbone (5x5 depthwise, "
+                             "24-48-96-128-192). 'blazeear' mirrors BlazeEar v2's "
+                             "backbone1 so --blazeear-ckpt can actually transfer: "
+                             "against 'default' only 0.9%% of parameters are "
+                             "shape-compatible, so a transfer there measures nothing.")
     parser.add_argument("--tau", type=float, default=1.0,
                         help="Soft-argmax softmax temperature (--arch heatmap only)")
     parser.add_argument("--wing-w", type=float, default=0.04)
@@ -165,6 +172,7 @@ def main() -> None:
         wing_epsilon=args.wing_epsilon,
         blazeear_ckpt=args.blazeear_ckpt,
         arch=args.arch,
+        backbone=args.backbone,
         tau=args.tau,
         tangential_weight=args.tangential_weight,
         spacing_weight=args.spacing_weight,

@@ -47,6 +47,7 @@ class EarLandmarkerModule(pl.LightningModule):
         wing_epsilon: float = 0.01,
         blazeear_ckpt: Optional[str] = None,
         arch: str = "gap",
+        backbone: str = "default",
         tau: float = 1.0,
         tangential_weight: float = 1.0,
         spacing_weight: float = 0.0,
@@ -55,9 +56,10 @@ class EarLandmarkerModule(pl.LightningModule):
         self.save_hyperparameters()
 
         if arch == "gap":
-            self.model = EarLandmarker(num_landmarks=num_landmarks)
+            self.model = EarLandmarker(num_landmarks=num_landmarks, backbone=backbone)
         elif arch == "heatmap":
-            self.model = EarLandmarkerHeatmap(num_landmarks=num_landmarks, tau=tau)
+            self.model = EarLandmarkerHeatmap(
+                num_landmarks=num_landmarks, tau=tau, backbone=backbone)
         else:
             raise ValueError(f"unknown arch {arch!r}, expected 'gap' or 'heatmap'")
         # tangential_weight < 1 discounts residual along the GT contour, where most

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import re
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,12 +22,22 @@ from model.blocks import BlazeBlock
 NUM_LANDMARKS = 55
 
 
-def _make_stage(in_ch: int, out_ch: int, num_blocks: int) -> nn.Sequential:
+def _make_stage(in_ch: int, out_ch: int, num_blocks: int,
+                kernel_size: int = 5) -> nn.Sequential:
     """Build a stage: one stride-2 block + (num_blocks-1) stride-1 blocks."""
-    layers = [BlazeBlock(in_ch, out_ch, stride=2)]
+    layers = [BlazeBlock(in_ch, out_ch, kernel_size=kernel_size, stride=2)]
     for _ in range(num_blocks - 1):
-        layers.append(BlazeBlock(out_ch, out_ch))
+        layers.append(BlazeBlock(out_ch, out_ch, kernel_size=kernel_size))
     return nn.Sequential(*layers)
+
+
+# BlazeEar v2's backbone1 channel ladder, block by block. Mirroring it exactly
+# is the only way to ask whether pretraining helps: with the default backbone
+# (5x5 depthwise, 24-48-96-128-192) just 0.8% of parameters are shape-compatible
+# with ANY available donor, so a transfer experiment there measures nothing.
+# The donor uses 3x3 depthwise throughout and a gradual ladder.
+BLAZEEAR_LADDER = [24, 28, 32, 36, 42, 48, 56, 64, 72, 80, 88]
+BLAZEEAR_KERNEL = 3
 
 
 class EarLandmarker(nn.Module):
@@ -45,38 +57,92 @@ class EarLandmarker(nn.Module):
         Global Average Pooling -> FC(192, 110) -> Sigmoid
     """
 
-    def __init__(self, num_landmarks: int = NUM_LANDMARKS) -> None:
+    def __init__(self, num_landmarks: int = NUM_LANDMARKS,
+                 backbone: str = "default") -> None:
         super().__init__()
         self.num_landmarks = num_landmarks
+        self.backbone_kind = backbone
 
-        # Initial convolution (matches BlazeEar/BlazeFace pattern)
-        self.conv0 = nn.Sequential(
-            nn.Conv2d(3, 24, kernel_size=5, stride=2, padding=0, bias=False),
-            nn.BatchNorm2d(24),
-            nn.ReLU(inplace=True),
-        )
-
-        # Stage 0: refine at 96x96 (no downsampling)
-        self.stage0 = nn.Sequential(
-            BlazeBlock(24, 24),
-            BlazeBlock(24, 24),
-        )
-
-        # Stages 1-4: progressive downsampling
-        self.stage1 = _make_stage(24, 48, num_blocks=4)    # -> 48x48
-        self.stage2 = _make_stage(48, 96, num_blocks=4)    # -> 24x24
-        self.stage3 = _make_stage(96, 128, num_blocks=4)   # -> 12x12
-        self.stage4 = _make_stage(128, 192, num_blocks=3)  # -> 6x6
+        if backbone == "blazeear":
+            self._build_blazeear_backbone()
+        elif backbone == "default":
+            self._build_default_backbone()
+        else:
+            raise ValueError(f"unknown backbone {backbone!r}")
 
         # Regression head
         self.head = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            nn.Linear(192, num_landmarks * 2),
+            nn.Linear(self.stage4_ch, num_landmarks * 2),
             nn.Sigmoid(),
         )
 
         self._init_weights()
+
+    def _build_default_backbone(self) -> None:
+        """The shipped backbone: 5x5 depthwise, doubling channel ladder."""
+        self.conv0 = nn.Sequential(
+            nn.Conv2d(3, 24, kernel_size=5, stride=2, padding=0, bias=False),
+            nn.BatchNorm2d(24),
+            nn.ReLU(inplace=True),
+        )
+        # Stage 0: refine at 96x96 (no downsampling)
+        self.stage0 = nn.Sequential(
+            BlazeBlock(24, 24),
+            BlazeBlock(24, 24),
+        )
+        # Stages 1-4: progressive downsampling
+        self.stage1 = _make_stage(24, 48, num_blocks=4)    # -> 48x48
+        self.stage2 = _make_stage(48, 96, num_blocks=4)    # -> 24x24
+        self.stage3 = _make_stage(96, 128, num_blocks=4)   # -> 12x12
+        self.stage4 = _make_stage(128, 192, num_blocks=3)  # -> 6x6
+        self.stage2_ch, self.stage3_ch, self.stage4_ch = 96, 128, 192
+
+    def _build_blazeear_backbone(self) -> None:
+        """Backbone mirroring BlazeEar v2's backbone1, so its weights can load.
+
+        Exists ONLY to make the pretraining question answerable. Against the
+        default backbone just 0.8% of parameters are shape-compatible with any
+        donor on disk, so "does bootstrapping help" cannot be measured there --
+        the result would be a null by construction rather than a finding.
+
+        Same depth and stride schedule as the default backbone, so the decoder,
+        the 192x192 input and the 24x24 heatmap grid are unchanged; what differs
+        is the 3x3 depthwise kernel and the donor's gradual channel ladder. That
+        makes `blazeear` + `--blazeear-ckpt` a controlled A/B against `blazeear`
+        alone: identical architecture, only the initialisation differs.
+        """
+        c = BLAZEEAR_LADDER
+        k = BLAZEEAR_KERNEL
+        self.conv0 = nn.Sequential(
+            nn.Conv2d(3, c[0], kernel_size=5, stride=2, padding=0, bias=False),
+            nn.BatchNorm2d(c[0]),
+            nn.ReLU(inplace=True),
+        )
+
+        # The donor's eleven blocks, in order, with its exact channel
+        # transitions: 24-24-28-32-36-42-48-56-64-72-80-88. They are split
+        # across our five stages so every block lines up 1:1 with a donor block
+        # -- an approximate split transfers only 5.4% instead of ~100%.
+        #
+        # Strides are OURS, not the donor's: we need 192 -> 6x6 with taps at
+        # 24x24 and 12x12 for the decoder. Conv weights are resolution-agnostic,
+        # so this is sound; the BatchNorm statistics are the part that arrives
+        # mismatched, and training re-estimates them.
+        def blocks(pairs, stride_first):
+            layers = []
+            for n, (i, o) in enumerate(pairs):
+                layers.append(BlazeBlock(
+                    i, o, kernel_size=k, stride=2 if (n == 0 and stride_first) else 1))
+            return nn.Sequential(*layers)
+
+        self.stage0 = blocks([(c[0], c[0])], False)                     # 96x96
+        self.stage1 = blocks([(c[0], c[1]), (c[1], c[2])], True)        # 48x48
+        self.stage2 = blocks([(c[2], c[3]), (c[3], c[4])], True)        # 24x24
+        self.stage3 = blocks([(c[4], c[5]), (c[5], c[6]), (c[6], c[7])], True)   # 12x12
+        self.stage4 = blocks([(c[7], c[8]), (c[8], c[9]), (c[9], c[10])], True)  # 6x6
+        self.stage2_ch, self.stage3_ch, self.stage4_ch = c[4], c[7], c[10]
 
     def _init_weights(self) -> None:
         """Kaiming init for conv layers, default for BN."""
@@ -122,33 +188,59 @@ class EarLandmarker(nn.Module):
         return self.head(s4)   # (B, 110)
 
     def load_blazeear_backbone(self, checkpoint_path: str | Path) -> int:
-        """Initialize early layers from a trained BlazeEar detector checkpoint.
+        """Initialise the backbone from a trained BlazeEar detector checkpoint.
 
-        Transfers conv0 and the first few BlazeBlocks from the detector's
-        backbone1 where channel dimensions match.
+        Transfers every tensor whose shape matches, walking our backbone blocks
+        against the detector's backbone1 in order.
+
+        How much that is depends entirely on the backbone:
+          - backbone="blazeear" mirrors the detector's topology, so essentially
+            the whole feature extractor transfers. This is the configuration the
+            pretraining experiment uses.
+          - backbone="default" uses 5x5 depthwise and a doubling channel ladder,
+            which shares only the first conv -- 1,800 of 348,466 parameters,
+            0.5%. Transfer there cannot produce a measurable effect, so loading
+            a checkpoint into it is close to a no-op and says so in the count.
 
         Returns:
             Number of parameters transferred.
         """
-        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-        state = ckpt if not isinstance(ckpt, dict) or "model_state_dict" not in ckpt else ckpt["model_state_dict"]
+        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        state = ckpt.get("model_state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
 
-        transferred = 0
         my_state = self.state_dict()
+        transferred = 0
 
-        # Map BlazeEar backbone1 layers to our stages
-        # BlazeEar backbone1[0] = Conv2d(3, 24, 5, s=2)  -> our conv0[0]
-        # BlazeEar backbone1[1] = ReLU                    -> skip
-        # BlazeEar backbone1[2] = BlazeBlock_WT(24, 24)   -> our stage0[0]
-        # BlazeEar backbone1[3] = BlazeBlock_WT(24, 28)   -> channels diverge, stop
-
-        # Transfer initial conv
-        src_key = "backbone1.0.weight"
-        dst_key = "conv0.0.weight"
-        if src_key in state and dst_key in my_state:
-            if state[src_key].shape == my_state[dst_key].shape:
-                my_state[dst_key] = state[src_key]
+        def take(dst_key: str, src_key: str) -> None:
+            nonlocal transferred
+            if (dst_key in my_state and src_key in state
+                    and my_state[dst_key].shape == state[src_key].shape):
+                my_state[dst_key] = state[src_key].clone()
                 transferred += state[src_key].numel()
+
+        # Initial conv. The detector folds BN into it (bias present); ours keeps
+        # BN separate, so only the conv weight carries over.
+        take("conv0.0.weight", "backbone1.0.weight")
+
+        # Our backbone blocks, in forward order.
+        ours: list[str] = []
+        for stage in ("stage0", "stage1", "stage2", "stage3", "stage4"):
+            idx = sorted({int(m.group(1)) for m in
+                          (re.match(rf"{stage}\.(\d+)\.", k) for k in my_state) if m})
+            ours += [f"{stage}.{i}" for i in idx]
+
+        # The detector's, skipping backbone1.0 (the conv) and any non-block entry.
+        src_idx = sorted({int(m.group(1)) for m in
+                          (re.match(r"backbone1\.(\d+)\.", k) for k in state) if m})
+        theirs = [f"backbone1.{i}" for i in src_idx
+                  if f"backbone1.{i}.dw_conv.weight" in state]
+
+        SUFFIXES = ("dw_conv.weight", "pw_conv.weight",
+                    "bn1.weight", "bn1.bias", "bn1.running_mean", "bn1.running_var",
+                    "bn2.weight", "bn2.bias", "bn2.running_mean", "bn2.running_var")
+        for dst_block, src_block in zip(ours, theirs):
+            for suffix in SUFFIXES:
+                take(f"{dst_block}.{suffix}", f"{src_block}.{suffix}")
 
         self.load_state_dict(my_state, strict=True)
         return transferred
@@ -187,17 +279,19 @@ class EarLandmarkerHeatmap(EarLandmarker):
             closer to argmax), >1 flattens it.
     """
 
-    def __init__(self, num_landmarks: int = NUM_LANDMARKS, tau: float = 1.0) -> None:
-        super().__init__(num_landmarks=num_landmarks)
+    def __init__(self, num_landmarks: int = NUM_LANDMARKS, tau: float = 1.0,
+                 backbone: str = "default") -> None:
+        super().__init__(num_landmarks=num_landmarks, backbone=backbone)
         self.tau = tau
 
         # The GAP head is unused by this subclass; drop it so it does not appear
         # in the state dict or the parameter count.
         del self.head
 
-        dec_ch = 96
-        self.lat4 = nn.Conv2d(192, dec_ch, 1, bias=False)
-        self.lat3 = nn.Conv2d(128, dec_ch, 1, bias=False)
+        # Decoder width follows stage2, which it is summed with.
+        dec_ch = self.stage2_ch
+        self.lat4 = nn.Conv2d(self.stage4_ch, dec_ch, 1, bias=False)
+        self.lat3 = nn.Conv2d(self.stage3_ch, dec_ch, 1, bias=False)
         self.bn4 = nn.BatchNorm2d(dec_ch)
         self.bn3 = nn.BatchNorm2d(dec_ch)
         self.refine = BlazeBlock(dec_ch, dec_ch)
