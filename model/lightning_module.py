@@ -46,6 +46,7 @@ class EarLandmarkerModule(pl.LightningModule):
         wing_w: float = 0.04,
         wing_epsilon: float = 0.01,
         blazeear_ckpt: Optional[str] = None,
+        mediapipe_ckpt: Optional[str] = None,
         arch: str = "gap",
         backbone: str = "default",
         tau: float = 1.0,
@@ -60,8 +61,14 @@ class EarLandmarkerModule(pl.LightningModule):
         elif arch == "heatmap":
             self.model = EarLandmarkerHeatmap(
                 num_landmarks=num_landmarks, tau=tau, backbone=backbone)
+        elif arch == "facemesh":
+            # MediaPipe's face landmark topology, copied exactly bar the output
+            # width. See model/facemesh_ear.py for what that trade involves.
+            from model.facemesh_ear import FaceMeshEarLandmarker
+            self.model = FaceMeshEarLandmarker(num_landmarks=num_landmarks)
         else:
-            raise ValueError(f"unknown arch {arch!r}, expected 'gap' or 'heatmap'")
+            raise ValueError(
+                f"unknown arch {arch!r}, expected 'gap', 'heatmap' or 'facemesh'")
         # tangential_weight < 1 discounts residual along the GT contour, where most
         # of the label noise lives. 1.0 reproduces plain isotropic Wing loss.
         if tangential_weight >= 1.0 and spacing_weight <= 0.0:
@@ -76,6 +83,11 @@ class EarLandmarkerModule(pl.LightningModule):
         if blazeear_ckpt:
             n = self.model.load_blazeear_backbone(blazeear_ckpt)
             print(f"Transferred {n:,} parameters from BlazeEar backbone")
+        if mediapipe_ckpt:
+            n = self.model.load_mediapipe_backbone(mediapipe_ckpt)
+            total = sum(p.numel() for p in self.model.parameters())
+            print(f"Transferred {n:,} of {total:,} parameters "
+                  f"({n/total*100:.1f}%) from MediaPipe face landmark weights")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)

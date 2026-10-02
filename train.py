@@ -41,9 +41,13 @@ def main() -> None:
     parser.add_argument("--compile", action="store_true", help="Use torch.compile")
     parser.add_argument("--blazeear-ckpt", type=str, default=None,
                         help="BlazeEar checkpoint for backbone initialization")
-    parser.add_argument("--arch", type=str, default="gap", choices=["gap", "heatmap"],
+    parser.add_argument("--arch", type=str, default="gap",
+                        choices=["gap", "heatmap", "facemesh"],
                         help="gap: GAP+FC coordinate regression (v1). "
                              "heatmap: soft-argmax over 24x24 heatmaps.")
+    parser.add_argument("--mediapipe-ckpt", type=str, default=None,
+                        help="MediaPipe blazeface_landmark.pth, for --arch facemesh. "
+                             "Transfers 84.6%% of the model's parameters.")
     parser.add_argument("--backbone", type=str, default="default",
                         choices=["default", "blazeear"],
                         help="'default' is the shipped backbone (5x5 depthwise, "
@@ -171,6 +175,7 @@ def main() -> None:
         wing_w=args.wing_w,
         wing_epsilon=args.wing_epsilon,
         blazeear_ckpt=args.blazeear_ckpt,
+        mediapipe_ckpt=args.mediapipe_ckpt,
         arch=args.arch,
         backbone=args.backbone,
         tau=args.tau,

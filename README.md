@@ -450,7 +450,38 @@ carried over because the heatmap head adds a decoder and they have never been
 re-measured. Nobody should quote a performance number this repo has not produced
 since the architecture changed.
 
-### Queued: does backbone pretraining help?
+### Queued: could MediaPipe's FaceMesh have done this job?
+
+Set up but not run -- `scripts/run_facemesh_experiment.sh`, pre-registered.
+
+There is **no recorded rationale** for why v1 sized its backbone independently
+rather than adopting MediaPipe's face landmark topology and its weights.
+PROJECT.log states the architecture as a fact, the original commit message is a
+feature list, and `blazeface_landmark.pth` has sat unreferenced in a sibling
+repo throughout. The likeliest reading is that the deviation was never a
+decision: v1 took the BlazeBlock idiom and sized the rest by hand.
+
+`model/facemesh_ear.py` copies that topology exactly -- MediaPipe's weights load
+into it with `strict=True`, and its 192x192 input happens to match
+EarLandmarker's. The only change is unavoidable: the output conv emits
+468 x 3 = 1404 channels, and ears need 55 x 2, so that one layer is resized and
+left random. It is also the only layer carrying face-landmark *identity*, so
+nothing reshapes face vertices into ear points -- what transfers is 175,152
+params of generic feature extraction, 84.6% of the model.
+
+| arm | params | init |
+|-----|--------|------|
+| `fm_scratch` | 206,942 | random -- is the architecture enough? |
+| `fm_pre` | 206,942 | 84.6% MediaPipe -- do the free weights pay? |
+| control | 340,167 | already run: 0.02919 +/- 0.00031 |
+
+Expect the copy to start about 4% behind on head design alone: it regresses
+coordinates directly from a 3x3 conv, the same family as the GAP+FC head this
+project measured at 0.0301 against the heatmap's 0.0291. The pretrained features
+have to win that back. A loss is a real result -- it says the independent design
+earns its keep.
+
+### Also queued: does backbone pretraining help?
 
 Set up but not run -- `scripts/run_pretrain_experiment.sh`, pre-registered, six
 runs.
