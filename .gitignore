@@ -17,3 +17,13 @@
 /generate_article.py
 /Ear_Landmarker_Article.docx
 /ChatGPT Image*.png
+
+# Third-party research data -- never commit, never redistribute.
+# Lives in ../clean_3d_data (outside every repo). CC BY 4.0 would permit
+# redistribution with attribution; we deliberately do not, to keep provenance
+# with the owners. ../clean_3d_data/fetch_sources.sh re-downloads from source.
+/clean_3d_data/
+/data/3d/
+*.ply
+*.stl
+*.zip
