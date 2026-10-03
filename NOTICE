@@ -8,25 +8,19 @@ material, which carries its own terms. Apache-2.0 covers this repository's own
 source code and does not override any of them.
 
 --------------------------------------------------------------------------------
-1. BlazeEar  --  Creative Commons Attribution-NonCommercial 4.0 International
-   Copyright (c) 2025 Shameem Hameed
+1. BlazeEar and trainable_blazeface  --  Apache License 2.0
+   Copyright (c) 2026 Shameem Hameed
 --------------------------------------------------------------------------------
 
-CC BY-NC 4.0 is NOT compatible with Apache-2.0: it forbids commercial use, which
-Apache-2.0 permits. The two cannot both govern the same file.
-
-Affected here:
+Both were relicensed from CC BY-NC 4.0 to Apache-2.0, so the earlier conflict is
+resolved. Material used here:
   - docs/blazeear_inference.js      verbatim copy of BlazeEar's browser pipeline
   - docs/BlazeEar_web.onnx          BlazeEar's trained ear detector
-  - inference.py                    imports load_ear_model, crop_window and
-                                    load_face_detector from BlazeEar at runtime
-  - model/facemesh_ear.py           imports BlazeBlock_WT from BlazeEar
-  - scripts/build_*_testset.py      import BlazeEar
+  - inference.py, model/facemesh_ear.py, scripts/build_*_testset.py
+                                    import from BlazeEar at runtime
 
-The same person holds copyright in both projects, so this is resolvable --
-by relicensing or dual-licensing BlazeEar, or by removing the vendored file and
-the runtime dependency. Until then, treat the detector-side material as
-NonCommercial and this repository's own code as Apache-2.0.
+BlazeEar's own detector training data is Roboflow-sourced and declares CC BY 4.0
+on five of seven sets; two state no licence.
 
 --------------------------------------------------------------------------------
 2. MediaPipe (Google LLC)  --  Apache License 2.0
@@ -34,25 +28,60 @@ NonCommercial and this repository's own code as Apache-2.0.
 
 Compatible. Used for:
   - BlazeFace face-detection weights, via BlazeEar's two-stage pipeline
-  - blazeface_landmark.pth, the face landmark weights loaded by
-    model/facemesh_ear.py for the architecture comparison in RESULTS.md
+  - blazeface_landmark.pth, loaded by model/facemesh_ear.py for the architecture
+    comparison in RESULTS.md
   - the BlazeBlock architecture pattern the backbone follows
 
 docs/BlazeFace_web.onnx derives from MediaPipe's published weights.
 
 --------------------------------------------------------------------------------
-3. Training data  --  terms NOT reviewed; see below
+3. Training data  --  MIXED, AND PART OF IT IS NON-COMMERCIAL
 --------------------------------------------------------------------------------
 
-No dataset is redistributed here: data/raw, data/preprocessed and runs/ are all
-gitignored. But docs/EarLandmarker_web.onnx IS tracked, and it is a model trained
-on those datasets, so whatever terms they carry may reach it.
+No dataset is redistributed here; data/raw, data/preprocessed and runs/ are all
+gitignored. But **docs/EarLandmarker_web.onnx IS tracked**, and it is a model
+trained on all four sources below.
 
-The 55-point annotation scheme is iBUG's (Zhou & Zaferiou, "Deformable Models of
-Ears in-the-wild", FG 2017). The sources are described in README.md as
-collectionA (605), collectionB (3,153), AudioEar2D (2,000) and AudioEar3D (112).
-Academic ear datasets commonly carry research-only or non-commercial terms.
+| source      | samples | licence                            | commercial use |
+|-------------|---------|------------------------------------|----------------|
+| collectionB |   3,153 | iBUG: non-commercial research only | NO             |
+| collectionA |     605 | iBUG: non-commercial research only | NO             |
+| AudioEar2D  |   2,000 | CC BY 4.0                          | yes, attribute |
+| AudioEar3D  |     112 | CC BY 4.0                          | yes, attribute |
 
-**Their licences have not been checked against Apache-2.0 redistribution of the
-trained weights.** That needs doing before this repository is treated as
-commercially usable, and it is independent of item 1.
+AudioEar (Huang et al., AAAI 2023) is CC BY 4.0, confirmed on its Zenodo record
+(https://zenodo.org/records/7592895). Permissive; attribution required.
+
+The iBUG ear data (Zhou & Zaferiou, "Deformable Models of Ears in-the-wild",
+FG 2017, https://ibug.doc.ic.ac.uk/resources/ibug-ears/) states:
+
+    "The dataset is available for non-commercial research purposes only."
+
+    "You agree not to reproduce, duplicate, copy, sell, trade, resell or
+    exploit for any commercial purposes, any portion of the annotations and
+    ANY PORTION OF DERIVED DATA."
+
+    "You agree not to further copy, publish or distribute any portion of
+    annotations of the dataset."
+
+"Any portion of derived data" reaches trained model weights. **So
+docs/EarLandmarker_web.onnx cannot be offered under Apache-2.0's grant of
+commercial use.** 64% of the training samples carry that restriction, and it
+also requires citing the source databases (VGG Face, LFW, Helen).
+
+Identification basis: these sources use iBUG's exact 55-point scheme, verified
+against the iBUG page, and collectionA's 605 samples match its documented
+Collection A count. The raw data is not on this machine, so if collectionA/B
+turn out to have a different provenance this section should be revisited.
+
+WHAT THIS MEANS IN PRACTICE
+  - The SOURCE CODE in this repository is Apache-2.0 and unaffected.
+  - The TRAINED WEIGHTS in docs/EarLandmarker_web.onnx are, on this reading,
+    non-commercial. Treat them as research-use only until resolved.
+
+Ways to resolve, none of which this file chooses:
+  - keep Apache-2.0 for code and mark the weights non-commercial (dual terms);
+  - retrain on the CC BY 4.0 sources alone -- 2,112 samples instead of 5,870,
+    which would cost accuracy but yield distributable weights;
+  - remove the weights from the repository and have users train their own;
+  - seek written permission from iBUG.

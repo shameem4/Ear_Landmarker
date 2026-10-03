@@ -566,23 +566,29 @@ tested and closed out; reopening one needs a new argument, not another run.
 This repository's own source code is licensed under the **Apache License,
 Version 2.0** -- see [LICENSE](LICENSE).
 
-That does not cover everything shipped here. [NOTICE](NOTICE) lists the
-third-party material and its terms; two points matter before anyone treats this
-as commercially usable:
+**The shipped model weights are not.** `docs/EarLandmarker_web.onnx` was trained
+on four datasets, and two of them -- 64% of the samples -- are
+non-commercial-research-only:
 
-- **BlazeEar is CC BY-NC 4.0**, which forbids commercial use and therefore
-  cannot be governed by Apache-2.0. `docs/blazeear_inference.js` is a verbatim
-  copy of it, `docs/BlazeEar_web.onnx` is its trained detector, and
-  `inference.py` imports from it at runtime. Same copyright holder as this
-  project, so it is resolvable by relicensing or dual-licensing BlazeEar, or by
-  dropping the dependency -- but it is not resolved yet.
-- **The training data's terms have not been reviewed.** No dataset is
-  redistributed (`data/` and `runs/` are gitignored), but
-  `docs/EarLandmarker_web.onnx` is tracked and was trained on them, and academic
-  ear datasets commonly carry research-only terms.
+| source | samples | licence | commercial use |
+|--------|---------|---------|----------------|
+| collectionB | 3,153 | [iBUG](https://ibug.doc.ic.ac.uk/resources/ibug-ears/): non-commercial research only | **no** |
+| collectionA | 605 | iBUG: non-commercial research only | **no** |
+| AudioEar2D | 2,000 | [CC BY 4.0](https://zenodo.org/records/7592895) | yes, attribute |
+| AudioEar3D | 112 | CC BY 4.0 | yes, attribute |
 
-MediaPipe's contribution (BlazeFace weights, the face landmark weights, the
-BlazeBlock pattern) is Apache-2.0 and compatible.
+iBUG's terms forbid exploiting "any portion of the annotations and **any portion
+of derived data**" commercially, which on a plain reading reaches trained
+weights. So:
+
+- the **source code** here is Apache-2.0 and unaffected;
+- the **trained weights** should be treated as research-use only until that is
+  resolved -- by dual terms, by retraining on the CC BY 4.0 sources alone, by
+  removing the weights, or by permission from iBUG.
+
+[NOTICE](NOTICE) has the quoted terms and the full third-party inventory.
+BlazeEar and trainable_blazeface have both been relicensed to Apache-2.0, so the
+code side is now consistent; MediaPipe's contribution was always Apache-2.0.
 
 ## Dependencies
 
