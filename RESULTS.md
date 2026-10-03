@@ -282,14 +282,76 @@ The transfer advantage decayed as training went on -- 22% at epoch 40, 12% at
 80, 4.9% at 195, 3.8% at the end -- the usual shape for pretraining, and it did
 not vanish.
 
-### What this does not separate
+### Separating the head from the backbone
 
-Two things are confounded in the gap: 207K parameters against 340K, and
-MediaPipe's direct-regression head against soft-argmax. This project had already
-measured that head family (GAP+FC) at 0.0301 against the heatmap's 0.0291, so
-roughly a third of the deficit was predicted to be head design rather than the
-backbone. `--arch facemesh_heatmap` keeps backbone1 exactly as published and
-swaps in the heatmap decoder to settle it; `scripts/run_facemesh_heatmap.sh`.
+`fm_heat_pre` keeps MediaPipe's `backbone1` exactly as published, still 81.6%
+pretrained, and swaps its regression head for this project's heatmap decoder.
+That drops the model to 141,991 params, because the head it replaces was 81% of
+MediaPipe's weights.
+
+| step | test NME | gain | rank sep |
+|------|----------|------|----------|
+| `fm_scratch` (MediaPipe head, random) | 0.03272 +/- 0.00027 | -- | -- |
+| + MediaPipe pretrained weights | 0.03147 +/- 0.00010 | **+3.83%** | yes |
+| + soft-argmax head (`fm_heat_pre`) | 0.03087 +/- 0.00033 | **+1.92%** | yes |
+| remainder: backbone / capacity | 0.02919 (control) | **+5.75%** | -- |
+
+Both interventions are real and separable, and together they recover 5.75 of the
+12.1 points. **The largest single component is the backbone itself.**
+
+Worth recording: the head's advantage is mostly a CONVERGENCE-SPEED effect. It
+measured +9.45% at epoch 44, +5.31% at 200, +3.70% at 307 and +1.92% at
+completion, while the gap to the control WIDENED over the same span. An early
+read of that arm would have concluded the opposite of the final result, which is
+the third time in this work a partial measurement inverted.
+
+### Design or just size? Not settled
+
+The control is 2.4x larger than `fm_heat_pre`, so the +5.75% above cannot
+distinguish a better architecture from a bigger one. `--width-mult` scales every
+channel count to test it; 0.62 puts this project's own design at 142,935 params,
+a 0.7% capacity match with the MediaPipe copy.
+
+**The run was stopped at epoch 227 of 500 and has no test number.** Where it
+stood, epoch-matched on validation:
+
+| arm | params | init | val NME @227 |
+|-----|--------|------|--------------|
+| `cap62` (this design) | 142,935 | scratch | 0.03133 +/- 0.00011 |
+| `fm_heat_pre` (MediaPipe) | 141,991 | 81.6% pretrained | 0.03133 +/- 0.00028 |
+| control | 340,167 | scratch | 0.02965 |
+
+Dead level at matched capacity, with no rank separation -- and `cap62` reached it
+from random initialisation against an arm carrying pretrained weights. Subtracting
+the +3.83% those weights were measured to be worth would put this design ahead
+per-parameter, but that is a subtraction across experiments, not a measurement,
+and it is not claimed here.
+
+**So the statement "the independent design earns its keep" is NOT established.**
+On the evidence actually in hand, the two designs are indistinguishable at equal
+size, and the shipped model's advantage over the MediaPipe copy is substantially
+its extra parameters. Finishing `cap62` would settle it;
+`scripts/run_capacity_matched.sh` re-runs it.
+
+### How far does more capacity go? Unanswered
+
+A width sweep above 1.0x was started and stopped at epoch 46 of 500 -- 9%
+through, which this work has repeatedly shown is too early to read. It is
+recorded only so the arm is not mistaken for untried. `w18` (1.03M params) was
+cancelled before starting.
+
+The reason for stopping was not the numbers but the diagnosis underneath them:
+
+- the shipped model's train/val gap is **+14.1%** measured with augmentation ON,
+  so the true gap is wider. That is a data-limited model, where extra capacity
+  costs generalisation rather than buying it.
+- **72% of its squared error is tangential**, tracking annotator spacing rather
+  than anything the model controls. If that is a floor, the best reachable NME is
+  ~0.0233 against today's 0.0292 -- **20% of total headroom**, shared across every
+  possible change, of which capacity can claim only a slice.
+
+Scaling the model is pushing on the wrong variable. The binding constraints are
+label consistency and real-data volume.
 
 ## Known limitation
 

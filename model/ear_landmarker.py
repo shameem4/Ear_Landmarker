@@ -58,15 +58,16 @@ class EarLandmarker(nn.Module):
     """
 
     def __init__(self, num_landmarks: int = NUM_LANDMARKS,
-                 backbone: str = "default") -> None:
+                 backbone: str = "default", width_mult: float = 1.0) -> None:
         super().__init__()
         self.num_landmarks = num_landmarks
         self.backbone_kind = backbone
+        self.width_mult = width_mult
 
         if backbone == "blazeear":
             self._build_blazeear_backbone()
         elif backbone == "default":
-            self._build_default_backbone()
+            self._build_default_backbone(width_mult)
         else:
             raise ValueError(f"unknown backbone {backbone!r}")
 
@@ -80,24 +81,33 @@ class EarLandmarker(nn.Module):
 
         self._init_weights()
 
-    def _build_default_backbone(self) -> None:
-        """The shipped backbone: 5x5 depthwise, doubling channel ladder."""
+    def _build_default_backbone(self, width_mult: float = 1.0) -> None:
+        """The shipped backbone: 5x5 depthwise, doubling channel ladder.
+
+        `width_mult` scales every channel count, rounded to a multiple of 8. It
+        exists to separate DESIGN from SIZE: the shipped model beats a faithful
+        MediaPipe copy by 5.75%, but is 2.4x larger, so the comparison cannot say
+        which of the two is responsible. width_mult=0.62 lands this design at
+        142,935 params, within 1% of that copy, holding capacity constant.
+        """
+        c = [max(8, int(round(x * width_mult / 8)) * 8)
+             for x in (24, 48, 96, 128, 192)]
         self.conv0 = nn.Sequential(
-            nn.Conv2d(3, 24, kernel_size=5, stride=2, padding=0, bias=False),
-            nn.BatchNorm2d(24),
+            nn.Conv2d(3, c[0], kernel_size=5, stride=2, padding=0, bias=False),
+            nn.BatchNorm2d(c[0]),
             nn.ReLU(inplace=True),
         )
         # Stage 0: refine at 96x96 (no downsampling)
         self.stage0 = nn.Sequential(
-            BlazeBlock(24, 24),
-            BlazeBlock(24, 24),
+            BlazeBlock(c[0], c[0]),
+            BlazeBlock(c[0], c[0]),
         )
         # Stages 1-4: progressive downsampling
-        self.stage1 = _make_stage(24, 48, num_blocks=4)    # -> 48x48
-        self.stage2 = _make_stage(48, 96, num_blocks=4)    # -> 24x24
-        self.stage3 = _make_stage(96, 128, num_blocks=4)   # -> 12x12
-        self.stage4 = _make_stage(128, 192, num_blocks=3)  # -> 6x6
-        self.stage2_ch, self.stage3_ch, self.stage4_ch = 96, 128, 192
+        self.stage1 = _make_stage(c[0], c[1], num_blocks=4)   # -> 48x48
+        self.stage2 = _make_stage(c[1], c[2], num_blocks=4)   # -> 24x24
+        self.stage3 = _make_stage(c[2], c[3], num_blocks=4)   # -> 12x12
+        self.stage4 = _make_stage(c[3], c[4], num_blocks=3)   # -> 6x6
+        self.stage2_ch, self.stage3_ch, self.stage4_ch = c[2], c[3], c[4]
 
     def _build_blazeear_backbone(self) -> None:
         """Backbone mirroring BlazeEar v2's backbone1, so its weights can load.
@@ -280,8 +290,9 @@ class EarLandmarkerHeatmap(EarLandmarker):
     """
 
     def __init__(self, num_landmarks: int = NUM_LANDMARKS, tau: float = 1.0,
-                 backbone: str = "default") -> None:
-        super().__init__(num_landmarks=num_landmarks, backbone=backbone)
+                 backbone: str = "default", width_mult: float = 1.0) -> None:
+        super().__init__(num_landmarks=num_landmarks, backbone=backbone,
+                         width_mult=width_mult)
         self.tau = tau
 
         # The GAP head is unused by this subclass; drop it so it does not appear

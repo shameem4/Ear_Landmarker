@@ -414,6 +414,16 @@ progress and are indistinguishable from reseeding.
 
 Listed roughly by expected payoff.
 
+**0. Data, before anything else.** The model overfits by 14.1% with augmentation
+on, and 72% of its error is annotator spacing noise rather than anything it
+controls. Capacity and architecture have both now been measured and neither is
+the binding constraint. The open questions are whether a re-annotated subset with
+an enforced arc-length convention would move the floor, whether the three source
+collections' annotation guidelines are recoverable (their spacing CVs of 0.137 /
+0.250 / 0.286 suggest three different conventions were merged), and whether real
+captures can be added -- the one attempt to expand with synthetic data regressed
+1.7%.
+
 **1. The detector, not the landmarker.** BlazeEar recalls **47.5%** of annotated
 ears. A landmarker at 0.029 sitting behind a detector that misses half its
 inputs is not the binding constraint on anything a user experiences -- half the
@@ -460,13 +470,37 @@ since the architecture changed.
 | `fm_pre` | 206,942 | 84.6% MediaPipe | 0.03147 | +7.8% |
 | `fm_scratch` | 206,942 | random | 0.03273 | +12.1% |
 
-A faithful copy loses by 7.8% even with the pretrained weights. The weights do
-help -- +3.83% with complete rank separation -- but close under a third of the
-gap. The independent design earns its keep.
+Swapping MediaPipe's regression head for this project's heatmap decoder
+(`fm_heat_pre`, 141,991 params, still 81.6% pretrained) reaches **0.03087**, so
+the 12.1% deficit decomposes as:
 
-The remaining question is how much of the gap is the backbone and how much is
-MediaPipe's direct-regression head; `--arch facemesh_heatmap` keeps backbone1
-exactly as published and swaps in the soft-argmax decoder to find out.
+| component | worth |
+|-----------|-------|
+| MediaPipe pretrained weights | +3.83% |
+| soft-argmax head over direct regression | +1.92% |
+| **backbone / capacity** | **+5.75%** |
+
+**What is NOT established: whether that last term is design or size.** The
+control is 2.4x larger. A capacity-matched run of this project's own design at
+142,935 params (`--width-mult 0.62`) was stopped at epoch 227 of 500, and where
+it stood it was **dead level** with the MediaPipe copy on validation
+(0.03133 vs 0.03133, no rank separation) -- from random initialisation against
+81.6% pretrained weights. So on present evidence the two designs are
+indistinguishable at equal size, and the shipped model's edge is substantially
+its extra parameters. `scripts/run_capacity_matched.sh` would settle it.
+
+### Why scaling was dropped as a direction
+
+A width sweep above 1.0x was started and abandoned at 9% through. The reason was
+the diagnosis, not the numbers:
+
+- train/val gap **+14.1%** with augmentation ON, so wider in truth -- a
+  data-limited model, where capacity costs generalisation.
+- **72% of squared error is tangential**, tracking annotator spacing. If that is
+  a floor, total remaining headroom is ~20%, shared across every possible change.
+
+The binding constraints are **label consistency and real-data volume**, not model
+size. See [RESULTS.md](RESULTS.md).
 
 Original setup notes follow.
 

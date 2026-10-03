@@ -49,6 +49,7 @@ class EarLandmarkerModule(pl.LightningModule):
         mediapipe_ckpt: Optional[str] = None,
         arch: str = "gap",
         backbone: str = "default",
+        width_mult: float = 1.0,
         tau: float = 1.0,
         tangential_weight: float = 1.0,
         spacing_weight: float = 0.0,
@@ -57,10 +58,12 @@ class EarLandmarkerModule(pl.LightningModule):
         self.save_hyperparameters()
 
         if arch == "gap":
-            self.model = EarLandmarker(num_landmarks=num_landmarks, backbone=backbone)
+            self.model = EarLandmarker(num_landmarks=num_landmarks, backbone=backbone,
+                                       width_mult=width_mult)
         elif arch == "heatmap":
             self.model = EarLandmarkerHeatmap(
-                num_landmarks=num_landmarks, tau=tau, backbone=backbone)
+                num_landmarks=num_landmarks, tau=tau, backbone=backbone,
+                width_mult=width_mult)
         elif arch == "facemesh_heatmap":
             # MediaPipe's feature extractor, this project's heatmap decoder.
             from model.facemesh_ear import FaceMeshEarHeatmap

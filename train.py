@@ -55,6 +55,10 @@ def main() -> None:
                              "backbone1 so --blazeear-ckpt can actually transfer: "
                              "against 'default' only 0.9%% of parameters are "
                              "shape-compatible, so a transfer there measures nothing.")
+    parser.add_argument("--width-mult", type=float, default=1.0,
+                        help="Scale every backbone channel count. 0.62 matches "
+                             "the FaceMesh copy's parameter count, which "
+                             "separates this design's merit from its size.")
     parser.add_argument("--tau", type=float, default=1.0,
                         help="Soft-argmax softmax temperature (--arch heatmap only)")
     parser.add_argument("--wing-w", type=float, default=0.04)
@@ -178,6 +182,7 @@ def main() -> None:
         mediapipe_ckpt=args.mediapipe_ckpt,
         arch=args.arch,
         backbone=args.backbone,
+        width_mult=args.width_mult,
         tau=args.tau,
         tangential_weight=args.tangential_weight,
         spacing_weight=args.spacing_weight,
