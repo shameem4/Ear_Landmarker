@@ -61,6 +61,10 @@ class EarLandmarkerModule(pl.LightningModule):
         elif arch == "heatmap":
             self.model = EarLandmarkerHeatmap(
                 num_landmarks=num_landmarks, tau=tau, backbone=backbone)
+        elif arch == "facemesh_heatmap":
+            # MediaPipe's feature extractor, this project's heatmap decoder.
+            from model.facemesh_ear import FaceMeshEarHeatmap
+            self.model = FaceMeshEarHeatmap(num_landmarks=num_landmarks, tau=tau)
         elif arch == "facemesh":
             # MediaPipe's face landmark topology, copied exactly bar the output
             # width. See model/facemesh_ear.py for what that trade involves.
@@ -68,7 +72,8 @@ class EarLandmarkerModule(pl.LightningModule):
             self.model = FaceMeshEarLandmarker(num_landmarks=num_landmarks)
         else:
             raise ValueError(
-                f"unknown arch {arch!r}, expected 'gap', 'heatmap' or 'facemesh'")
+                f"unknown arch {arch!r}, expected 'gap', 'heatmap', "
+                f"'facemesh' or 'facemesh_heatmap'")
         # tangential_weight < 1 discounts residual along the GT contour, where most
         # of the label noise lives. 1.0 reproduces plain isotropic Wing loss.
         if tangential_weight >= 1.0 and spacing_weight <= 0.0:

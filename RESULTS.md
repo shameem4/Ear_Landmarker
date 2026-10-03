@@ -246,6 +246,51 @@ trainable-BatchNorm one and fitted new ear anchors, so this repo's hand-rolled
 `BlazeEar()` construction raised on load. Detection now defers to BlazeEar's own
 `load_ear_model` / `blazeear_inference.js` instead of duplicating them.
 
+## Could MediaPipe's FaceMesh have done this job?
+
+No. The question was whether v1 should have adopted MediaPipe's face landmark
+architecture and its weights instead of sizing a backbone independently -- and
+there is **no recorded rationale** for that original choice anywhere in the
+repo, which is why it was worth measuring rather than arguing.
+
+`model/facemesh_ear.py` copies the topology faithfully: MediaPipe's published
+weights load into it with `strict=True`, and its 192x192 input happens to match
+EarLandmarker's exactly. The only change is forced -- the output conv emits
+468 x 3 = 1404 channels and ears need 55 x 2, so that one layer is resized and
+left random. It is also the only layer holding face-landmark *identity*, so no
+face geometry is reshaped into an ear; what transfers is generic feature
+extraction.
+
+Test NME, 3 seeds per arm, scored against a rule fixed before the runs started:
+
+| arm | params | init | test NME | vs control |
+|-----|--------|------|----------|------------|
+| **control** (EarLandmarker) | 340,167 | scratch | **0.02919 +/- 0.00031** | -- |
+| `fm_pre` | 206,942 | 84.6% MediaPipe | 0.03147 +/- 0.00010 | **+7.8%** |
+| `fm_scratch` | 206,942 | random | 0.03273 +/- 0.00027 | +12.1% |
+
+**The independent design earns its keep.** A faithful copy loses by 7.8% even
+with the pretrained weights -- far outside the 1% seed-noise floor, with no seed
+overlap.
+
+**The pretrained weights do help: +3.83%, complete rank separation.** Every
+`fm_pre` seed beats every `fm_scratch` seed. Generic face features transfer to
+ears despite the face-vertex layer being discarded. But they buy 3.8% against a
+12.1% deficit, closing under a third of it.
+
+The transfer advantage decayed as training went on -- 22% at epoch 40, 12% at
+80, 4.9% at 195, 3.8% at the end -- the usual shape for pretraining, and it did
+not vanish.
+
+### What this does not separate
+
+Two things are confounded in the gap: 207K parameters against 340K, and
+MediaPipe's direct-regression head against soft-argmax. This project had already
+measured that head family (GAP+FC) at 0.0301 against the heatmap's 0.0291, so
+roughly a third of the deficit was predicted to be head design rather than the
+backbone. `--arch facemesh_heatmap` keeps backbone1 exactly as published and
+swaps in the heatmap decoder to settle it; `scripts/run_facemesh_heatmap.sh`.
+
 ## Known limitation
 
 Detector recall is now 78.6% on this set rather than 47.5%, so the landmarker and

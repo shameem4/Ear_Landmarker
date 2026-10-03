@@ -113,3 +113,72 @@ class FaceMeshEarLandmarker(nn.Module):
                 moved += v.numel()
         self.load_state_dict(dst, strict=True)
         return moved
+
+
+class FaceMeshEarHeatmap(FaceMeshEarLandmarker):
+    """MediaPipe's feature extractor under this project's heatmap decoder.
+
+    The third arm. fm_scratch and fm_pre both lost to EarLandmarker, but they
+    confounded two things: 207K params against 340K, AND MediaPipe's direct
+    regression head against soft-argmax. This project had already measured that
+    head family at 0.0301 against the heatmap's 0.0291, so roughly a third of
+    the deficit was predicted to be head design rather than the backbone.
+
+    This keeps backbone1 exactly as MediaPipe published it -- so the pretrained
+    weights still load -- and replaces backbone2a with the decoder from
+    EarLandmarkerHeatmap. Taps are the natural ones: 64ch at 24x24, 128ch at
+    12x12, 128ch at 6x6, which is the same shape of pyramid the default backbone
+    exposes.
+
+    Reading the result:
+      fm_heat_pre vs fm_pre      -- what the head alone was worth
+      fm_heat_pre vs the control -- what remains attributable to the backbone
+    """
+
+    def __init__(self, num_landmarks: int = NUM_LANDMARKS, tau: float = 1.0) -> None:
+        super().__init__(num_landmarks=num_landmarks)
+        self.tau = tau
+
+        # backbone2a is MediaPipe's regression head; this arm replaces it. It is
+        # dropped so it neither trains nor appears in the parameter count.
+        del self.backbone2a
+
+        dec_ch = 64                      # matches the 24x24 tap it is summed with
+        self.lat4 = nn.Conv2d(128, dec_ch, 1, bias=False)
+        self.lat3 = nn.Conv2d(128, dec_ch, 1, bias=False)
+        self.bn4 = nn.BatchNorm2d(dec_ch)
+        self.bn3 = nn.BatchNorm2d(dec_ch)
+        from model.blocks import BlazeBlock
+        self.refine = BlazeBlock(dec_ch, dec_ch)
+        self.to_heatmap = nn.Conv2d(dec_ch, num_landmarks, 1, bias=True)
+        # Small, not zero: a zero final weight leaves the whole decoder and
+        # backbone without gradient on the first step.
+        nn.init.normal_(self.to_heatmap.weight, std=0.01)
+        nn.init.zeros_(self.to_heatmap.bias)
+
+    def heatmaps(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.pad(x, (0, 1, 0, 1), "constant", 0)
+        feats = {}
+        h = x
+        for i, layer in enumerate(self.backbone1):
+            h = layer(h)
+            if i in (9, 12, 15):          # 24x24/64, 12x12/128, 6x6/128
+                feats[i] = h
+        s2, s3, s4 = feats[9], feats[12], feats[15]
+
+        d = F.relu(self.bn4(self.lat4(s4)))
+        d = F.interpolate(d, size=s3.shape[-2:], mode="bilinear", align_corners=False)
+        d = d + F.relu(self.bn3(self.lat3(s3)))
+        d = F.interpolate(d, size=s2.shape[-2:], mode="bilinear", align_corners=False)
+        d = d + s2
+        return self.to_heatmap(self.refine(d))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        from model.ear_landmarker import EarLandmarkerHeatmap
+        return EarLandmarkerHeatmap.soft_argmax(self.heatmaps(x), self.tau)
+
+    def predict_with_confidence(self, x: torch.Tensor, ref_std: float = 0.05):
+        from model.ear_landmarker import EarLandmarkerHeatmap
+        hm = self.heatmaps(x)
+        return (EarLandmarkerHeatmap.soft_argmax(hm, self.tau),
+                EarLandmarkerHeatmap.heatmap_confidence(hm, self.tau, ref_std))

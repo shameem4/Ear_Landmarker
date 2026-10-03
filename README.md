@@ -450,9 +450,25 @@ carried over because the heatmap head adds a decoder and they have never been
 re-measured. Nobody should quote a performance number this repo has not produced
 since the architecture changed.
 
-### Queued: could MediaPipe's FaceMesh have done this job?
+### Settled: could MediaPipe's FaceMesh have done this job?
 
-Set up but not run -- `scripts/run_facemesh_experiment.sh`, pre-registered.
+**No.** Run, scored against a pre-registered rule; see [RESULTS.md](RESULTS.md).
+
+| arm | params | init | test NME | vs control |
+|-----|--------|------|----------|------------|
+| control (EarLandmarker) | 340,167 | scratch | **0.02919** | -- |
+| `fm_pre` | 206,942 | 84.6% MediaPipe | 0.03147 | +7.8% |
+| `fm_scratch` | 206,942 | random | 0.03273 | +12.1% |
+
+A faithful copy loses by 7.8% even with the pretrained weights. The weights do
+help -- +3.83% with complete rank separation -- but close under a third of the
+gap. The independent design earns its keep.
+
+The remaining question is how much of the gap is the backbone and how much is
+MediaPipe's direct-regression head; `--arch facemesh_heatmap` keeps backbone1
+exactly as published and swaps in the soft-argmax decoder to find out.
+
+Original setup notes follow.
 
 There is **no recorded rationale** for why v1 sized its backbone independently
 rather than adopting MediaPipe's face landmark topology and its weights.

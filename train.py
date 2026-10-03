@@ -42,7 +42,7 @@ def main() -> None:
     parser.add_argument("--blazeear-ckpt", type=str, default=None,
                         help="BlazeEar checkpoint for backbone initialization")
     parser.add_argument("--arch", type=str, default="gap",
-                        choices=["gap", "heatmap", "facemesh"],
+                        choices=["gap", "heatmap", "facemesh", "facemesh_heatmap"],
                         help="gap: GAP+FC coordinate regression (v1). "
                              "heatmap: soft-argmax over 24x24 heatmaps.")
     parser.add_argument("--mediapipe-ckpt", type=str, default=None,
