@@ -1,0 +1,58 @@
+EarLandmarker
+Copyright 2026 Shameem Hameed
+
+Licensed under the Apache License, Version 2.0 (the "License"); see LICENSE.
+
+This product includes, depends on, or was derived from the following third-party
+material, which carries its own terms. Apache-2.0 covers this repository's own
+source code and does not override any of them.
+
+--------------------------------------------------------------------------------
+1. BlazeEar  --  Creative Commons Attribution-NonCommercial 4.0 International
+   Copyright (c) 2025 Shameem Hameed
+--------------------------------------------------------------------------------
+
+CC BY-NC 4.0 is NOT compatible with Apache-2.0: it forbids commercial use, which
+Apache-2.0 permits. The two cannot both govern the same file.
+
+Affected here:
+  - docs/blazeear_inference.js      verbatim copy of BlazeEar's browser pipeline
+  - docs/BlazeEar_web.onnx          BlazeEar's trained ear detector
+  - inference.py                    imports load_ear_model, crop_window and
+                                    load_face_detector from BlazeEar at runtime
+  - model/facemesh_ear.py           imports BlazeBlock_WT from BlazeEar
+  - scripts/build_*_testset.py      import BlazeEar
+
+The same person holds copyright in both projects, so this is resolvable --
+by relicensing or dual-licensing BlazeEar, or by removing the vendored file and
+the runtime dependency. Until then, treat the detector-side material as
+NonCommercial and this repository's own code as Apache-2.0.
+
+--------------------------------------------------------------------------------
+2. MediaPipe (Google LLC)  --  Apache License 2.0
+--------------------------------------------------------------------------------
+
+Compatible. Used for:
+  - BlazeFace face-detection weights, via BlazeEar's two-stage pipeline
+  - blazeface_landmark.pth, the face landmark weights loaded by
+    model/facemesh_ear.py for the architecture comparison in RESULTS.md
+  - the BlazeBlock architecture pattern the backbone follows
+
+docs/BlazeFace_web.onnx derives from MediaPipe's published weights.
+
+--------------------------------------------------------------------------------
+3. Training data  --  terms NOT reviewed; see below
+--------------------------------------------------------------------------------
+
+No dataset is redistributed here: data/raw, data/preprocessed and runs/ are all
+gitignored. But docs/EarLandmarker_web.onnx IS tracked, and it is a model trained
+on those datasets, so whatever terms they carry may reach it.
+
+The 55-point annotation scheme is iBUG's (Zhou & Zaferiou, "Deformable Models of
+Ears in-the-wild", FG 2017). The sources are described in README.md as
+collectionA (605), collectionB (3,153), AudioEar2D (2,000) and AudioEar3D (112).
+Academic ear datasets commonly carry research-only or non-commercial terms.
+
+**Their licences have not been checked against Apache-2.0 redistribution of the
+trained weights.** That needs doing before this repository is treated as
+commercially usable, and it is independent of item 1.

@@ -561,6 +561,29 @@ canonicalization (tried, deformed the shape more than it fixed), and ROI_EXPAND
 tested and closed out; reopening one needs a new argument, not another run.
 [RESULTS.md](RESULTS.md) has the evidence for all three.
 
+## Licence
+
+This repository's own source code is licensed under the **Apache License,
+Version 2.0** -- see [LICENSE](LICENSE).
+
+That does not cover everything shipped here. [NOTICE](NOTICE) lists the
+third-party material and its terms; two points matter before anyone treats this
+as commercially usable:
+
+- **BlazeEar is CC BY-NC 4.0**, which forbids commercial use and therefore
+  cannot be governed by Apache-2.0. `docs/blazeear_inference.js` is a verbatim
+  copy of it, `docs/BlazeEar_web.onnx` is its trained detector, and
+  `inference.py` imports from it at runtime. Same copyright holder as this
+  project, so it is resolvable by relicensing or dual-licensing BlazeEar, or by
+  dropping the dependency -- but it is not resolved yet.
+- **The training data's terms have not been reviewed.** No dataset is
+  redistributed (`data/` and `runs/` are gitignored), but
+  `docs/EarLandmarker_web.onnx` is tracked and was trained on them, and academic
+  ear datasets commonly carry research-only terms.
+
+MediaPipe's contribution (BlazeFace weights, the face landmark weights, the
+BlazeBlock pattern) is Apache-2.0 and compatible.
+
 ## Dependencies
 
 PyTorch, PyTorch Lightning, OpenCV, NumPy, Pillow, torchvision, tqdm
