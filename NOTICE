@@ -42,15 +42,29 @@ No dataset is redistributed here; data/raw, data/preprocessed and runs/ are all
 gitignored. But **docs/EarLandmarker_web.onnx IS tracked**, and it is a model
 trained on all four sources below.
 
-| source      | samples | licence                            | commercial use |
-|-------------|---------|------------------------------------|----------------|
-| collectionB |   3,153 | iBUG: non-commercial research only | NO             |
-| collectionA |     605 | iBUG: non-commercial research only | NO             |
-| AudioEar2D  |   2,000 | CC BY 4.0                          | yes, attribute |
-| AudioEar3D  |     112 | CC BY 4.0                          | yes, attribute |
+| source      | samples | licence                              | commercial use |
+|-------------|---------|--------------------------------------|----------------|
+| collectionB |   3,153 | iBUG: non-commercial research only   | NO             |
+| collectionA |     605 | iBUG: non-commercial research only   | NO             |
+| AudioEar2D  |   2,000 | annotations CC BY 4.0, IMAGES FFHQ   | NO             |
+| AudioEar3D  |     112 | CC BY 4.0, provenance unverified     | unclear        |
 
-AudioEar (Huang et al., AAAI 2023) is CC BY 4.0, confirmed on its Zenodo record
-(https://zenodo.org/records/7592895). Permissive; attribution required.
+That is **98% of the corpus under non-commercial terms**, by two independent
+routes.
+
+AudioEar (Huang et al., AAAI 2023) publishes its annotations CC BY 4.0, confirmed
+on its Zenodo record (https://zenodo.org/records/7592895). But AudioEar2D's 2,000
+IMAGES are drawn from FFHQ, and FFHQ (https://github.com/NVlabs/ffhq-dataset) is
+
+    Creative Commons BY-NC-SA 4.0
+
+for the dataset, with the underlying Flickr images under licences that NVIDIA
+summarises as "allow free use, redistribution, and adaptation for NON-COMMERCIAL
+purposes". A permissive licence on annotations does not make the pixels they
+annotate permissive, and the model was trained on the pixels.
+
+AudioEar3D's 112 samples are 3D scans whose provenance has not been checked.
+At 2% of the corpus they are immaterial for retraining either way.
 
 The iBUG ear data (Zhou & Zaferiou, "Deformable Models of Ears in-the-wild",
 FG 2017, https://ibug.doc.ic.ac.uk/resources/ibug-ears/) states:
@@ -81,7 +95,9 @@ WHAT THIS MEANS IN PRACTICE
 
 Ways to resolve, none of which this file chooses:
   - keep Apache-2.0 for code and mark the weights non-commercial (dual terms);
-  - retrain on the CC BY 4.0 sources alone -- 2,112 samples instead of 5,870,
-    which would cost accuracy but yield distributable weights;
+  - retrain on commercially-licensed data. NOT, as an earlier draft of this file
+    suggested, "the CC BY 4.0 sources alone" -- that route assumed AudioEar2D was
+    clean, and its FFHQ images are not. Only AudioEar3D's 112 samples might be,
+    which is not a training set. This means NEW data, not a re-split;
   - remove the weights from the repository and have users train their own;
   - seek written permission from iBUG.

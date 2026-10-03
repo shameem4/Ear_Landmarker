@@ -574,17 +574,20 @@ non-commercial-research-only:
 |--------|---------|---------|----------------|
 | collectionB | 3,153 | [iBUG](https://ibug.doc.ic.ac.uk/resources/ibug-ears/): non-commercial research only | **no** |
 | collectionA | 605 | iBUG: non-commercial research only | **no** |
-| AudioEar2D | 2,000 | [CC BY 4.0](https://zenodo.org/records/7592895) | yes, attribute |
-| AudioEar3D | 112 | CC BY 4.0 | yes, attribute |
+| AudioEar2D | 2,000 | annotations [CC BY 4.0](https://zenodo.org/records/7592895), but images are [FFHQ](https://github.com/NVlabs/ffhq-dataset) (CC BY-NC-SA 4.0) | **no** |
+| AudioEar3D | 112 | CC BY 4.0, provenance unverified | unclear |
 
-iBUG's terms forbid exploiting "any portion of the annotations and **any portion
-of derived data**" commercially, which on a plain reading reaches trained
-weights. So:
+**98% of the corpus is non-commercial**, by two independent routes. iBUG's terms
+forbid exploiting "any portion of the annotations and **any portion of derived
+data**" commercially, which on a plain reading reaches trained weights. And a
+permissive licence on AudioEar2D's annotations does not make the FFHQ pixels they
+annotate permissive. So:
 
 - the **source code** here is Apache-2.0 and unaffected;
-- the **trained weights** should be treated as research-use only until that is
-  resolved -- by dual terms, by retraining on the CC BY 4.0 sources alone, by
-  removing the weights, or by permission from iBUG.
+- the **trained weights** should be treated as research-use only. Resolving it
+  means dual terms, removing the weights, permission from the dataset holders, or
+  retraining on genuinely new commercially-licensed data -- not a re-split, since
+  only AudioEar3D's 112 samples are even candidates.
 
 [NOTICE](NOTICE) has the quoted terms and the full third-party inventory.
 BlazeEar and trainable_blazeface have both been relicensed to Apache-2.0, so the
