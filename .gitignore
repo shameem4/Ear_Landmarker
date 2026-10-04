@@ -12,6 +12,12 @@
 
 # optional synthetic training source (regenerate with scripts/ingest_synthetic.py)
 /data/synthetic/
+# Commissioned manual annotations and their ingested form. Images are from the
+# wild under permissive terms and the labels are work-for-hire, but neither is
+# this repository's to redistribute wholesale; scripts/ingest_manual.py rebuilds
+# data/manual/ from new_manual_data/.
+/new_manual_data/
+/data/manual/
 
 # article authoring -- drafting artifacts, not part of the model repo
 /generate_article.py

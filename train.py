@@ -77,6 +77,19 @@ def main() -> None:
                         help="Anti-collapse penalty on shrinking predicted segments")
     parser.add_argument("--perspective-deg", type=float, default=0.0,
                         help="Simulated out-of-plane turn in degrees (0 = off)")
+    parser.add_argument("--rotation-deg", type=float, default=15.0,
+                        help="In-plane rotation augmentation, +/- degrees. The "
+                             "default matches every run up to v6_persp65. Raise "
+                             "it when the training set's own ear-axis spread is "
+                             "narrower than the set being tested on.")
+    parser.add_argument("--train-csv", type=str, default="train.csv",
+                        help="Training split filename inside the data dir. "
+                             "Use this to train on a subset, e.g. a single source.")
+    parser.add_argument("--data-dir", type=str, default=None,
+                        help="Preprocessed data directory, relative to the project "
+                             "root (default: data/preprocessed). Must contain "
+                             "images/, landmarks.npy and the split CSVs. Use "
+                             "data/manual for the commissioned annotation set.")
     parser.add_argument("--landmarks", type=str, default="landmarks.npy",
                         help="Landmark array under data/preprocessed/")
     parser.add_argument("--synthetic-ratio", type=float, default=0.0,
@@ -98,30 +111,34 @@ def main() -> None:
         horizontal_flip=True,
         flip_prob=0.5,
         translation=0.05,
-        rotation_deg=15.0,
+        rotation_deg=args.rotation_deg,
         color_jitter={"brightness": 0.3, "contrast": 0.3, "saturation": 0.2, "hue": 0.05},
         bbox_jitter=0.1,
         bbox_jitter_prob=0.5,
         perspective_deg=args.perspective_deg,
     )
 
+    data_dir = (PROJECT / args.data_dir) if args.data_dir else DATA_DIR
+    if not (data_dir / "landmarks.npy").exists():
+        raise FileNotFoundError(f"{data_dir}/landmarks.npy not found")
+
     train_ds = EarLandmarkDataset(
-        split_csv=DATA_DIR / "train.csv",
-        data_dir=DATA_DIR,
+        split_csv=data_dir / args.train_csv,
+        data_dir=data_dir,
         image_size=args.image_size,
         augmentation=train_aug,
         landmarks_file=args.landmarks,
     )
     val_ds = EarLandmarkDataset(
-        split_csv=DATA_DIR / "val.csv",
-        data_dir=DATA_DIR,
+        split_csv=data_dir / "val.csv",
+        data_dir=data_dir,
         image_size=args.image_size,
         landmarks_file=args.landmarks,
     )
-    test_csv = DATA_DIR / "test.csv"
+    test_csv = data_dir / "test.csv"
     test_ds = EarLandmarkDataset(
         split_csv=test_csv,
-        data_dir=DATA_DIR,
+        data_dir=data_dir,
         image_size=args.image_size,
         landmarks_file=args.landmarks,
     ) if test_csv.exists() else None

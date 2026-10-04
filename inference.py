@@ -552,7 +552,20 @@ def draw_results(frame_bgr: np.ndarray, results: List[dict]) -> np.ndarray:
 # test (0.0296 against 0.0292). Ranking every run together therefore picks a
 # model that should not ship, which is exactly what an earlier version of
 # find_best_checkpoint() did once it learned to search recursively.
-SHIPPED_RUN = "v6_persp65"
+#
+# Was v6_persp65, trained on the iBUG-derived corpus. Now manual_occ_s42,
+# trained only on the commissioned set (data/manual), which is what lets the
+# shipped weights carry Apache-2.0 -- see NOTICE.
+#
+# It scores WORSE on the old benchmark (0.0347 against 0.0292) and that is not
+# the reason to distrust it: 55% of that test split is collectionB, whose
+# annotation convention v6_persp65 was trained on and this model was not.
+# Excluding collectionB the gap is +3.1%, and on audioear2d +0.9%. Judged
+# without any ground truth -- 455 real full frames, contour placement scored by
+# image-gradient response -- three seeds of this model beat three seeds of
+# v6_persp65 with complete separation (4.0668 vs 3.8886, p=0.05 exact, the
+# floor for 3v3). See RESULTS.md.
+SHIPPED_RUN = "manual_occ_s42"
 
 
 def find_best_checkpoint(run: str | None = SHIPPED_RUN) -> Path:

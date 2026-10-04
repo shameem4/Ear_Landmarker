@@ -180,11 +180,17 @@ class Collector:
             if img_bytes is None:
                 return False
 
-        # Normalize landmarks to [0, 1]
+        # Normalize landmarks to [0, 1]. NOT clipped: a point outside the crop
+        # keeps its true out-of-range coordinate so the dataset can mask it out.
+        # Clipping here used to pin such points onto the frame border, where they
+        # passed dataset.py's in-frame visibility test and were then supervised
+        # at a fabricated position -- 714 landmarks across the shipped set, 0.41%
+        # of collectionB's. The border value also destroyed the information
+        # needed to recognise them later, since a clamped point and a point
+        # genuinely on the edge become indistinguishable.
         lm_norm = lm_px.copy()
         lm_norm[:, 0] /= max(width, 1)
         lm_norm[:, 1] /= max(height, 1)
-        lm_norm = np.clip(lm_norm, 0.0, 1.0)
 
         fname = f"{self.idx:05d}{img_ext.lower()}"
         (IMG_DIR / fname).write_bytes(img_bytes)

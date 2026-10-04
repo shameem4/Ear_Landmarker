@@ -112,10 +112,19 @@ class EarLandmarkDataset(Dataset):
         image = Image.open(img_path).convert("RGB")
         image = image.resize((self.image_size, self.image_size), Image.BILINEAR)
 
-        # Load landmarks (already normalized to [0, 1])
+        # Load landmarks (normalized to the crop; may fall outside [0, 1] when
+        # the annotated point lies beyond it)
         landmarks = torch.tensor(
             self.landmarks[global_idx].copy(), dtype=torch.float32,
         )  # (55, 2)
+
+        # Points that were never inside the crop to begin with. Older
+        # preprocessed sets clamped these onto the border, so a coordinate
+        # sitting exactly on 0.0 or 1.0 is treated as out-of-frame too: a
+        # genuinely-located point hits the border exactly with probability ~0,
+        # whereas a clamped one hits it by construction. Either way the true
+        # position is unknown, so the point must not be supervised.
+        out_of_crop = ((landmarks <= 0.0) | (landmarks >= 1.0)).any(dim=1)
 
         # Geometric augmentations (PIL space -- must transform landmarks)
         if self.augmentation:
@@ -137,7 +146,10 @@ class EarLandmarkDataset(Dataset):
         # Points pushed outside the frame by augmentation are unreachable by the
         # sigmoid head. Mask them out rather than clamping them onto the border,
         # which would supervise the model toward a position the point isn't at.
-        visible = ((landmarks >= 0.0) & (landmarks <= 1.0)).all(dim=1).float()  # (55,)
+        # `out_of_crop` additionally drops points that were outside before any
+        # augmentation ran, which augmentation can otherwise carry back inside.
+        in_frame = ((landmarks >= 0.0) & (landmarks <= 1.0)).all(dim=1)
+        visible = (in_frame & ~out_of_crop).float()  # (55,)
 
         return {
             "image": tensor_img,

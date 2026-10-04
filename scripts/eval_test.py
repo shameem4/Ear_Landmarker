@@ -11,6 +11,13 @@ normalised [0,1] coordinates over visible points, not a re-derivation.
 Usage:
     python scripts/eval_test.py                       # every run with a checkpoint
     python scripts/eval_test.py v6_persp65 v2_heatmap
+    python scripts/eval_test.py --data-dir data/manual v6_persp65
+
+A --data-dir score is CROSS-DATASET when the checkpoint was trained elsewhere.
+It then measures annotation-convention agreement as much as localisation skill,
+since the two sets were labelled by different annotators; compare such a number
+only against another model scored on the same set, never against the in-domain
+number for the other set.
 """
 
 from __future__ import annotations
@@ -59,14 +66,20 @@ def best_ckpt(run: str) -> Path | None:
 
 
 def main() -> None:
-    runs = sys.argv[1:] or sorted(d.name for d in CKPT_DIR.iterdir() if d.is_dir())
+    argv = sys.argv[1:]
+    data_dir = DATA_DIR
+    if "--data-dir" in argv:
+        i = argv.index("--data-dir")
+        data_dir = ROOT / argv[i + 1]
+        del argv[i:i + 2]
+    runs = argv or sorted(d.name for d in CKPT_DIR.iterdir() if d.is_dir())
 
-    ds = EarLandmarkDataset(split_csv=DATA_DIR / "test.csv", data_dir=DATA_DIR,
+    ds = EarLandmarkDataset(split_csv=data_dir / "test.csv", data_dir=data_dir,
                             image_size=192)
     loader = DataLoader(ds, batch_size=64, shuffle=False, num_workers=4)
     trainer = pl.Trainer(accelerator="auto", devices=1, logger=False,
                          enable_progress_bar=False, enable_model_summary=False)
-    print(f"test split: {len(ds)} samples\n")
+    print(f"test split: {len(ds)} samples from {data_dir.name}\n")
 
     results = {}
     for run in runs:

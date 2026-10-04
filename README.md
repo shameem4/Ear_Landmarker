@@ -152,7 +152,26 @@ the mapping.
 
 ## Data
 
-5,870 samples unified from 4 sources, deduplicated by image hash:
+**The shipped model trains on `data/manual` alone** -- 10,535 samples whose
+images were collected from the wild and vetted to exclude anything under a
+non-commercial or otherwise non-permissive licence, and whose 55-point
+annotations were commissioned as work-for-hire through a crowd-annotation
+platform. That is what lets the weights ship under Apache-2.0; see
+[NOTICE](NOTICE), including its disclosure that the annotation task was seeded
+with predictions from an earlier model and corrected by hand.
+
+Build it with `python scripts/ingest_manual.py`. The script re-crops each image
+so the ear occupies a spread of the frame matching the older corpus (mean 0.777,
+sd 0.093 -- a constant occupancy trains a model that only works at one scale),
+and assigns splits by perceptual-hash GROUP rather than per sample, because
+wild-collected images repeat the same ear and a near-duplicate across the test
+boundary would inflate the score.
+
+### The older corpus (`data/preprocessed`)
+
+Still used for comparison and for the regression benchmark, **but it is
+non-commercial** -- anything trained from it inherits that. 5,870 samples
+unified from 4 sources, deduplicated by image hash:
 
 | Source       | Samples | Format     | Notes                          |
 |--------------|---------|------------|--------------------------------|
@@ -308,11 +327,17 @@ python train.py
 python train.py --epochs 500 --batch-size 128 --lr 1e-3
 python train.py --resume best
 python train.py --run-name my_experiment    # isolates checkpoints/logs
-python train.py --arch heatmap --perspective-deg 65    # the shipped configuration
+# the shipped configuration
+python train.py --data-dir data/manual --arch heatmap --perspective-deg 65
 
 # Score checkpoints on the held-out test split
 python scripts/eval_test.py
 python scripts/eval_test.py v6_persp65
+python scripts/eval_test.py --data-dir data/manual manual_occ_s42
+
+# Compare models on real frames with NO ground truth, which is the only
+# comparison the collectionB convention cannot distort
+python scripts/eval_gt_free.py --limit 500 v6_persp65 manual_occ_s42
 
 # Tests
 python -m pytest tests/ -q
@@ -356,7 +381,7 @@ To regenerate the ONNX model the page loads:
 
 ```bash
 python export_onnx.py
-python export_onnx.py --checkpoint runs/checkpoints/v6_persp65/EarLandmarker_409_nme=0.0290.ckpt
+python export_onnx.py --checkpoint runs/checkpoints/manual_occ_s42/EarLandmarker_292_nme=0.0149.ckpt
 ```
 
 ### Comparing the ROI refinement
@@ -383,18 +408,27 @@ enough.
 
 | Metric | Value |
 |--------|-------|
-| **test NME, shipped web model** (`v6_persp65`) | **0.0292** (~5.6px at 192px) |
+| **shipped web model** | `manual_occ_s42` (clean provenance) |
+| contour placement on 455 real frames, no ground truth | **4.067** vs 3.889 for `v6_persp65` (higher is better) |
+| test NME on the old benchmark, shipped model | 0.0347 |
+| test NME on the old benchmark, excluding collectionB | 0.0244 vs 0.0237 (`v6_persp65`) |
+| test NME, previous shipped model (`v6_persp65`) | 0.0292 (~5.6px at 192px) |
 | detector ear recall, IoU>=0.3 (BlazeEar v2 two-stage) | 78.6% |
-| test NME, best checkpoint (`v2_heatmap`) | 0.0291 |
-| test NME, off-contour component | 0.0129 |
-| Seed-to-seed spread (3 seeds) | +/- 0.0003 (~1% relative) |
+| Seed-to-seed spread (3 seeds, old benchmark) | +/- 0.0003 (~1% relative) |
 | Parameters | 340K |
 | Input size | 192x192 |
 
-The web demo ships `v6_persp65` rather than the nominally better `v2_heatmap`
-because the 0.0001 difference is under the seed spread, while perspective
-augmentation's off-axis robustness (-36% contour error at 50 deg yaw) is real and
-matters for webcam use.
+**Read the first two rows together, because they disagree.** The shipped model
+scores 19% WORSE than `v6_persp65` on the old test split and places contours
+BETTER on real photographs. Both are true. 55% of that test split is
+collectionB, whose annotation convention `v6_persp65` was trained on and this
+model was not, so the benchmark rewards agreement with that convention rather
+than accuracy. Excluding collectionB the gap falls to +3.1%; on audioear2d,
++0.9%. Judged with no ground truth at all -- 455 real full frames, contour
+placement scored by image-gradient response -- three seeds of the shipped model
+beat three seeds of `v6_persp65` with complete separation, p=0.05 exact (the
+floor available to a 3-vs-3 design). RESULTS.md has the full argument and the
+case against it.
 
 Reported on the 861-sample held-out test split, scored once per run. Reproduce
 with `python scripts/eval_test.py`. The v1 figure of 0.0307 was a validation
@@ -566,9 +600,26 @@ tested and closed out; reopening one needs a new argument, not another run.
 This repository's own source code is licensed under the **Apache License,
 Version 2.0** -- see [LICENSE](LICENSE).
 
-**The shipped model weights are not.** `docs/EarLandmarker_web.onnx` was trained
-on four datasets, and two of them -- 64% of the samples -- are
-non-commercial-research-only:
+**The shipped model weights are Apache-2.0 too**, as of this version.
+`docs/EarLandmarker_web.onnx` is trained on `data/manual` alone: 10,535 images
+collected from the wild and vetted to exclude non-permissive licences, annotated
+to the 55-point convention as commissioned work-for-hire. No iBUG or FFHQ data
+is in it. Earlier versions of this file were trained on the corpus below and
+were research-use only; they are superseded.
+
+The 55-point scheme itself is a point ORDERING -- 0-19 outer helix, 20-34 inner
+helix, 35-49 concha border, 50-54 superior crus -- not a dataset. Using the same
+numbering does not make the annotations derived from iBUG's.
+
+**Disclosed judgment call:** the annotation task was seeded with predictions from
+an earlier model trained on the iBUG corpus, which annotators then corrected, and
+iBUG's terms reach "any portion of derived data". The position taken here is that
+hand-correction produces an independent work -- the final labels move more than a
+pixel on 51% of points. [NOTICE](NOTICE) section 3 states this in full so anyone
+relying on the weights can judge it themselves.
+
+**`data/preprocessed` remains non-commercial**, so anything you train from it
+inherits that:
 
 | source | samples | licence | commercial use |
 |--------|---------|---------|----------------|
@@ -577,17 +628,10 @@ non-commercial-research-only:
 | AudioEar2D | 2,000 | annotations [CC BY 4.0](https://zenodo.org/records/7592895), but images are [FFHQ](https://github.com/NVlabs/ffhq-dataset) (CC BY-NC-SA 4.0) | **no** |
 | AudioEar3D | 112 | CC BY 4.0, provenance unverified | unclear |
 
-**98% of the corpus is non-commercial**, by two independent routes. iBUG's terms
-forbid exploiting "any portion of the annotations and **any portion of derived
-data**" commercially, which on a plain reading reaches trained weights. And a
-permissive licence on AudioEar2D's annotations does not make the FFHQ pixels they
-annotate permissive. So:
-
-- the **source code** here is Apache-2.0 and unaffected;
-- the **trained weights** should be treated as research-use only. Resolving it
-  means dual terms, removing the weights, permission from the dataset holders, or
-  retraining on genuinely new commercially-licensed data -- not a re-split, since
-  only AudioEar3D's 112 samples are even candidates.
+98% of that corpus is non-commercial by two independent routes: iBUG forbids
+exploiting "any portion of the annotations and **any portion of derived data**"
+commercially, and a permissive licence on AudioEar2D's annotations does not make
+the FFHQ pixels they annotate permissive. Train from `data/manual` instead.
 
 [NOTICE](NOTICE) has the quoted terms and the full third-party inventory.
 BlazeEar and trainable_blazeface have both been relicensed to Apache-2.0, so the

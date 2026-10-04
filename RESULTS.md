@@ -358,3 +358,83 @@ label consistency and real-data volume.
 Detector recall is now 78.6% on this set rather than 47.5%, so the landmarker and
 the detector are closer to balanced. The remaining ceiling is faces BlazeFace
 misses (1.4% of images), which no second stage can recover.
+
+# v3: replacing the training data
+
+The shipped model is now `manual_occ_s42`, trained on `data/manual` alone. This
+section records why, including the parts that argue against it.
+
+## The benchmark was measuring the wrong thing
+
+A model trained only on the commissioned data scores **0.0347** against
+`v6_persp65`'s **0.0292** -- 19% worse. That number does not mean what it looks
+like. Broken down by source:
+
+| source      |   n | v6_persp65 | manual_occ | gap    |
+|-------------|-----|------------|------------|--------|
+| collectionB | 472 |    0.03379 |    0.04326 | +28.0% |
+| collectionA |  89 |    0.04590 |    0.04863 |  +5.9% |
+| audioear2d  | 300 |    0.01710 |    0.01726 |  +0.9% |
+| ALL         | 861 |    0.02923 |    0.03475 | +18.9% |
+
+**Excluding collectionB the gap is +3.1%.** collectionB is 55% of the test split
+and 54% of `v6_persp65`'s training data, so the benchmark substantially measures
+agreement with one source's annotation convention. That source is also the
+outlier on every structural axis measured: ear-axis tilt 30 deg off every other
+source, the highest and tightest frame occupancy, 16 of the 20 worst samples, the
+loosest point spacing (step CV 0.249 against audioear2d's 0.149), and the only
+ground truth in the corpus that a model beats on image-gradient alignment.
+
+Two things this does NOT establish. collectionB is not corrupt -- it has zero
+self-crossing contours and its random sample tracks ear anatomy fine. And the
+sources disagree with each other on ear aspect ratio (medians 1.62 / 2.26 / 2.61)
+with no independent arbiter, so "collectionB is wrong" is not proven, only
+"collectionB is different and dominant".
+
+## Judging without any ground truth
+
+455 real full frames from BlazeEar's local data, 653 ears, both models through
+the identical two-stage pipeline. Contour placement scored by mean image-gradient
+response along the outer helix, per-image normalised so blur and exposure cannot
+bias it (`scripts/eval_gt_free.py`). Three seeds per side:
+
+| group | seeds                 | mean  | within-group range |
+|-------|-----------------------|-------|--------------------|
+| v6_persp65    | 3.9285 / 3.8854 / 3.8520 | 3.8886 | 0.0765 |
+| manual_occ    | 4.0774 / 4.0461 / 4.0769 | 4.0668 | 0.0313 |
+
+Difference **+0.1782, which is 2.3x the larger within-group range**, with
+complete separation: the worst clean seed beats the best shipped seed. Exact
+permutation over all 20 splits puts the observed difference first, p = 0.05 --
+the floor a 3-vs-3 design can reach.
+
+**The case against this result.** Edge response rewards a contour lying on a real
+intensity boundary but cannot tell the helix rim from the jawline, so a contour
+that overshoots onto another strong edge is not penalised as it should be. It is
+evidence about contour placement, not a substitute for annotated error. The
+honest summary is that the shipped model is better on a proxy and competitive on
+everything except collectionB -- settling it needs a test set annotated from
+scratch, which does not exist yet.
+
+## Two bugs found while chasing this
+
+**Constant-scale crops.** The first ingestion cropped every manual image to
+exactly 0.777 occupancy -- sd 0.001 against the old corpus's 0.097. 99.2% of the
+old test set lay outside that range. Restoring the spread cut the model's
+scale-error sd from 0.0578 to 0.0409 and closed the gap on audioear2d from +22.5%
+to +0.9%, while leaving the aggregate NME flat because collectionB moved the
+other way. The aggregate hid a large per-source effect in both directions.
+
+**Clamped landmarks.** `preprocess.py` clipped normalised landmarks to [0,1],
+pinning out-of-crop points onto the frame border, where `dataset.py`'s
+`(lm >= 0) & (lm <= 1)` visibility test passed them as visible and supervised them
+at a fabricated position. 714 points, 0.41% of collectionB's against ~0%
+elsewhere. Both ends fixed; `tests/test_landmark_clamping.py` locks it.
+
+## What rotation did not explain
+
+The old corpus has a wider and bimodal ear-axis distribution (collectionB median
++47 deg, audioear2d +17 deg). Matching the total rotation sd with wider
+augmentation did nothing: +-15 deg 0.03420, +-26.5 deg 0.03469, +-40 deg 0.03491.
+The per-tilt breakdown is flat at ~17% across the whole rotation range and both
+models correlate with tilt almost identically (Spearman +0.444 vs +0.454).
