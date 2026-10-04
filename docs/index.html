@@ -217,8 +217,24 @@
                 an ear whose face is missed never reaches stage two.</p>
                 <p><strong>Architecture:</strong></p>
                 <p>BlazeBlock backbone (FaceMesh pattern), 340K params, soft-argmax
-                heatmap head, Wing loss, perspective augmentation.
-                Test NME 0.0292 on 861 held-out samples.</p>
+                heatmap head, Wing loss, perspective augmentation.</p>
+                <p><strong>Training data:</strong></p>
+                <p>10,535 images collected from the wild under permissive licences,
+                annotated to the 55-point convention as commissioned work. The
+                weights are Apache-2.0 like the code; see
+                <a href="https://github.com/shameem4/Ear_Landmarker/blob/main/NOTICE">NOTICE</a>,
+                which also discloses that the annotation task was seeded with
+                predictions from an earlier model and corrected by hand.</p>
+                <p>This model scores 0.0347 on the 861-sample held-out split that
+                the previous one scored 0.0292 on &mdash; and places contours
+                <em>better</em> on real photographs. 55% of that split comes from a
+                single source whose annotation convention the previous model was
+                trained on and this one was not; excluding it the gap is 3.1%.
+                Judged with no ground truth, on 455 real frames, three seeds of
+                this model beat three seeds of the previous one with complete
+                separation. The
+                <a href="https://github.com/shameem4/Ear_Landmarker/blob/main/RESULTS.md">results write-up</a>
+                has the argument and the case against it.</p>
                 <p><strong>Framing:</strong></p>
                 <p>The crop is re-derived from the landmarks rather than trusted
                 from the detector box, which on real captures spans 1.02&ndash;1.53&times;
