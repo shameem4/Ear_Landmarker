@@ -51,7 +51,11 @@ const ROI_EXPAND = 1.3;
 // border and can never reach the rim. The ROI is therefore re-derived from the
 // landmarks, which do know where the ear is -- the same ROI-from-landmarks
 // refinement MediaPipe uses for face and hand tracking.
-const TRAIN_OCCUPANCY = 0.777;  // ear extent / crop side, over all 5,870 training samples
+// Ear extent / crop side. Measured on the 5,870-sample iBUG-derived corpus; the
+// shipped model trains on the commissioned set, which is ingested at the same
+// mean (achieved 0.775, sd 0.093), so this is unchanged. Must match
+// inference.py:TRAIN_OCCUPANCY.
+const TRAIN_OCCUPANCY = 0.777;
 const ROI_OCC_TOL = 0.06;       // skip refinement when occupancy is already this close
 const ROI_SATURATED = 0.88;     // above this the ear is clipped, so extent under-reads
 const ROI_SAT_BOOST = 1.25;     // ...so grow faster than the measurement implies

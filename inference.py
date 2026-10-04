@@ -54,7 +54,10 @@ DETECTOR_WEIGHTS = "runs/checkpoints_crop/BlazeEar_best.pth"
 # crop, predict, measure the extent, and re-crop so the ear sits at the
 # occupancy the model was trained on. This is the ROI-from-landmarks refinement
 # MediaPipe uses for face and hand tracking.
-TRAIN_OCCUPANCY = 0.777   # ear extent / crop side, measured over all 5,870 training samples
+TRAIN_OCCUPANCY = 0.777   # ear extent / crop side. Was measured over the 5,870-sample
+                          # iBUG-derived corpus; the shipped model trains on data/manual,
+                          # which ingest_manual.py targets at the same mean (achieved
+                          # 0.775, sd 0.093), so the constant is unchanged.
 ROI_OCC_TOL = 0.06        # skip refinement when occupancy is already this close
 ROI_SATURATED = 0.88      # above this the ear is clipped, so measured extent under-reads
 ROI_SAT_BOOST = 1.25      # ...so grow more aggressively than the measurement implies
