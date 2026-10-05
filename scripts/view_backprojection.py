@@ -7,8 +7,7 @@
        returns 55 points in full-frame pixels
     4. back-project each point by ray-cast onto the whole mesh -> 55 points in 3D
        (then repeat 2-4 in the plane those landmarks define)
-    5. optionally snap them onto the ear surface
-    6. open an interactive window -- mesh + 3D landmarks + the four linestrips --
+    5. open an interactive window -- mesh + 3D landmarks + the four linestrips --
        and write a 2D overlay PNG of the same prediction beside it
 
 SELF-CONTAINED BY DESIGN. Every geometry stage is inlined below rather than
@@ -21,10 +20,8 @@ made there do not arrive here. If a change proves out, port it deliberately.
 KNOWN LIMITATION, and the reason this viewer exists. A camera ray that passes
 just outside the pinna hits the SCALP behind it, so that landmark lands about one
 ear-depth too deep. It looks correct face-on -- the error is purely in depth --
-and only separates when you orbit. Snapping helps a ray that merely grazed; it
-cannot help one that genuinely struck the head, because the nearest surface to
-that hit IS the scalp it already hit. Orbit to ~60 deg to see which points are
-wrong, and watch the black spheres (ray missed) and white ones (chain-repaired).
+and only separates when you orbit to ~60 deg. Black spheres are rays that missed
+the mesh entirely. The ray-cast is shown RAW: no snapping, no correction.
 
 Controls: drag to orbit, scroll to zoom, R resets the view, Q or Escape closes.
 
@@ -64,7 +61,6 @@ if os.environ.get("WAYLAND_DISPLAY") and os.environ.get("DISPLAY"):
 import numpy as np
 import open3d as o3d
 from PIL import Image, ImageDraw
-from scipy.spatial import cKDTree
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -107,7 +103,23 @@ CONFIG = dict(
                             # Much the smaller effect: azimuth is worth +0.030.
     key_energy=5.0,         # as swept, AT light_ref_dist. See below.
     fill_energy=1.5,
-    ambient=0.35,
+    ambient=0.12,           # world light, and the ONE setting that governs whether
+                            # the ear reads as a surface or as a flat blob. It
+                            # lights from every direction at once, so it fills
+                            # exactly the shadows that make relief legible. At the
+                            # old 0.35 the key light is roughly an order of
+                            # magnitude weaker than the world, and the render is a
+                            # lightbox: measured over two heads, relief falls to
+                            # 64% of the Open3D clay render, DETECTOR confidence
+                            # drops to 0.40 and only 27.5 of 55 rays hit. At 0.12
+                            # relief is 103% of clay, confidence 0.91, 55/55 rays.
+                            # 0.06 gives 134% of clay if you want more bite.
+    sss=0.35,               # subsurface weight. NOT the cause of flatness, though
+                            # it looks like it: 0.35 -> 0.0 moves relief by 0.7%
+                            # (0.00569 -> 0.00565), against ambient's 63% -> 105%.
+    sss_scale=0.012,        # scatter radius in MESH UNITS, so it means different
+                            # things at different mesh scales -- the ear spans
+                            # ~0.2 units in the pass-1 frame and ~2.1 in pass 2.
     # Those energies were swept with the camera (and so the key light, which sits
     # at dist*1.1) at 2.2. This viewer must put the camera at eye_z=3.0 for the
     # back-projection to be correct, which is 1.86x further and delivers 54% of
@@ -133,10 +145,9 @@ CONFIG = dict(
     # a hand-rolled crop here happened to do.
 
     # --- back-projection ----------------------------------------------------
-    snap=True,
-    snap_in_plane_all=False,    # force the in-plane snap on EVERY point, not just misses
-    snap_tol=2.5,           # chain-break tolerance, in median strip steps
-    snap_passes=3,
+    # No snapping. The ray-cast is shown RAW -- what the camera ray actually hit,
+    # and nothing else. scripts/snap_landmarks.py still holds the in-plane and
+    # chain-repair rules for when they go back in.
 
     # --- display ------------------------------------------------------------
     sphere_frac=0.022,      # landmark sphere radius, in mesh units (ear spans ~1)
@@ -236,6 +247,7 @@ def render_blender(mesh, cfg, size=None):
                     key_energy=float(cfg["key_energy"]) * falloff,
                     fill_energy=float(cfg["fill_energy"]) * falloff,
                     ambient=float(cfg["ambient"]),
+                    sss=float(cfg["sss"]), sss_scale=float(cfg["sss_scale"]),
                     freckles=float(cfg["freckles"]),
                     key_size=float(cfg["key_size"]),
                     key_azimuth=float(cfg["key_azimuth"]),
@@ -397,72 +409,6 @@ def landmark_whole_frame(mesh, cfg, pipe):
     # the crop. Reach into pipe.landmarker.predict(..., with_confidence=True) if
     # you need the per-point values back.
     return img, np.asarray(best["landmarks"], float), float(best["confidence"])
-
-
-# ============================================================ snapping ======
-
-def snap_in_plane(points, V, hit):
-    """Snap within the image plane only: adjust x/y, never push the point in/out.
-
-    A plain 3D nearest-neighbour snap can pull a landmark BACKWARDS into the scalp
-    directly behind the pinna -- same image position, slightly further away, and
-    genuinely the nearest surface in 3D. That is the one direction the move must
-    not take: the 2D prediction is what the model is good at, depth is what it
-    cannot see. A ray that HIT already returns the frontmost surface at exactly
-    that image position, so it is left alone.
-    """
-    P = np.asarray(points, float).copy()
-    need = ~np.asarray(hit, bool)
-    if not need.any():
-        return P
-    _, j = cKDTree(V[:, :2]).query(P[need][:, :2], k=1)
-    P[need] = V[np.atleast_1d(j)]
-    return P
-
-
-def _neighbours(k):
-    for a, b in STRIPS:
-        if a <= k < b:
-            return [j for j in (k - 1, k + 1) if a <= j < b]
-    return []
-
-
-def snap_chain(points, V, tol, max_passes):
-    """Repair landmarks that broke their strip's spacing. Returns (points, mask).
-
-    The 55 points are four ordered linestrips, so a correctly placed landmark
-    sits roughly one step from its sequence neighbours; one pinned to the skull is
-    an outlier against that spacing while its neighbours are not. Structural on
-    purpose -- it needs no pinna/scalp segmentation, which is the part that has
-    proven unreliable. It also cannot see a scalp hit that happens to stay
-    plausibly spaced, which is the residual error this viewer shows.
-    """
-    tree = cKDTree(V)
-    P = np.asarray(points, float).copy()
-    repaired = np.zeros(len(P), bool)
-    for _ in range(max_passes):
-        step = {}
-        for a, b in STRIPS:
-            d = np.linalg.norm(np.diff(P[a:b], axis=0), axis=1)
-            ok = d[~repaired[a + 1:b]] if repaired[a + 1:b].any() else d
-            step[(a, b)] = np.median(ok) if len(ok) else np.median(d)
-        flagged = []
-        for k in range(len(P)):
-            nb = [j for j in _neighbours(k) if not repaired[j]]
-            if not nb:
-                continue
-            ab = next((a, b) for a, b in STRIPS if a <= k < b)
-            if np.mean([np.linalg.norm(P[k] - P[j]) for j in nb]) > tol * step[ab]:
-                flagged.append(k)
-        if not flagged:
-            break
-        for k in flagged:
-            nb = [j for j in _neighbours(k) if j not in flagged]
-            if not nb:
-                continue
-            P[k] = V[tree.query(np.mean([P[j] for j in nb], axis=0))[1]]
-            repaired[k] = True
-    return P, repaired
 
 
 # ============================================================ display ======
@@ -648,8 +594,6 @@ def main():
     p.add_argument("--ear", type=int, default=None, help="which detected ear, 0 or 1")
     p.add_argument("--run", default=None, help="checkpoint run name")
     p.add_argument("--device", default=None)
-    p.add_argument("--no-snap", action="store_true")
-    p.add_argument("--snap-all", action="store_true", help="in-plane snap every point")
     p.add_argument("--rays", action="store_true", help="draw the camera rays")
     p.add_argument("--renderer", choices=["blender", "open3d"], default=None)
     p.add_argument("--tone", type=int, default=None, help="skin tone 0-8, light to dark")
@@ -670,8 +614,6 @@ def main():
                  ("key_energy", a.key_energy), ("key_size", a.key_size)):
         if v is not None:
             cfg[k] = v
-    cfg["snap"] = cfg["snap"] and not a.no_snap
-    cfg["snap_in_plane_all"] |= a.snap_all
     cfg["show_rays"] |= a.rays
     cfg["show_2d"] = cfg["show_2d"] and not a.no_2d
     cfg["interactive"] = cfg["interactive"] and not a.no_window
@@ -693,45 +635,26 @@ def main():
     g, img, lm, P3, hit, conf = label_two_pass(mesh, front, up, cfg, pipe)
     V = np.asarray(g.vertices)
 
-    # A missed ray has no 3D position. Park it on the mesh centroid so the snap
-    # has something finite to move; its sphere is drawn black either way.
+    # A missed ray has no 3D position at all. Park it on the mesh centroid so the
+    # arrays stay finite; its sphere is drawn black so it reads as "no result".
     P3 = np.where(np.isfinite(P3), P3, V.mean(0))
-
-    repaired = np.zeros(len(P3), bool)
-    if cfg["snap"]:
-        before = P3.copy()
-        h = np.zeros(len(P3), bool) if cfg["snap_in_plane_all"] else hit
-        P3 = snap_in_plane(P3, V, h)
-        # Measure the in-plane move BEFORE the chain repair or the two conflate.
-        step = np.linalg.norm(P3 - before, axis=1)
-        moved = step > 1e-9
-        P3, repaired = snap_chain(P3, V, cfg["snap_tol"], cfg["snap_passes"])
-        print(f"snap: {int(moved.sum())} moved in-plane "
-              f"(median {np.median(step[moved]) if moved.any() else 0.0:.4f}), "
-              f"{int(repaired.sum())} chain-repaired")
 
     # Depth spread is the tell for a scalp-pinned point: it sits behind the rest.
     print(f"landmark depth z: {P3[:,2].min():+.3f} to {P3[:,2].max():+.3f} "
           f"(ear spans about 1.0 by construction)")
     for i, (a_, b_) in enumerate(STRIPS):
         print(f"  {STRIP_NAMES[i]:<14s} z {P3[a_:b_,2].min():+.3f} .. "
-              f"{P3[a_:b_,2].max():+.3f}   misses {int((~hit[a_:b_]).sum())}"
-              f"  repaired {int(repaired[a_:b_].sum())}")
+              f"{P3[a_:b_,2].max():+.3f}   misses {int((~hit[a_:b_]).sum())}")
 
     if cfg["overlay_png"]:
         write_overlay(Image.fromarray(img), lm, cfg["overlay_png"])
         if cfg["show_2d"] and cfg["interactive"]:
             show_image_window(cfg["overlay_png"])
 
-    colours = []
-    for k in range(len(P3)):
-        if repaired[k]:
-            colours.append((1.0, 1.0, 1.0))        # chain-repaired
-        elif not hit[k]:
-            colours.append((0.0, 0.0, 0.0))        # the ray missed entirely
-        else:
-            colours.append(STRIP_COLOURS[next(i for i, (a_, b_) in enumerate(STRIPS)
-                                              if a_ <= k < b_)])
+    colours = [(0.0, 0.0, 0.0) if not hit[k]          # the ray missed entirely
+               else STRIP_COLOURS[next(i for i, (a_, b_) in enumerate(STRIPS)
+                                       if a_ <= k < b_)]
+               for k in range(len(P3))]
     geoms = [g, spheres(P3, cfg["sphere_frac"], colours), strip_lines(P3)]
     if cfg["show_rays"]:
         geoms.append(ray_lines(P3, cfg))
