@@ -23,7 +23,8 @@ KNOWN LIMITATION, and the reason this viewer exists. A camera ray that passes
 just outside the pinna hits the SCALP behind it, so that landmark lands about one
 ear-depth too deep. It looks correct face-on -- the error is purely in depth --
 and only separates when you orbit to ~60 deg. Black spheres are rays that missed
-the mesh entirely. The ray-cast is shown RAW: no snapping, no correction.
+the mesh entirely; WHITE ones were snapped onto the near lip of a depth cliff
+(--no-snap shows the raw back-projection instead).
 
 Controls: drag to orbit, scroll to zoom, R resets the view, Q or Escape closes.
 
@@ -64,6 +65,7 @@ if os.environ.get("WAYLAND_DISPLAY") and os.environ.get("DISPLAY"):
 
 import numpy as np
 import open3d as o3d
+from scipy import ndimage
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,9 +120,21 @@ CONFIG = dict(
     # a hand-rolled crop here happened to do.
 
     # --- back-projection ----------------------------------------------------
-    # No snapping. The ray-cast is shown RAW -- what the camera ray actually hit,
-    # and nothing else. scripts/snap_landmarks.py still holds the in-plane and
-    # chain-repair rules for when they go back in.
+    snap=True,              # place landmarks that sit behind a depth cliff onto
+                            # the near lip of that cliff. See snap_to_cliff().
+    snap_radius=0.10,       # JITTER RANGE: the search window, as a fraction of
+                            # ear extent. At the usual framing the ear spans
+                            # ~435 px, so this is a radius of ~43 px (an 87x87
+                            # window). This is the whole safety bound -- the
+                            # further it reaches, the more a "snap" becomes a
+                            # relocation of a landmark the model simply put in
+                            # the wrong place. See the measurements by radius in
+                            # the commit that set this.
+    snap_step=0.30,         # how big a depth step counts as a cliff, in mesh
+                            # units with the ear spanning ~1. Scalp-behind-pinna
+                            # measures 0.85-1.08; concha bowl structure varies by
+                            # ~0.3, so this sits between them. Lower (0.15) drags
+                            # concha points forward; higher (0.50) fixes nothing.
 
     # --- display ------------------------------------------------------------
     sphere_frac=0.022,      # landmark sphere radius, in mesh units (ear spans ~1)
@@ -310,6 +324,97 @@ def gui_depth_to_view(depth, scene_camera):
     return np.where(d >= 1.0, np.inf, z)
 
 
+def cliff_map(depth, step):
+    """Pixels where the surface STEPS by more than `step` within a 3x3 window.
+
+    Background (inf) is pushed to a finite far value first, so the pinna's
+    silhouette against the head behind it counts as an edge like any other
+    occlusion. A RIDGE is not a cliff: the antihelix curves, it does not break,
+    so its local max-min stays small and it never qualifies. That distinction is
+    what makes this safe where two earlier snaps were not -- both of those used
+    "nearest surface in the window", which drags concha-floor points forward onto
+    the rim, because a bowl legitimately has nearer surface beside it.
+
+    Returns (is_cliff, near_depth) where near_depth is the 3x3 minimum: the
+    foreground lip of whatever edge runs through that pixel.
+    """
+    d = np.where(np.isfinite(depth), depth, np.nan)
+    far = np.nanmax(d) + 1.0 if np.isfinite(np.nanmax(d)) else 1.0
+    d = np.where(np.isnan(d), far, d)
+    hi = ndimage.maximum_filter(d, size=3)
+    lo = ndimage.minimum_filter(d, size=3)
+    return (hi - lo) > step, lo
+
+
+def snap_to_cliff(depth, uv, radius, step):
+    """Place landmarks that sit BEHIND a depth cliff onto its near lip.
+
+    For each landmark, look within `radius` px for a depth cliff. If one is
+    there AND the landmark is currently on the far side of it, move to the
+    nearest cliff pixel and take the near-side depth. A landmark with no cliff
+    nearby, or already on the near lip, is left exactly where it is.
+
+    Returns (uv, moved_mask, shift_px, near_depth). The near depth is returned
+    rather than applied, because re-sampling the depth buffer AT a cliff pixel is
+    a coin flip between the two surfaces it separates -- which is the entire
+    failure being corrected. Measured, taking it explicitly moved this from
+    fixing 0 of 13 bad landmarks to fixing 11.
+    """
+    cliff, lo = cliff_map(depth, step)
+    H, W = depth.shape
+    out = np.asarray(uv, float).copy()
+    moved = np.zeros(len(out), bool)
+    shift = np.zeros(len(out))
+    znear = np.full(len(out), np.nan)
+    r = int(np.ceil(radius))
+    yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
+    rad = np.hypot(xx, yy)
+    for k, (u, v) in enumerate(out):
+        x0, y0 = int(round(u)), int(round(v))
+        xs, xe = max(0, x0 - r), min(W, x0 + r + 1)
+        ys, ye = max(0, y0 - r), min(H, y0 + r + 1)
+        if xe <= xs or ye <= ys:
+            continue
+        sub = cliff[ys:ye, xs:xe]
+        rr = rad[ys - (y0 - r):ye - (y0 - r), xs - (x0 - r):xe - (x0 - r)]
+        cand = sub & (rr <= radius)
+        if not cand.any():
+            continue
+        dd = np.where(cand, rr, np.inf)
+        iy, ix = np.unravel_index(np.argmin(dd), dd.shape)
+        gy, gx = ys + iy, xs + ix
+        d_here = depth[min(max(y0, 0), H - 1), min(max(x0, 0), W - 1)]
+        # Only move a point that is actually BEHIND the cliff. One already on the
+        # near lip belongs there; moving it anyway was the whole source of
+        # collateral damage in the previous version (15-17 good points per head
+        # displaced, against 3 with this gate).
+        if not np.isfinite(d_here) or (d_here - lo[gy, gx]) < 0.5 * step:
+            continue
+        out[k] = [gx, gy]
+        moved[k] = True
+        shift[k] = dd[iy, ix]
+        znear[k] = lo[gy, gx]
+    return out, moved, shift, znear
+
+
+def backproject_snapped(depth, uv, cam, cfg):
+    """backproject(), then the cliff snap if it is enabled. Returns (P, hit, moved)."""
+    P, hit = backproject(depth, uv, cam)
+    if not cfg.get("snap"):
+        return P, hit, np.zeros(len(P), bool)
+    uv = np.asarray(uv, float)
+    ext = max(np.ptp(uv[:, 0]), np.ptp(uv[:, 1]))
+    uv2, moved, _, znear = snap_to_cliff(depth, uv, cfg["snap_radius"] * ext,
+                                         cfg["snap_step"])
+    use = moved & np.isfinite(znear)
+    if use.any():
+        u, v, z = uv2[use, 0], uv2[use, 1], znear[use]
+        Pc = np.stack([(u - cam.cx) / cam.fx * z, (v - cam.cy) / cam.fy * z, z], axis=1)
+        P[use] = (Pc - cam.t) @ cam.R
+        hit = hit | use
+    return P, hit, moved
+
+
 def backproject(depth, uv, cam, max_jump=0.02):
     """2D -> 3D from the DEPTH BUFFER of the same render. Returns (P, hit).
 
@@ -420,14 +525,17 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
         panel.frame = gui.Rect(rect.x, rect.y, min(rect.width, 420), pref.height)
     win.set_on_layout(on_layout)
 
-    state = {"drawn": [], "text": None, "busy": False,
+    state = {"drawn": [], "text": None, "busy": False, "snapped": None,
              "note": "face-on, as labelled"}
 
     def draw_landmarks(P3, hit):
         for n in state["drawn"]:
             widget.scene.remove_geometry(n)
         state["drawn"] = []
-        colours = [(0.0, 0.0, 0.0) if not hit[k]
+        snapped = state.get("snapped")
+        colours = [(0.0, 0.0, 0.0) if not hit[k]              # ray missed
+                   else (1.0, 1.0, 1.0) if (snapped is not None and len(snapped) == len(P3)
+                                            and snapped[k])   # moved to a cliff
                    else STRIP_COLOURS[next(i for i, (a, b) in enumerate(STRIPS)
                                            if a <= k < b)]
                    for k in range(len(P3))]
@@ -453,10 +561,12 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
             return
         best = max(res, key=lambda d: float(d["confidence"]))
         lm = np.asarray(best["landmarks"], float)
-        Q, qhit = backproject(depth, lm, cam)
+        Q, qhit, qsnap = backproject_snapped(depth, lm, cam, cfg)
+        state["snapped"] = qsnap
         draw_landmarks(Q, qhit)
         state["note"] = (f"re-landmarked at yaw {yaw:+.0f} pitch {pitch:+.0f}: "
-                         f"det {float(best['confidence']):.2f}, {int(qhit.sum())}/55 hit")
+                         f"det {float(best['confidence']):.2f}, {int(qhit.sum())}/55 hit"
+                         + (f", {int(qsnap.sum())} snapped" if qsnap.any() else ""))
         state["busy"] = False
         print(f"  [L] {state['note']}", flush=True)
         # Rewriting the overlay is what refreshes the 2D window: it polls this
@@ -945,7 +1055,7 @@ def label_two_pass(mesh, front, up, cfg, pipe, centre=None):
                  "  With the MediaPipe frame the SIDE is chosen deterministically, so a\n"
                  "  head whose other ear is easier will still fail here. Try --ear 1,\n"
                  "  or --no-mediapipe to let the detector sweep pick whichever it likes.")
-    P1, hit1 = backproject(depth1, lm, cam1)
+    P1, hit1, _ = backproject_snapped(depth1, lm, cam1, cfg)
     print(f"pass 1: detector conf {conf:.3f}, {int(hit1.sum())}/55 rays hit")
     if hit1.sum() < 10:
         sys.exit("pass 1: too few rays hit to fit a pinna plane")
@@ -965,7 +1075,9 @@ def label_two_pass(mesh, front, up, cfg, pipe, centre=None):
     img2, depth2, cam2, lm2, conf2 = landmark_whole_frame(g2, cfg, pipe)
     if lm2 is None:
         sys.exit("pass 2: the pipeline found no ear in the pinna-frame render")
-    P3, hit = backproject(depth2, lm2, cam2)
+    P3, hit, snapped = backproject_snapped(depth2, lm2, cam2, cfg)
+    if snapped.any():
+        print(f"snap: {int(snapped.sum())} landmarks moved onto a depth cliff")
     print(f"pass 2: detector conf {conf2:.3f}, {int(hit.sum())}/55 rays hit")
     return g2, img2, cam2, lm2, P3, hit, conf2
 
@@ -977,6 +1089,8 @@ def main():
     p.add_argument("--tone", type=int, default=None, help="skin tone 0-8, light to deep")
     p.add_argument("--no-skin", action="store_true", help="render bare clay instead")
     p.add_argument("--no-mediapipe", action="store_true", help="use the ear-detector sweep")
+    p.add_argument("--no-snap", action="store_true", help="show the raw back-projection")
+    p.add_argument("--snap-radius", type=float, default=None, help="jitter range, 0-1 of ear extent")
     p.add_argument("--run", default=None, help="checkpoint run name")
     p.add_argument("--device", default=None)
     p.add_argument("--rays", action="store_true", help="draw the camera rays")
@@ -993,6 +1107,9 @@ def main():
             cfg[k] = v
     cfg["skin"] = cfg["skin"] and not a.no_skin
     cfg["use_mediapipe"] = cfg["use_mediapipe"] and not a.no_mediapipe
+    cfg["snap"] = cfg["snap"] and not a.no_snap
+    if a.snap_radius is not None:
+        cfg["snap_radius"] = a.snap_radius
     cfg["show_rays"] |= a.rays
     cfg["show_2d"] = cfg["show_2d"] and not a.no_2d
     cfg["interactive"] = cfg["interactive"] and not a.no_window

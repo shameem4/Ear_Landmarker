@@ -235,3 +235,70 @@ def test_view_matrix_round_trips_to_our_extrinsic():
     back = vbp.extrinsic_of(r.scene.camera)
     del r
     assert np.allclose(back, E, atol=1e-4)
+
+
+# --- the depth-cliff snap ---------------------------------------------------
+# A landmark whose ray grazes past the pinna lands on the head behind it. The
+# snap moves such a point onto the near lip of the depth step it is hiding
+# behind. The danger is the opposite error -- dragging a point that is DEEPER
+# FOR GOOD REASON, like the floor of the concha bowl, forward onto a rim. These
+# pin the distinction that makes it safe.
+
+def _step_depth(near=2.0, far=2.9, size=200):
+    """Left half near, right half far: one hard occlusion edge down the middle."""
+    d = np.full((size, size), far, dtype=np.float32)
+    d[:, : size // 2] = near
+    return d
+
+
+def _bowl_depth(size=200, lo=2.4, hi=2.7):
+    """A smooth basin: deeper in the middle, no discontinuity anywhere."""
+    y, x = np.mgrid[0:size, 0:size]
+    r = np.hypot(x - size / 2, y - size / 2) / (size / 2)
+    return (lo + (hi - lo) * np.clip(1 - r, 0, 1)).astype(np.float32)[::-1]
+
+
+def test_cliff_is_found_on_a_step_and_not_on_a_bowl():
+    assert vbp.cliff_map(_step_depth(), 0.30)[0].any()
+    assert not vbp.cliff_map(_bowl_depth(), 0.30)[0].any(), (
+        "a smooth basin must not register as a cliff, or concha points get dragged")
+
+
+def test_a_point_behind_the_step_snaps_to_the_near_lip():
+    d = _step_depth(near=2.0, far=2.9)
+    uv = np.array([[110.0, 100.0]])            # 10 px into the far side
+    out, moved, shift, znear = vbp.snap_to_cliff(d, uv, radius=40, step=0.30)
+    assert moved[0]
+    assert znear[0] == pytest.approx(2.0, abs=1e-5), "must take the NEAR side"
+    assert shift[0] < 15
+
+
+def test_a_point_on_the_near_side_is_left_alone():
+    d = _step_depth()
+    uv = np.array([[90.0, 100.0]])             # already on the near side
+    _, moved, _, _ = vbp.snap_to_cliff(d, uv, radius=40, step=0.30)
+    assert not moved[0]
+
+
+def test_a_point_in_a_bowl_is_left_alone():
+    """The concha case: deeper than its surroundings, but no step to snap to."""
+    d = _bowl_depth()
+    uv = np.array([[100.0, 100.0]])            # the deepest part of the basin
+    _, moved, _, _ = vbp.snap_to_cliff(d, uv, radius=40, step=0.30)
+    assert not moved[0]
+
+
+def test_a_point_beyond_the_radius_is_left_alone():
+    """The radius is the safety bound: far-out points are errors, not grazes."""
+    d = _step_depth(near=2.0, far=2.9)
+    uv = np.array([[180.0, 100.0]])            # 80 px into the far side
+    _, moved, _, _ = vbp.snap_to_cliff(d, uv, radius=20, step=0.30)
+    assert not moved[0]
+
+
+def test_snap_can_be_turned_off():
+    d = _step_depth()
+    cam = vbp.Camera(*vbp.camera_ke(SIZE, CFG), (SIZE, SIZE), SIZE)
+    uv = np.array([[110.0, 100.0], [115.0, 100.0]])
+    _, _, moved = vbp.backproject_snapped(d, uv, cam, dict(CFG, snap=False))
+    assert not moved.any()
