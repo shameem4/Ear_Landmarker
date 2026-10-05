@@ -127,6 +127,14 @@ def main():
     dist = args["dist"]
     cam_data = bpy.data.cameras.new("cam")
     cam_data.lens_unit = "FOV"
+    # sensor_fit MUST be set before angle_y, and must be VERTICAL. Blender's
+    # default AUTO fit measures the angle across the LARGER sensor dimension --
+    # the 36mm width, not the 24mm height -- so on a square render setting
+    # angle_y to 50 deg produced an effective 70 deg field. Measured: markers
+    # landed at 0.665x their projected offset from centre, which is exactly
+    # tan(25)/tan(35). That silently shrinks everything in frame relative to
+    # what render3d_ears.project() predicts.
+    cam_data.sensor_fit = "VERTICAL"
     cam_data.angle_y = math.radians(50.0)
     cam = bpy.data.objects.new("cam", cam_data)
     scene.collection.objects.link(cam)
@@ -140,7 +148,10 @@ def main():
     # landmarker needs.
     key = bpy.data.lights.new("key", type="AREA")
     key.energy = args.get("key_energy", 60.0)
-    key.size = dist * 1.2
+    # Light SIZE sets shadow softness, and at the default 1.2 the source is wider
+    # than the head: shadows wash out and the ear's relief goes flat. It was never
+    # part of the azimuth/energy sweep, so it is exposed rather than tuned here.
+    key.size = dist * args.get("key_size", 1.2)
     ko = bpy.data.objects.new("key", key)
     # Azimuth 0 puts the key beside the camera; negative swings it toward the
     # front of the face, positive behind the head, changing which side of the

@@ -1,10 +1,12 @@
 """Standalone, editable: 3D head -> face-on render -> landmarker -> back-projection.
 
-    1. load a head mesh (HUTUBS .ply / any .ply/.obj head) or a lone ear
-    2. find the ear with the detector, build the ear's OWN plane frame, and
-       render it face-on at the occupancy the model was trained at
-    3. run the landmarker on that render -> 55 points in crop pixels
-    4. back-project each point by ray-cast onto the mesh -> 55 points in 3D
+    1. load a head mesh (HUTUBS .ply, or any .ply/.obj head)
+    2. find the ear with the detector and render the head face-on
+    3. hand the WHOLE render to EarLandmarkerPipeline -- the shipped
+       detect -> ROI -> refine -> landmark path, which does its own cropping and
+       returns 55 points in full-frame pixels
+    4. back-project each point by ray-cast onto the whole mesh -> 55 points in 3D
+       (then repeat 2-4 in the plane those landmarks define)
     5. optionally snap them onto the ear surface
     6. open an interactive window -- mesh + 3D landmarks + the four linestrips --
        and write a 2D overlay PNG of the same prediction beside it
@@ -29,7 +31,7 @@ Controls: drag to orbit, scroll to zoom, R resets the view, Q or Escape closes.
 Usage:
     python scripts/view_backprojection.py
     python scripts/view_backprojection.py --mesh /path/pp16_3DheadMesh.ply --ear 1
-    python scripts/view_backprojection.py --audioear 0 --rays
+    python scripts/view_backprojection.py --renderer open3d --rays
     python scripts/view_backprojection.py --no-window      # just stats + PNG
 """
 
@@ -37,10 +39,11 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 import os
+import subprocess
 import sys
 import tempfile
-import zipfile
 from pathlib import Path
 
 # MUST COME BEFORE `import open3d`, and it is not optional on a Wayland session.
@@ -73,32 +76,63 @@ EAR3D_DIR = Path(os.environ.get("EAR3D_DIR", ROOT.parent / "clean_3d_data"))
 CONFIG = dict(
     # --- what to load -------------------------------------------------------
     mesh=str(EAR3D_DIR / "3D head meshes" / "pp12_3DheadMesh.ply"),
-    audioear=None,          # instead: index into the AudioEar3D zip, e.g. 0
     ear=0,                  # which detected ear: 0 = highest confidence, 1 = other side
 
     # --- model --------------------------------------------------------------
     run="manual_occ_s42",   # checkpoint under runs/checkpoints/<run>/
     device="cuda",
 
+    # --- renderer -----------------------------------------------------------
+    renderer="blender",     # "blender" = Cycles skin (slow, photo-like),
+                            # "open3d" = clay shading (~100x faster)
+    tone=None,              # index into SKIN_TONES (0 = lightest, 8 = darkest);
+                            # None picks one at random per run
+    freckles=0.0,           # they COST landmarker confidence (0.426 -> 0.419)
+    # RESULTS.md swept these one factor at a time and found azimuth -40 deg with a
+    # shallow energy optimum at 5 W. The ENERGY carries over; the AZIMUTH does
+    # not, because that sweep ran before the camera-orientation bug below was
+    # found, so its angles were measured about a different axis than the ear's.
+    # Re-swept here in the corrected frame, on two heads: +20 is best at 0.407
+    # mean confidence, falling monotonically to 0.387 at +80, and -40 gives only
+    # 0.362-0.366. Azimuth remains the largest single appearance factor.
+    key_azimuth=20.0,       # NEGATIVE swings the key toward the front of the
+                            # face, positive behind the head.
+    key_elevation=30.0,
+    key_size=0.5,           # key light width, as a fraction of camera distance.
+                            # NOT part of the original sweep. The script's own
+                            # default of 1.2 makes the source wider than the head,
+                            # so shadows wash out and the ear renders FLAT.
+                            # Shrinking it raises in-ear contrast (sd 9.7 -> 10.4)
+                            # and confidence (+0.004); 0.2 is no better than 0.5.
+                            # Much the smaller effect: azimuth is worth +0.030.
+    key_energy=5.0,         # as swept, AT light_ref_dist. See below.
+    fill_energy=1.5,
+    ambient=0.35,
+    # Those energies were swept with the camera (and so the key light, which sits
+    # at dist*1.1) at 2.2. This viewer must put the camera at eye_z=3.0 for the
+    # back-projection to be correct, which is 1.86x further and delivers 54% of
+    # the irradiance -- ambient then dominates and the ear renders FLAT. Scaling
+    # by the inverse square keeps the swept lighting, at the correct distance.
+    light_ref_dist=2.2,
+    samples=48,             # Cycles samples. 48 is enough to landmark; raise for a
+                            # cleaner picture, lower to iterate faster.
+    blender="blender",      # the executable
+    blender_script=str(ROOT / "scripts" / "blender_skin_render.py"),
+
     # --- camera / framing (these mirror the training pipeline) --------------
     size=600,               # full render resolution before cropping
     eye_z=3.0,              # camera at (0, 0, eye_z) looking at the origin
     vfov=50.0,              # vertical field of view, degrees
-    occupancy=0.777,        # ear extent / crop side. This is TRAIN_OCCUPANCY.
-    crop_out=192,           # crop is resized to this before the landmarker
-    frame_expand=1.0,       # detector box -> CROP FRAMING region. Keep at 1.0:
-                            # expanding this puts scalp in the crop and the
-                            # predicted landmarks come out larger than the ear.
-    target_expand=2.5,      # detector box -> RAYCAST / SNAP region. Generous on
-                            # purpose: a tight box truncates the pinna, so rim
-                            # rays miss and rim landmarks snap onto the cut edge.
-    depth_frac=0.22,        # keep only vertices within this fraction of mesh
-                            # extent of the frontmost depth in the box -- a 2D
-                            # box otherwise selects the whole column through the
-                            # skull (measured: 21% of the head).
+
+    # NOTE there is no crop setting here. The WHOLE render goes to
+    # EarLandmarkerPipeline, which runs the shipped detect -> ROI -> refine ->
+    # landmark path and hands back landmarks in full-frame pixels. That path
+    # already drives the ROI toward TRAIN_OCCUPANCY (ROI_OCC_TOL/ROI_SATURATED),
+    # so framing and occupancy are ITS business, not this script's -- which also
+    # means this viewer now shows what inference actually does, rather than what
+    # a hand-rolled crop here happened to do.
 
     # --- back-projection ----------------------------------------------------
-    raycast_on="patch",     # "patch" = the target_expand region, "full" = all of it
     snap=True,
     snap_in_plane_all=False,    # force the in-plane snap on EVERY point, not just misses
     snap_tol=2.5,           # chain-break tolerance, in median strip steps
@@ -106,13 +140,33 @@ CONFIG = dict(
 
     # --- display ------------------------------------------------------------
     sphere_frac=0.022,      # landmark sphere radius, in mesh units (ear spans ~1)
+    show_2d=True,           # pop the landmark overlay in its own window
     show_rays=False,        # draw the camera ray to each landmark
-    show_patch=False,       # draw the raycast target region as a point cloud
     # the render derives from third-party 3D data, so this defaults OUTSIDE the repo
     overlay_png=str(Path(tempfile.gettempdir()) / "backprojection_overlay.png"),
     interactive=True,
 )
 # ---------------------------------------------------------------------------
+
+# Fitzpatrick I-VI, lightest to darkest. Tone is the second largest factor in
+# how photo-like a render is (0.020 confidence spread), after lighting azimuth.
+SKIN_TONES = np.array([
+    [0.96, 0.84, 0.76], [0.93, 0.79, 0.69], [0.88, 0.72, 0.60],
+    [0.80, 0.63, 0.50], [0.71, 0.54, 0.42], [0.60, 0.44, 0.34],
+    [0.48, 0.34, 0.26], [0.36, 0.25, 0.19], [0.27, 0.18, 0.14],
+])
+
+# Change of basis from THIS script's camera frame into the one Blender renders.
+# Blender's camera sits at +Y looking down -Y with +Z up, and bpy.ops.wm.ply_import
+# applies no axis conversion, so an untransformed mesh is rendered from a
+# different axis entirely -- measured: our +Z lands UP in the image and our +X
+# lands LEFT, i.e. a 90 deg rotation plus a mirror. This maps our (x, y, z) to
+# Blender's (-x, z, y), after which markers land within 0.5 px of where project()
+# puts them. It is applied ONLY to the copy handed to Blender; the mesh that gets
+# ray-cast is never touched.
+TO_BLENDER = np.array([[-1.0, 0.0, 0.0],
+                       [0.0, 0.0, 1.0],
+                       [0.0, 1.0, 0.0]])
 
 # 55-point iBUG ear scheme, four ordered linestrips.
 STRIPS = [(0, 20), (20, 35), (35, 50), (50, 55)]
@@ -145,7 +199,66 @@ def unproject_rays(uv, cfg):
 
 
 def render(mesh, cfg, size=None, background=(0.5, 0.5, 0.5)):
-    """Offscreen render (EGL -- works headless). Returns HxWx3 uint8."""
+    """Render face-on. Returns HxWx3 uint8. Dispatches on cfg["renderer"]."""
+    if cfg.get("renderer") == "blender":
+        img = render_blender(mesh, cfg, size=size)
+        if img is not None:
+            return img
+        print("  blender render failed -- falling back to open3d")
+    return render_open3d(mesh, cfg, size=size, background=background)
+
+
+def render_blender(mesh, cfg, size=None):
+    """Cycles skin render: Principled BSDF with subsurface scattering.
+
+    Open3D fakes skin by baking ambient occlusion into vertex colours. It cannot
+    do subsurface scattering or specular highlights, and the helix rim is almost
+    always the brightest thing in a real ear photograph. Cycles does both, and
+    reaches 96% of real-photo landmarker confidence against clay's ~84%.
+
+    The mesh is rotated into Blender's camera frame by TO_BLENDER first, and the
+    camera distance is cfg["eye_z"], so the result is pixel-aligned with what
+    project() predicts. Both of those are easy to get wrong and silent when wrong.
+    """
+    size = size or cfg["size"]
+    tone = SKIN_TONES[cfg["tone"] if cfg["tone"] is not None
+                      else np.random.default_rng().integers(len(SKIN_TONES))]
+    falloff = (float(cfg["eye_z"]) / float(cfg["light_ref_dist"])) ** 2
+    g = copy.deepcopy(mesh)
+    g.vertices = o3d.utility.Vector3dVector(np.asarray(g.vertices) @ TO_BLENDER.T)
+    g.compute_vertex_normals()
+    with tempfile.TemporaryDirectory() as td:
+        mp = os.path.join(td, "m.ply")
+        o3d.io.write_triangle_mesh(mp, g)
+        args = dict(mesh=mp, ear=[0.0, 0.0, 0.0], dist=float(cfg["eye_z"]),
+                    tone=[float(v) for v in tone], out=os.path.join(td, "r"),
+                    size=int(size), samples=int(cfg["samples"]),
+                    key_energy=float(cfg["key_energy"]) * falloff,
+                    fill_energy=float(cfg["fill_energy"]) * falloff,
+                    ambient=float(cfg["ambient"]),
+                    freckles=float(cfg["freckles"]),
+                    key_size=float(cfg["key_size"]),
+                    key_azimuth=float(cfg["key_azimuth"]),
+                    key_elevation=float(cfg["key_elevation"]))
+        ap = os.path.join(td, "a.json")
+        with open(ap, "w") as f:
+            json.dump(args, f)
+        r = subprocess.run([cfg["blender"], "-b", "-P", cfg["blender_script"], "--", ap],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                           timeout=900)
+        out = os.path.join(td, "r.png")
+        if not os.path.exists(out):
+            print("  blender:", r.stderr.decode()[-300:].strip())
+            return None
+        print(f"  blender: tone {tone.round(2).tolist()}, key azimuth "
+              f"{cfg['key_azimuth']:+.0f} deg, key {cfg['key_energy'] * falloff:.1f} W "
+              f"({cfg['key_energy']:.1f} W swept x{falloff:.2f} for distance), "
+              f"{cfg['samples']} samples")
+        return np.asarray(Image.open(out).convert("RGB"))
+
+
+def render_open3d(mesh, cfg, size=None, background=(0.5, 0.5, 0.5)):
+    """Offscreen clay render (EGL -- works headless). Returns HxWx3 uint8."""
     size = size or cfg["size"]
     r = o3d.visualization.rendering.OffscreenRenderer(size, size)
     mat = o3d.visualization.rendering.MaterialRecord()
@@ -228,92 +341,62 @@ def find_ears(mesh, det, cfg, probe_size=400, dist=2.4):
     return out[:2]
 
 
-def expand_box(box, factor, size):
-    ymin, xmin, ymax, xmax = box
-    cy, cx = (ymin + ymax) / 2.0, (xmin + xmax) / 2.0
-    hh, hw = (ymax - ymin) * factor / 2.0, (xmax - xmin) * factor / 2.0
-    return np.array([max(0.0, cy - hh), max(0.0, cx - hw),
-                     min(float(size), cy + hh), min(float(size), cx + hw)])
 
 
-def ear_region(mesh, front, up, box, cfg, factor, dist=2.4, size=400):
-    """Boolean mask of mesh vertices in the detector's ear box, front surface only.
-
-    Returns a MASK, not points: callers index the mesh with it. Rebuilding a mask
-    by value-matching rounded coordinates has silently mismatched here before.
-    """
-    box = expand_box(box, factor, size) if factor != 1.0 else np.asarray(box, float)
-    V = np.asarray(mesh.vertices)
-    z = np.asarray(front, float); z = z / np.linalg.norm(z)
-    y = np.asarray(up, float) - z * (np.asarray(up, float) @ z)
-    y /= max(np.linalg.norm(y), 1e-9)
-    P = V @ np.stack([np.cross(y, z), y, z]).T
-    t = np.tan(np.radians(cfg["vfov"]) / 2.0)
-    zc = np.maximum((dist - P[:, 2]) * t, 1e-9)
-    uu = (P[:, 0] / zc + 1) / 2 * size
-    vv = (1 - P[:, 1] / zc) / 2 * size
-    ymin, xmin, ymax, xmax = box
-    inside = (uu >= xmin) & (uu <= xmax) & (vv >= ymin) & (vv <= ymax)
-    if inside.sum() < 200:
-        return None
-    front_z = np.percentile(P[inside, 2], 99)
-    window = cfg["depth_frac"] * max(np.ptp(V, axis=0).max(), 1e-6)
-    sel = inside & (P[:, 2] > front_z - window)
-    return sel if sel.sum() >= 200 else inside
 
 
-def pinna_frame(sel_pts, front, up):
-    """Rotation taking the EAR's own surface normal onto +Z (toward the camera).
 
-    The pinna's plane is not the head's lateral plane: over 14 HUTUBS subjects
-    they differ by 8.1 deg on average (sd 3.9, range 1-13), varying per subject.
-    Labelling along the lateral axis would bake that tilt into the result.
-    """
-    if sel_pts is None or len(sel_pts) < 200:
-        return None, None
-    C = sel_pts.mean(0)
-    _, _, vt = np.linalg.svd(sel_pts - C, full_matrices=False)
-    n = vt[2]
-    if n @ np.asarray(front, float) < 0:
+def frame_from(normal, up, front=None):
+    """Rotation taking `normal` onto +Z (toward the camera), keeping `up` near +Y."""
+    n = np.asarray(normal, float)
+    if front is not None and n @ np.asarray(front, float) < 0:
         n = -n
-    z = n / np.linalg.norm(n)
+    z = n / max(np.linalg.norm(n), 1e-9)
     y = np.asarray(up, float) - z * (np.asarray(up, float) @ z)
-    if np.linalg.norm(y) < 1e-6:
-        return None, None
-    y /= np.linalg.norm(y)
-    return np.stack([np.cross(y, z), y, z]), C      # world -> pinna frame
+    ny = np.linalg.norm(y)
+    if ny < 1e-6:
+        return None
+    y /= ny
+    return np.stack([np.cross(y, z), y, z])            # world -> camera frame
 
 
-def framed_crop(mesh, ear_pts, cfg):
-    """Render, then crop so the EAR fills `occupancy` of the frame.
+def plane_normal(points):
+    """Surface normal of the best-fit plane through the landmarks."""
+    P = np.asarray(points, float)
+    _, _, vt = np.linalg.svd(P - P.mean(0), full_matrices=False)
+    return vt[2]
 
-    `ear_pts` must be the ear, not the mesh. The head is deliberately left in the
-    render for context -- a floating ear teaches the model that a hard silhouette
-    marks its boundary -- but framing to the whole head gives 0.23 occupancy
-    against the 0.777 the model was trained at.
+
+def in_frame(mesh, R, C, scale):
+    """A copy of the mesh rotated into frame R about C and scaled by `scale`."""
+    g = copy.deepcopy(mesh)
+    g.vertices = o3d.utility.Vector3dVector(
+        ((np.asarray(mesh.vertices) - C) @ R.T) / scale)
+    g.compute_vertex_normals()
+    return g
+
+
+def landmark_whole_frame(mesh, cfg, pipe):
+    """Render the whole head and landmark it with the SHIPPED pipeline.
+
+    No crop is made here. EarLandmarkerPipeline detects the ear, builds and
+    refines its own ROI, runs the landmarker and maps the 55 points back into
+    full-frame pixels -- which is exactly the space project()/unproject_rays()
+    work in, so the result feeds the ray-cast directly with no mapping of ours
+    in between. Returns (image, landmarks_px, mean confidence) or (img, None, 0).
     """
     img = render(mesh, cfg)
-    uv = project(np.asarray(ear_pts, float), cfg)
-    side = max(np.ptp(uv[:, 0]), np.ptp(uv[:, 1])) / cfg["occupancy"]
-    cx = (uv[:, 0].min() + uv[:, 0].max()) / 2
-    cy = (uv[:, 1].min() + uv[:, 1].max()) / 2
-    l, t, s = int(round(cx - side / 2)), int(round(cy - side / 2)), int(round(side))
-    if s < 48:
-        return None, None
-    out = cfg["crop_out"]
-    cv = Image.new("RGB", (s, s), (128, 128, 128))       # grey-128 pad, as in training
-    src = Image.fromarray(img)
-    sx0, sy0 = max(0, l), max(0, t)
-    sx1, sy1 = min(cfg["size"], l + s), min(cfg["size"], t + s)
-    if sx1 <= sx0 or sy1 <= sy0:
-        return None, None
-    cv.paste(src.crop((sx0, sy0, sx1, sy1)), (sx0 - l, sy0 - t))
-    return cv.resize((out, out), Image.BILINEAR), (l, t, s, out)
-
-
-def crop_to_full(pts, box):
-    l, t, s, out = box
-    return np.stack([pts[:, 0] / out * s + l, pts[:, 1] / out * s + t], axis=1)
+    res = pipe(img, timestamp=0.0)
+    if not res:
+        return img, None, 0.0
+    # Several ears can be detected on a head render; take the most confident.
+    best = max(res, key=lambda d: float(d["confidence"]))
+    # NOTE this is the DETECTOR's box confidence, which is what the pipeline
+    # returns. It is not the landmarker's per-point confidence and must not be
+    # compared against it -- the pipeline does not expose that, because it owns
+    # the crop. Reach into pipe.landmarker.predict(..., with_confidence=True) if
+    # you need the per-point values back.
+    return img, np.asarray(best["landmarks"], float), float(best["confidence"])
 
 
 # ============================================================ snapping ======
@@ -428,10 +511,51 @@ def _lineset(pts, idx, col):
     return ls
 
 
+_VIEW_2D = r"""
+import sys
+import matplotlib
+matplotlib.use("QtAgg")
+import matplotlib.pyplot as plt
+img = plt.imread(sys.argv[1])
+fig = plt.figure("landmark placement (2D)", figsize=(6.5, 6.5))
+fig.canvas.manager.set_window_title("landmark placement (2D)")
+ax = fig.add_axes([0, 0, 1, 1]); ax.imshow(img); ax.axis("off")
+plt.show()
+"""
+
+
+def show_image_window(path):
+    """Pop the 2D overlay in its own window, beside the 3D one.
+
+    A SEPARATE PROCESS, not a second window in this one. Open3D's
+    draw_geometries runs its own blocking event loop, so a matplotlib figure
+    opened here would simply freeze -- never redrawing, never responding -- for
+    as long as the 3D window is up. A child has its own loop and stays live.
+    It also outlives this script, so the overlay is still there to compare
+    against after the 3D window is closed; close it yourself when done.
+    """
+    try:
+        helper = Path(tempfile.gettempdir()) / "_view_backprojection_2d.py"
+        helper.write_text(_VIEW_2D)
+        log = Path(tempfile.gettempdir()) / "_view_backprojection_2d.log"
+        # start_new_session puts the child in its own process group, so it is not
+        # torn down with this one and the overlay stays up after the 3D window
+        # closes. Errors go to a log rather than /dev/null: a window that fails
+        # to appear is otherwise completely silent.
+        proc = subprocess.Popen([sys.executable, str(helper), str(path)],
+                                stdout=open(log, "w"), stderr=subprocess.STDOUT,
+                                start_new_session=True)
+        print(f"  2D overlay window: pid {proc.pid} (log: {log})")
+        return proc
+    except Exception as e:                      # a viewer is never worth crashing for
+        print(f"  could not open the 2D window ({e}); the PNG is still written")
+        return None
+
+
 def write_overlay(crop, lm, path):
     """The 2D prediction on the render it came from, in the same strip colours."""
     img = crop.convert("RGB").resize((512, 512), Image.BILINEAR)
-    s = 512 / crop.width
+    s = 512 / crop.width            # the WHOLE frame now, not a crop
     d = ImageDraw.Draw(img)
     for i, (a, b) in enumerate(STRIPS):
         c = tuple(int(255 * v) for v in STRIP_COLOURS[i])
@@ -446,19 +570,18 @@ def write_overlay(crop, lm, path):
 # ============================================================ pipeline =====
 
 def load_subject(cfg):
-    """Returns (mesh in the pinna frame, ear points, target vertex indices).
+    """Returns (head mesh at unit radius, front, up) for the chosen ear.
 
-    The mesh is placed in the EAR's own plane frame and scaled so the ear spans
-    about one unit, so pose zero means "camera perpendicular to this pinna" for
-    every subject alike rather than perpendicular to the head's lateral plane.
+    No ear REGION is computed. An earlier version selected "ear vertices" by
+    projecting the mesh into the detector's 2D box and keeping a depth window,
+    and used that set for the plane fit, the framing and the ray-cast target. It
+    failed silently and often: a 2D box selects the whole column through the
+    skull, so the window had to be tight, and on some subjects a wider box pulled
+    in nearer geometry, raised the frontmost depth and excluded the ear -- on
+    HUTUBS pp16's second ear the 2.5x region came out SMALLER than the 1.0x one
+    (8139 vertices against 12226) and 4 of 55 rays hit. The 55 back-projected
+    landmarks are a better definition of the ear: they are on it by construction.
     """
-    if cfg["audioear"] is not None:
-        mesh = load_audioear(int(cfg["audioear"]), cfg)
-        V = np.asarray(mesh.vertices)
-        # A lone ear is already oriented and unit-scaled, and there is no scalp to
-        # separate from, so every vertex is a valid raycast target.
-        return mesh, V, np.arange(len(V))
-
     from inference import BLAZEEAR_DIR, DETECTOR_WEIGHTS, EarDetector
     det = EarDetector(BLAZEEAR_DIR / DETECTOR_WEIGHTS, "cpu", 0.5)
     mesh = load_head(cfg["mesh"])
@@ -468,168 +591,138 @@ def load_subject(cfg):
     if not found:
         sys.exit("the detector found no ear on this head")
     print("detector found " + ", ".join(f"conf={c:.2f}" for c, *_ in found))
-    conf, front, up, box = found[int(cfg["ear"]) % len(found)]
-    print(f"using ear {cfg['ear']} (conf {conf:.2f})")
-
-    frame_mask = ear_region(mesh, front, up, box, cfg, cfg["frame_expand"])
-    target_mask = ear_region(mesh, front, up, box, cfg, cfg["target_expand"])
-    if frame_mask is None or target_mask is None:
-        sys.exit("too few vertices in the ear box")
-    V = np.asarray(mesh.vertices)
-    R, C = pinna_frame(V[frame_mask], front, up)
-    if R is None:
-        sys.exit("pinna plane fit failed")
-
-    base = copy.deepcopy(mesh)
-    scale = float(np.abs((V[frame_mask] - C) @ R.T).max())
-    base.vertices = o3d.utility.Vector3dVector(((V - C) @ R.T) / scale)
-    base.compute_vertex_normals()
-    Vn = np.asarray(base.vertices)
-    print(f"ear region: {frame_mask.sum()} vertices framed, "
-          f"{target_mask.sum()} in the raycast target")
-    return base, Vn[frame_mask], np.flatnonzero(target_mask)
+    conf, front, up, _ = found[int(cfg["ear"]) % len(found)]
+    print(f"using ear {cfg['ear']} (probe confidence {conf:.2f})")
+    return mesh, front, up
 
 
-def load_audioear(index, cfg, depth=9, max_dist=12.0):
-    """One AudioEar3D ear, Poisson-reconstructed into a canonically oriented mesh.
+def label_two_pass(mesh, front, up, cfg, pipe):
+    """Face-on landmarks in 3D. Returns (mesh in the pinna frame, P3, hit, conf).
 
-    max_dist culls invented surface by distance to the nearest SCANNED point, in
-    units of mean point spacing, and should be LOOSE. The two populations separate
-    cleanly -- real surface at or under ~4x spacing, Poisson's spurious sheets at
-    ~30x -- so 12x sits in the empty gap. Tighter settings (a density quantile,
-    or 3.5x) sculpted holes into real anatomy, and a landmark ray through a hole
-    is silently dropped.
+    PASS 1 uses the detector's axis-aligned view direction purely to get a usable
+    face-on render, and back-projects its landmarks.
+    PASS 2 fits a plane to those 55 points and repeats in that frame. Both passes
+    ray-cast against the WHOLE mesh.
+
+    Why the second pass: the pinna's plane is not the head's lateral plane. Over
+    14 HUTUBS subjects they differ by 8.1 deg on average (sd 3.9, range 1-13),
+    varying per subject, so labelling along the detector's axis would bake a
+    subject-dependent tilt into pose zero.
     """
-    zp = EAR3D_DIR / "AudioEar3D.zip"
-    z = zipfile.ZipFile(str(zp))
-    members = sorted(x for x in z.namelist() if x.endswith(".ply"))
-    member = members[index]
-    print(f"AudioEar3D ear {index}: {member}  (of {len(members)})")
-    fd, tmp = tempfile.mkstemp(suffix=".ply")
-    os.write(fd, z.read(member))
-    os.close(fd)
-    try:
-        pcd = o3d.io.read_point_cloud(tmp)
-    finally:
-        os.unlink(tmp)
-    # These PLYs already carry scanner normals -- use them. Re-estimating is worse
-    # (the scanner knows its own view direction) and the orientation pass is
-    # order-dependent, so it made reconstruction vary between runs on one input.
-    if not pcd.has_normals():
-        pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=1.0, max_nn=40))
-        pcd.orient_normals_consistent_tangent_plane(30)
-    mesh, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=depth)
-    pts = np.asarray(pcd.points)
-    tree = cKDTree(pts)
-    spacing = tree.query(pts, k=2)[0][:, 1].mean()
-    mesh.remove_vertices_by_mask(
-        tree.query(np.asarray(mesh.vertices))[0] > max_dist * spacing)
+    R = frame_from(front, up, front=front)
+    if R is None:
+        sys.exit("degenerate detector frame")
     V = np.asarray(mesh.vertices)
-    if len(V) == 0:
-        sys.exit("ear failed to reconstruct")
-    V = V - V.mean(0)
-    _, s, vt = np.linalg.svd(V, full_matrices=False)
-    axes = vt[np.argsort(-s)]
-    R = np.stack([axes[1], axes[0], axes[2]])   # smallest extent -> +Z, largest -> +Y
-    if np.linalg.det(R) < 0:
-        R[2] *= -1
-    V = (V @ R.T)
-    mesh.vertices = o3d.utility.Vector3dVector(V / np.abs(V).max())
-    mesh.compute_vertex_normals()
-    return mesh
+    g = in_frame(mesh, R, V.mean(0), 1.0)
+    img, lm, conf = landmark_whole_frame(g, cfg, pipe)
+    if lm is None:
+        sys.exit("pass 1: the pipeline found no ear in the face-on render")
+    P1, hit1 = raycast(g, lm, cfg)
+    print(f"pass 1: detector conf {conf:.3f}, {int(hit1.sum())}/55 rays hit")
+    if hit1.sum() < 10:
+        sys.exit("pass 1: too few rays hit to fit a pinna plane")
+
+    P1w = (P1[hit1] @ R) + V.mean(0)               # back to world coordinates
+    R2 = frame_from(plane_normal(P1w), up, front=front)
+    if R2 is None:
+        sys.exit("degenerate pinna frame")
+    C2 = P1w.mean(0)
+    scale = float(np.abs((P1w - C2) @ R2.T).max())
+    if not np.isfinite(scale) or scale <= 0:
+        sys.exit("degenerate ear scale")
+    tilt = np.degrees(np.arccos(np.clip(abs(R[2] @ R2[2]), -1, 1)))
+    print(f"pinna plane is {tilt:.1f} deg off the detector's view direction")
+
+    g2 = in_frame(mesh, R2, C2, scale)
+    img2, lm2, conf2 = landmark_whole_frame(g2, cfg, pipe)
+    if lm2 is None:
+        sys.exit("pass 2: the pipeline found no ear in the pinna-frame render")
+    P3, hit = raycast(g2, lm2, cfg)
+    print(f"pass 2: detector conf {conf2:.3f}, {int(hit.sum())}/55 rays hit")
+    return g2, img2, lm2, P3, hit, conf2
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--mesh", default=None, help="head .ply/.obj")
-    p.add_argument("--audioear", type=int, default=None, help="index into AudioEar3D.zip")
     p.add_argument("--ear", type=int, default=None, help="which detected ear, 0 or 1")
     p.add_argument("--run", default=None, help="checkpoint run name")
     p.add_argument("--device", default=None)
     p.add_argument("--no-snap", action="store_true")
     p.add_argument("--snap-all", action="store_true", help="in-plane snap every point")
     p.add_argument("--rays", action="store_true", help="draw the camera rays")
-    p.add_argument("--patch", action="store_true", help="draw the raycast target region")
+    p.add_argument("--renderer", choices=["blender", "open3d"], default=None)
+    p.add_argument("--tone", type=int, default=None, help="skin tone 0-8, light to dark")
+    p.add_argument("--key-azimuth", type=float, default=None, help="key light, degrees")
+    p.add_argument("--key-energy", type=float, default=None, help="key light W, pre-falloff")
+    p.add_argument("--key-size", type=float, default=None, help="key light width / distance")
+    p.add_argument("--samples", type=int, default=None, help="Cycles samples")
+    p.add_argument("--no-2d", action="store_true", help="skip the 2D overlay window")
     p.add_argument("--no-window", action="store_true", help="stats and PNG only")
     a = p.parse_args()
 
     cfg = dict(CONFIG)
     if a.mesh:
-        cfg["mesh"], cfg["audioear"] = a.mesh, None
-    if a.audioear is not None:
-        cfg["audioear"] = a.audioear
-    for k, v in (("ear", a.ear), ("run", a.run), ("device", a.device)):
+        cfg["mesh"] = a.mesh
+    for k, v in (("ear", a.ear), ("run", a.run), ("device", a.device),
+                 ("renderer", a.renderer), ("tone", a.tone),
+                 ("key_azimuth", a.key_azimuth), ("samples", a.samples),
+                 ("key_energy", a.key_energy), ("key_size", a.key_size)):
         if v is not None:
             cfg[k] = v
     cfg["snap"] = cfg["snap"] and not a.no_snap
     cfg["snap_in_plane_all"] |= a.snap_all
     cfg["show_rays"] |= a.rays
-    cfg["show_patch"] |= a.patch
+    cfg["show_2d"] = cfg["show_2d"] and not a.no_2d
     cfg["interactive"] = cfg["interactive"] and not a.no_window
 
-    # --- 1. the subject, in its own pinna frame ------------------------------
-    mesh, ear_pts, target_idx = load_subject(cfg)
-    target_V = np.asarray(mesh.vertices)[target_idx]
-
-    # --- 2. face-on render at the trained occupancy --------------------------
-    crop, box = framed_crop(mesh, ear_pts, cfg)
-    if crop is None:
-        sys.exit("the ear framed to under 48 px -- wrong ear region?")
-    print(f"face-on crop: {box[2]} px at occupancy {cfg['occupancy']}")
-
-    # --- 3. landmark it ------------------------------------------------------
+    # --- the shipped pipeline, which owns detection, ROI and landmarking -----
     sys.path.insert(0, str(ROOT / "scripts"))
     from eval_test import best_ckpt
-    from inference import LandmarkPredictor
+    from inference import BLAZEEAR_DIR, DETECTOR_WEIGHTS, EarLandmarkerPipeline
     ck = best_ckpt(cfg["run"])
     if ck is None:
         sys.exit(f"no checkpoint for run {cfg['run']!r} under runs/checkpoints/")
-    lm, conf = LandmarkPredictor(ck, cfg["device"]).predict(
-        np.asarray(crop), with_confidence=True)
-    lm = np.asarray(lm, float)
-    print(f"landmarker {ck.name}: confidence mean {float(np.mean(conf)):.3f} "
-          f"min {float(np.min(conf)):.3f}")
+    # smooth=False: the tracker is for video. On a single still it would smooth a
+    # one-frame track against wall-clock time and shift the landmarks.
+    pipe = EarLandmarkerPipeline(BLAZEEAR_DIR / DETECTOR_WEIGHTS, ck,
+                                 device=cfg["device"], smooth=False)
+    print(f"landmarker {ck.name}")
 
-    # --- 4. back-project -----------------------------------------------------
-    if cfg["raycast_on"] == "patch" and len(target_idx) < len(mesh.vertices):
-        target = mesh.select_by_index(target_idx)
-        target.compute_vertex_normals()
-    else:
-        target = mesh
-    P3, hit = raycast(target, crop_to_full(lm, box), cfg)
-    print(f"ray-cast: {int(hit.sum())}/{len(P3)} rays hit")
-    # A missed ray has no 3D position. Park it on the target centroid so the snap
+    mesh, front, up = load_subject(cfg)
+    g, img, lm, P3, hit, conf = label_two_pass(mesh, front, up, cfg, pipe)
+    V = np.asarray(g.vertices)
+
+    # A missed ray has no 3D position. Park it on the mesh centroid so the snap
     # has something finite to move; its sphere is drawn black either way.
-    P3 = np.where(np.isfinite(P3), P3, target_V.mean(0))
+    P3 = np.where(np.isfinite(P3), P3, V.mean(0))
 
-    # --- 5. snap -------------------------------------------------------------
     repaired = np.zeros(len(P3), bool)
     if cfg["snap"]:
         before = P3.copy()
         h = np.zeros(len(P3), bool) if cfg["snap_in_plane_all"] else hit
-        P3 = snap_in_plane(P3, target_V, h)
+        P3 = snap_in_plane(P3, V, h)
         # Measure the in-plane move BEFORE the chain repair or the two conflate.
-        # A point whose ray missed was parked at the centroid above, so its move
-        # is centroid -> surface and is expected to be large.
         step = np.linalg.norm(P3 - before, axis=1)
         moved = step > 1e-9
-        P3, repaired = snap_chain(P3, target_V, cfg["snap_tol"], cfg["snap_passes"])
+        P3, repaired = snap_chain(P3, V, cfg["snap_tol"], cfg["snap_passes"])
         print(f"snap: {int(moved.sum())} moved in-plane "
               f"(median {np.median(step[moved]) if moved.any() else 0.0:.4f}), "
               f"{int(repaired.sum())} chain-repaired")
 
     # Depth spread is the tell for a scalp-pinned point: it sits behind the rest.
     print(f"landmark depth z: {P3[:,2].min():+.3f} to {P3[:,2].max():+.3f} "
-          f"(target region spans {np.ptp(target_V[:,2]):.3f})")
+          f"(ear spans about 1.0 by construction)")
     for i, (a_, b_) in enumerate(STRIPS):
         print(f"  {STRIP_NAMES[i]:<14s} z {P3[a_:b_,2].min():+.3f} .. "
               f"{P3[a_:b_,2].max():+.3f}   misses {int((~hit[a_:b_]).sum())}"
               f"  repaired {int(repaired[a_:b_].sum())}")
 
     if cfg["overlay_png"]:
-        write_overlay(crop, lm, cfg["overlay_png"])
+        write_overlay(Image.fromarray(img), lm, cfg["overlay_png"])
+        if cfg["show_2d"] and cfg["interactive"]:
+            show_image_window(cfg["overlay_png"])
 
-    # --- 6. viewer -----------------------------------------------------------
     colours = []
     for k in range(len(P3)):
         if repaired[k]:
@@ -639,11 +732,7 @@ def main():
         else:
             colours.append(STRIP_COLOURS[next(i for i, (a_, b_) in enumerate(STRIPS)
                                               if a_ <= k < b_)])
-    geoms = [mesh, spheres(P3, cfg["sphere_frac"], colours), strip_lines(P3)]
-    if cfg["show_patch"]:
-        pc = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(target_V))
-        pc.paint_uniform_color((0.2, 0.3, 0.8))
-        geoms.append(pc)
+    geoms = [g, spheres(P3, cfg["sphere_frac"], colours), strip_lines(P3)]
     if cfg["show_rays"]:
         geoms.append(ray_lines(P3, cfg))
 
