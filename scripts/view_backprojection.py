@@ -142,6 +142,17 @@ CONFIG = dict(
                             # the wrong anatomy at roughly the right depth. It
                             # cannot separate these radii on placement; nothing
                             # here can yet.
+    chain=True,             # second pass: fix landmarks that break link spacing
+    chain_tol=1.0,          # flag when a point's two links deviate from the strip
+                            # median by this much in total, as a fraction of the
+                            # median. A clean point scores ~0.2; the displaced
+                            # ones measured here score 1.5-1.7. Natural spread
+                            # reaches p90 1.09-1.61 per link, so this sits above
+                            # anatomy and below the real failures.
+    chain_radius=0.08,      # search window for the replacement, as a fraction of
+                            # ear extent -- same safety bound as the cliff snap.
+    chain_passes=4,         # one point re-placed per pass, worst first, so a
+                            # corrected neighbour informs the next decision.
     snap_step=0.30,         # how big a depth step counts as a cliff, in mesh
                             # units with the ear spanning ~1. Scalp-behind-pinna
                             # measures 0.85-1.08; concha bowl structure varies by
@@ -409,6 +420,73 @@ def snap_to_cliff(depth, uv, radius, step):
     return out, moved, shift, znear
 
 
+def snap_chain(P, uv, depth, cam, cfg):
+    """Second pass: re-place landmarks that break their chain's link spacing.
+
+    The 55 points are four ordered linestrips, and within a strip consecutive
+    links are roughly equal. Measured over four heads, link/median runs from p10
+    0.84 to p90 1.09-1.61 by strip, and only 4 of 204 links exceed 2x. So this
+    corrects OUTLIERS; it does not enforce uniformity. That distinction matters:
+    concha_border naturally spreads to 1.6x, and flattening it would fight real
+    anatomy rather than fix anything. superior_crus is the tight one (p90 1.09).
+
+    A displaced landmark shows up in one of two ways, and testing for only the
+    first finds nothing: BOTH links long when it is pushed off the chain, or one
+    long and one SHORT when it has slid toward a neighbour. The second is the
+    common one here -- pp12's concha border reads 2.0 then 0.3 across one point.
+    So the score is total deviation of both links from the strip median, which
+    catches either, rather than a test on the shorter link, which caught neither.
+
+    The replacement is searched on the surface itself: candidates are pixels in a
+    window around the landmark, back-projected through the depth buffer, scored by
+    how close they bring both links to the strip median. So the result is a point
+    the camera actually saw, not an interpolated midpoint hanging off the mesh --
+    which is what the old vertex-based version produced.
+    """
+    P = np.asarray(P, float).copy()
+    uv = np.asarray(uv, float)
+    moved = np.zeros(len(P), bool)
+    H, W = depth.shape
+    r = int(np.ceil(cfg["chain_radius"] * max(np.ptp(uv[:, 0]), np.ptp(uv[:, 1]))))
+    tol = cfg["chain_tol"]
+    for _ in range(cfg["chain_passes"]):
+        worst, worst_score = None, tol
+        for a, b in STRIPS:
+            d = np.linalg.norm(np.diff(P[a:b], axis=0), axis=1)
+            if len(d) < 3:
+                continue
+            med = np.median(d)
+            for k in range(a, b):
+                i = k - a
+                links = [d[j] for j in (i - 1, i) if 0 <= j < len(d)]
+                if len(links) < 2:
+                    continue                      # strip ends have one link only
+                score = sum(abs(x - med) for x in links) / max(med, 1e-9)
+                if score > worst_score and not moved[k]:
+                    worst, worst_score = (k, a, b, med), score
+        if worst is None:
+            break
+        k, a, b, med = worst
+        x0, y0 = int(round(uv[k, 0])), int(round(uv[k, 1]))
+        xs, xe = max(0, x0 - r), min(W, x0 + r + 1)
+        ys, ye = max(0, y0 - r), min(H, y0 + r + 1)
+        yy, xx = np.mgrid[ys:ye, xs:xe]
+        zz = depth[ys:ye, xs:xe]
+        ok = np.isfinite(zz)
+        if ok.sum() < 10:
+            break
+        u, vv, z = xx[ok].ravel(), yy[ok].ravel(), zz[ok].ravel()
+        Pc = np.stack([(u - cam.cx) / cam.fx * z, (vv - cam.cy) / cam.fy * z, z], axis=1)
+        cand = (Pc - cam.t) @ cam.R
+        cost = np.zeros(len(cand))
+        for j in (k - 1, k + 1):
+            if a <= j < b:
+                cost += np.abs(np.linalg.norm(cand - P[j], axis=1) - med)
+        P[k] = cand[np.argmin(cost)]
+        moved[k] = True
+    return P, moved
+
+
 def backproject_snapped(depth, uv, cam, cfg):
     """backproject(), then the cliff snap if it is enabled. Returns (P, hit, moved)."""
     P, hit = backproject(depth, uv, cam)
@@ -424,6 +502,9 @@ def backproject_snapped(depth, uv, cam, cfg):
         Pc = np.stack([(u - cam.cx) / cam.fx * z, (v - cam.cy) / cam.fy * z, z], axis=1)
         P[use] = (Pc - cam.t) @ cam.R
         hit = hit | use
+    if cfg.get("chain"):
+        P, cmoved = snap_chain(P, uv2, depth, cam, cfg)
+        moved = moved | cmoved
     return P, hit, moved
 
 
@@ -1102,6 +1183,7 @@ def main():
     p.add_argument("--no-skin", action="store_true", help="render bare clay instead")
     p.add_argument("--no-mediapipe", action="store_true", help="use the ear-detector sweep")
     p.add_argument("--no-snap", action="store_true", help="show the raw back-projection")
+    p.add_argument("--no-chain", action="store_true", help="skip the link-spacing pass")
     p.add_argument("--snap-radius", type=float, default=None, help="jitter range, 0-1 of ear extent")
     p.add_argument("--run", default=None, help="checkpoint run name")
     p.add_argument("--device", default=None)
@@ -1120,6 +1202,7 @@ def main():
     cfg["skin"] = cfg["skin"] and not a.no_skin
     cfg["use_mediapipe"] = cfg["use_mediapipe"] and not a.no_mediapipe
     cfg["snap"] = cfg["snap"] and not a.no_snap
+    cfg["chain"] = cfg["chain"] and not a.no_chain
     if a.snap_radius is not None:
         cfg["snap_radius"] = a.snap_radius
     cfg["show_rays"] |= a.rays

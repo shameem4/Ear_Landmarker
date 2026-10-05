@@ -302,3 +302,83 @@ def test_snap_can_be_turned_off():
     uv = np.array([[110.0, 100.0], [115.0, 100.0]])
     _, _, moved = vbp.backproject_snapped(d, uv, cam, dict(CFG, snap=False))
     assert not moved.any()
+
+
+# --- the chain (link-spacing) second pass ------------------------------------
+# The 55 points are four ordered strips whose consecutive links are roughly
+# equal. A displaced point shows up either as two long links or, more often
+# here, as one long and one short. Correcting it must not flatten the natural
+# spread: concha_border legitimately reaches 1.6x its median.
+
+def _flat_depth(size=240, z=2.5):
+    return np.full((size, size), z, dtype=np.float32)
+
+
+def _chain_cfg(**kw):
+    return dict(CFG, snap=False, chain=True, chain_tol=1.0,
+                chain_radius=0.5, chain_passes=4, **kw)
+
+
+def _even_chain(cam, depth, n=20, step=8.0):
+    """An evenly spaced run of pixels, back-projected onto a flat surface."""
+    uv = np.stack([np.full(n, 120.0), 60.0 + step * np.arange(n)], axis=1)
+    P, _ = vbp.backproject(depth, uv, cam)
+    return uv, P
+
+
+def test_an_evenly_spaced_chain_is_left_alone():
+    cam = vbp.Camera(*vbp.camera_ke(240, CFG), (240, 240), 240)
+    d = _flat_depth()
+    uv, P = _even_chain(cam, d)
+    strips = [(0, 20), (20, 35), (35, 50), (50, 55)]
+    saved, vbp.STRIPS = vbp.STRIPS, strips
+    try:
+        P2, moved = vbp.snap_chain(P, uv, d, cam, _chain_cfg())
+    finally:
+        vbp.STRIPS = saved
+    assert not moved.any(), "a clean chain must not be disturbed"
+
+
+def test_a_point_slid_toward_its_neighbour_is_pulled_back():
+    """The long-then-short signature, which is the common failure here."""
+    cam = vbp.Camera(*vbp.camera_ke(240, CFG), (240, 240), 240)
+    d = _flat_depth()
+    uv, P = _even_chain(cam, d)
+    uv[5, 1] += 6.0                              # slide point 5 toward point 6
+    P[5], _ = vbp.backproject(d, uv[5:6], cam)[0][0], None
+    saved, vbp.STRIPS = vbp.STRIPS, [(0, 20), (20, 35), (35, 50), (50, 55)]
+    try:
+        before = np.linalg.norm(np.diff(P[0:20], axis=0), axis=1)
+        P2, moved = vbp.snap_chain(P, uv, d, cam, _chain_cfg())
+        after = np.linalg.norm(np.diff(P2[0:20], axis=0), axis=1)
+    finally:
+        vbp.STRIPS = saved
+    assert moved[5], "the displaced point was not flagged"
+    assert after.std() / after.mean() < before.std() / before.mean()
+
+
+def test_the_chain_pass_keeps_points_on_the_surface():
+    """Replacements are searched on the depth buffer, never interpolated."""
+    cam = vbp.Camera(*vbp.camera_ke(240, CFG), (240, 240), 240)
+    d = _flat_depth(z=2.5)
+    uv, P = _even_chain(cam, d)
+    uv[7, 0] += 9.0
+    P[7] = vbp.backproject(d, uv[7:8], cam)[0][0]
+    saved, vbp.STRIPS = vbp.STRIPS, [(0, 20), (20, 35), (35, 50), (50, 55)]
+    try:
+        P2, moved = vbp.snap_chain(P, uv, d, cam, _chain_cfg())
+    finally:
+        vbp.STRIPS = saved
+    # the plane sits at a known depth; every point must still be on it
+    zc = (P2 - cam.centre) @ cam.R.T
+    assert np.allclose(zc[:, 2], 2.5, atol=1e-3)
+
+
+def test_chain_pass_can_be_turned_off():
+    cam = vbp.Camera(*vbp.camera_ke(240, CFG), (240, 240), 240)
+    d = _flat_depth()
+    uv, P = _even_chain(cam, d)
+    uv[5, 1] += 6.0
+    P[5] = vbp.backproject(d, uv[5:6], cam)[0][0]
+    _, _, moved = vbp.backproject_snapped(d, uv, cam, dict(CFG, snap=False, chain=False))
+    assert not moved.any()
