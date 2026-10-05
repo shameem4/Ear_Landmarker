@@ -12,8 +12,10 @@
 
 SELF-CONTAINED BY DESIGN. Every geometry stage is inlined below rather than
 imported, so you can hack on any of it without perturbing ingest_render3d.py or
-the eval scripts. The only project imports are the two networks (EarDetector,
-LandmarkPredictor) and the checkpoint picker, which are the model, not geometry.
+the eval scripts. The project imports are the networks (EarDetector,
+LandmarkPredictor, via EarLandmarkerPipeline), the checkpoint picker, and
+scripts/skin.py -- the model and the appearance shader, neither of which is
+geometry.
 The flip side: fixes made here do NOT propagate back to the pipeline, and fixes
 made there do not arrive here. If a change proves out, port it deliberately.
 
@@ -40,6 +42,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # MUST COME BEFORE `import open3d`, and it is not optional on a Wayland session.
@@ -63,6 +66,9 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from skin import SKIN_TONES, apply_skin      # noqa: E402  (appearance, not geometry)
 
 # ---------------------------------------------------------------- CONFIG ----
 # Third-party research data; not in any repo. Override with EAR3D_DIR.
@@ -76,6 +82,13 @@ CONFIG = dict(
     # --- model --------------------------------------------------------------
     run="manual_occ_s42",   # checkpoint under runs/checkpoints/<run>/
     device="cuda",
+
+    # --- appearance ---------------------------------------------------------
+    skin=True,              # colour the mesh with scripts/skin.py before rendering
+    tone=None,              # SKIN_TONES index 0-8, light to deep; None = random
+    skin_seed=0,            # also drives the blotching and grain
+    ao_strength=0.75,       # how hard ambient occlusion darkens cavities
+    ao_rays=24,             # rays per vertex. The cost of apply_skin is all here.
 
     # --- camera / framing (these mirror the training pipeline) --------------
     size=600,               # full render resolution before cropping
@@ -407,6 +420,20 @@ def load_subject(cfg):
     mesh = load_head(cfg["mesh"])
     if mesh is None:
         sys.exit(f"could not read {cfg['mesh']}")
+    if cfg["skin"]:
+        # Applied ONCE, to the mesh in its original frame. Ambient occlusion is a
+        # property of the geometry, not of the camera, so recomputing it per pass
+        # would cost the same answer twice -- and the colours survive in_frame(),
+        # which only replaces the vertex positions.
+        t0 = time.perf_counter()
+        tone = cfg["tone"]
+        apply_skin(mesh, seed=cfg["skin_seed"], tone=tone,
+                   ao_strength=cfg["ao_strength"], n_rays=cfg["ao_rays"])
+        shown = SKIN_TONES[tone] if tone is not None else np.asarray(
+            mesh.vertex_colors)[::997].mean(0)
+        print(f"skin: tone {np.round(shown, 2).tolist()}, "
+              f"AO {cfg['ao_rays']} rays over {len(mesh.vertices)} vertices "
+              f"({time.perf_counter() - t0:.1f}s)")
     found = find_ears(mesh, det, cfg)
     if not found:
         sys.exit("the detector found no ear on this head")
@@ -466,6 +493,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--mesh", default=None, help="head .ply/.obj")
     p.add_argument("--ear", type=int, default=None, help="which detected ear, 0 or 1")
+    p.add_argument("--tone", type=int, default=None, help="skin tone 0-8, light to deep")
+    p.add_argument("--no-skin", action="store_true", help="render bare clay instead")
     p.add_argument("--run", default=None, help="checkpoint run name")
     p.add_argument("--device", default=None)
     p.add_argument("--rays", action="store_true", help="draw the camera rays")
@@ -476,9 +505,11 @@ def main():
     cfg = dict(CONFIG)
     if a.mesh:
         cfg["mesh"] = a.mesh
-    for k, v in (("ear", a.ear), ("run", a.run), ("device", a.device)):
+    for k, v in (("ear", a.ear), ("run", a.run), ("device", a.device),
+                 ("tone", a.tone)):
         if v is not None:
             cfg[k] = v
+    cfg["skin"] = cfg["skin"] and not a.no_skin
     cfg["show_rays"] |= a.rays
     cfg["show_2d"] = cfg["show_2d"] and not a.no_2d
     cfg["interactive"] = cfg["interactive"] and not a.no_window
