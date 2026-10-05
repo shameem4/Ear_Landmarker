@@ -142,6 +142,13 @@ CONFIG = dict(
                             # the wrong anatomy at roughly the right depth. It
                             # cannot separate these radii on placement; nothing
                             # here can yet.
+    # --- multi-view agreement (--multiview) ---------------------------------
+    mv_angles=((0, 0), (-25, 0), (25, 0), (-12, -12), (12, 12), (0, -20), (0, 20)),
+                            # yaw/pitch to re-landmark from. Kept inside +/-25
+                            # because beyond that the ear starts occluding itself
+                            # and spread stops measuring placement and starts
+                            # measuring visibility.
+
     chain=True,             # second pass: fix landmarks that break link spacing
     chain_tol=1.0,          # flag when a point's two links deviate from the strip
                             # median by this much in total, as a fraction of the
@@ -1036,6 +1043,21 @@ def show_image_window(path):
         return None
 
 
+def save_agreement_render(mesh, P, colours, cfg, path, size=620):
+    """Render the cross-view median landmarks, coloured by how much views disagree."""
+    r = o3d.visualization.rendering.OffscreenRenderer(size, size)
+    for i, geom in enumerate([mesh, spheres(P, cfg["sphere_frac"] * 1.3, colours),
+                              strip_lines(P)]):
+        r.scene.add_geometry(f"g{i}", geom, MATERIAL)
+    light_scene(r.scene, (0.5, 0.5, 0.5))
+    K, E = camera_ke(size, cfg)
+    r.setup_camera(K, E, size, size)
+    img = np.asarray(r.render_to_image())[:, :, :3]
+    del r
+    Image.fromarray(img).save(path)
+    print(f"wrote {path}  (green = views agree, red = they do not)")
+
+
 def write_overlay(frame, lm, path, note=None, announce=True):
     """The 2D prediction on the frame it came from, in the same strip colours.
 
@@ -1062,6 +1084,102 @@ def write_overlay(frame, lm, path, note=None, announce=True):
     if announce:
         print(f"wrote {path}")
 
+
+
+def orbit_extrinsic(yaw, pitch, cfg):
+    """Extrinsic for a camera orbited to (yaw, pitch) about the ear, looking at it."""
+    y, p = np.radians(yaw), np.radians(pitch)
+    d = cfg["eye_z"]
+    C = np.array([d * np.sin(y) * np.cos(p), d * np.sin(p), d * np.cos(y) * np.cos(p)])
+    z = -C / np.linalg.norm(C)
+    x = np.cross([0.0, 1.0, 0.0], z)
+    x /= np.linalg.norm(x)
+    yv = np.cross(z, x)
+    R = np.stack([x, yv, z])
+    E = np.eye(4)
+    E[:3, :3], E[:3, 3] = R, -R @ C
+    return E
+
+
+def multiview(mesh, cfg, pipe):
+    """Landmark the ear from several viewpoints and back-project each.
+
+    Returns (P [V, 55, 3], ok [V, 55], angles). Every view is landmarked
+    independently and back-projected through ITS OWN depth buffer, so the points
+    from different views are separate measurements of the same anatomy, in the
+    mesh's own frame.
+
+    WHAT THIS IS FOR. Nothing else here measures whether a landmark is in the
+    right PLACE. The depth-outlier flag catches only grossly deep points, and
+    detector confidence has been shown to stay flat while landmarks drift. But a
+    correctly placed landmark should land in the same spot whichever direction it
+    was seen from, while one that slid onto the scalp depends on the ray that
+    produced it and moves with the view.
+
+    WHAT IT CANNOT DO: this is precision, not accuracy. A model that puts a point
+    in the same wrong place from every angle scores perfectly. It needs human
+    annotation to become a measure of correctness -- what it gives for free is a
+    way to find the points worth annotating.
+    """
+    out, ok = [], []
+    for yaw, pitch in cfg["mv_angles"]:
+        E = orbit_extrinsic(yaw, pitch, cfg)
+        img, depth, cam = render(mesh, cfg, E=E)
+        res = pipe(img, timestamp=0.0)
+        if not res:
+            # A view where the detector finds nothing contributes no measurement.
+            # Reported rather than silently dropped: if most views fail, the
+            # agreement figure is averaging two opinions, not seven.
+            print(f"  view ({yaw:+d},{pitch:+d}): no ear detected")
+            out.append(np.full((55, 3), np.nan))
+            ok.append(np.zeros(55, bool))
+            continue
+        best = max(res, key=lambda d: float(d["confidence"]))
+        lm = np.asarray(best["landmarks"], float)
+        P, hit, _ = backproject_snapped(depth, lm, cam, cfg)
+        print(f"  view ({yaw:+d},{pitch:+d}): det {float(best['confidence']):.2f}, "
+              f"{int(hit.sum())}/55")
+        out.append(P)
+        ok.append(hit & np.isfinite(P).all(axis=1))
+    return np.stack(out), np.stack(ok), list(cfg["mv_angles"])
+
+
+def agreement(P, ok):
+    """Per-landmark spread across views: median distance to that point's median.
+
+    Median rather than mean throughout, so one bad view does not set the score
+    for a landmark the other views agree on.
+    """
+    spread = np.full(P.shape[1], np.nan)
+    centre = np.full((P.shape[1], 3), np.nan)
+    nview = ok.sum(axis=0)
+    for k in range(P.shape[1]):
+        pts = P[ok[:, k], k]
+        if len(pts) < 2:
+            continue
+        c = np.median(pts, axis=0)
+        centre[k] = c
+        spread[k] = np.median(np.linalg.norm(pts - c, axis=1))
+    return spread, centre, nview
+
+
+def report_agreement(spread, nview, ear_extent=1.0):
+    """Print per-strip and worst-landmark agreement."""
+    print(f"\nmulti-view agreement (spread as % of ear extent; "
+          f"lower = the views concur)")
+    print(f"{'strip':>15s}{'median':>9s}{'p90':>8s}{'worst':>8s}{'views':>8s}")
+    for i, (a, b) in enumerate(STRIPS):
+        sp = spread[a:b]
+        fin = np.isfinite(sp)
+        if not fin.any():
+            continue
+        print(f"{STRIP_NAMES[i]:>15s}{100*np.median(sp[fin])/ear_extent:>8.1f}%"
+              f"{100*np.percentile(sp[fin], 90)/ear_extent:>7.1f}%"
+              f"{100*np.nanmax(sp)/ear_extent:>7.1f}%{np.mean(nview[a:b]):>8.1f}")
+    order = np.argsort(-np.nan_to_num(spread, nan=-1))
+    worst = [k for k in order if np.isfinite(spread[k])][:8]
+    print("worst landmarks: " + ", ".join(
+        f"{k}({100*spread[k]/ear_extent:.0f}%)" for k in worst))
 
 
 # ============================================================ pipeline =====
@@ -1184,6 +1302,8 @@ def main():
     p.add_argument("--no-mediapipe", action="store_true", help="use the ear-detector sweep")
     p.add_argument("--no-snap", action="store_true", help="show the raw back-projection")
     p.add_argument("--no-chain", action="store_true", help="skip the link-spacing pass")
+    p.add_argument("--multiview", action="store_true",
+                   help="re-landmark from several views and report per-landmark agreement")
     p.add_argument("--snap-radius", type=float, default=None, help="jitter range, 0-1 of ear extent")
     p.add_argument("--run", default=None, help="checkpoint run name")
     p.add_argument("--device", default=None)
@@ -1236,6 +1356,56 @@ def main():
     for i, (a_, b_) in enumerate(STRIPS):
         print(f"  {STRIP_NAMES[i]:<14s} z {P3[a_:b_,2].min():+.3f} .. "
               f"{P3[a_:b_,2].max():+.3f}   misses {int((~hit[a_:b_]).sum())}")
+
+    if a.multiview:
+        # Each view is an independent measurement of the same anatomy. Colour by
+        # how far they disagree, so the points worth distrusting are visible
+        # rather than buried in a table.
+        ext = float(np.ptp(P3[hit], axis=0).max()) if hit.any() else 1.0
+        Pv, okv, angles = multiview(g, cfg, pipe)
+        spread, centre, nview = agreement(Pv, okv)
+        report_agreement(spread, nview, ear_extent=ext)
+        print(f"\near extent {ext:.3f}; {len(angles)} views: "
+              + ", ".join(f"({y:+d},{p:+d})" for y, p in angles))
+        bad = np.isfinite(spread) & (spread > 0.05 * ext)
+        print(f"{int(bad.sum())} of {int(np.isfinite(spread).sum())} landmarks "
+              f"disagree by more than 5% of ear extent")
+        if cfg["overlay_png"]:
+            lo, hi = 0.0, 0.08 * ext
+            cols = []
+            for k in range(len(spread)):
+                if not np.isfinite(spread[k]):
+                    cols.append((0.4, 0.4, 0.4))
+                    continue
+                t = float(np.clip((spread[k] - lo) / max(hi - lo, 1e-9), 0, 1))
+                cols.append((t, 1.0 - t, 0.15))      # green = agree, red = not
+            P_show = np.where(np.isfinite(centre), centre, P3)
+            path = cfg["overlay_png"].replace(".png", "_agreement.png")
+            save_agreement_render(g, P_show, cols, cfg, path)
+        return
+
+    if a.multiview:
+        # Each view is an independent measurement of the same anatomy, so how far
+        # they disagree is the closest thing here to a placement check. Colour by
+        # it, so the points worth distrusting are visible rather than tabulated.
+        ext = float(np.ptp(P3[hit], axis=0).max()) if hit.any() else 1.0
+        Pv, okv, angles = multiview(g, cfg, pipe)
+        spread, centre, nview = agreement(Pv, okv)
+        report_agreement(spread, nview, ear_extent=ext)
+        print(f"\near extent {ext:.3f}; {len(angles)} views: "
+              + ", ".join(f"({y:+d},{p:+d})" for y, p in angles))
+        fin = np.isfinite(spread)
+        print(f"{int((fin & (spread > 0.05 * ext)).sum())} of {int(fin.sum())} "
+              f"landmarks disagree by more than 5% of ear extent")
+        if cfg["overlay_png"]:
+            hi = 0.08 * ext
+            cols = [(0.4, 0.4, 0.4) if not np.isfinite(spread[k]) else
+                    (lambda t: (t, 1.0 - t, 0.15))(float(np.clip(spread[k] / hi, 0, 1)))
+                    for k in range(len(spread))]
+            P_show = np.where(np.isfinite(centre), centre, P3)
+            save_agreement_render(g, P_show, cols, cfg,
+                                  cfg["overlay_png"].replace(".png", "_agreement.png"))
+        return
 
     if cfg["snapshot_png"]:
         # The snapshot the landmarks were read from, saved UNMARKED so it can be

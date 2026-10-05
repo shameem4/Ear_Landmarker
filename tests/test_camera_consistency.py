@@ -382,3 +382,43 @@ def test_chain_pass_can_be_turned_off():
     P[5] = vbp.backproject(d, uv[5:6], cam)[0][0]
     _, _, moved = vbp.backproject_snapped(d, uv, cam, dict(CFG, snap=False, chain=False))
     assert not moved.any()
+
+
+# --- multi-view agreement ----------------------------------------------------
+# The closest thing here to a placement check: a correctly placed landmark lands
+# in the same spot whichever direction it was seen from. It measures precision,
+# not accuracy -- a point that is consistently wrong scores perfectly.
+
+def test_orbit_extrinsic_round_trips_through_pose_angles():
+    for yaw, pitch in ((0, 0), (25, 0), (-25, 0), (0, 20), (12, 12)):
+        y, p, _ = vbp.pose_angles(vbp.orbit_extrinsic(yaw, pitch, CFG))
+        assert y == pytest.approx(yaw, abs=0.2)
+        assert p == pytest.approx(pitch, abs=0.2)
+
+
+def test_agreement_is_zero_when_views_concur():
+    P = np.tile(np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]), (5, 1, 1))
+    ok = np.ones((5, 2), bool)
+    spread, centre, nview = vbp.agreement(P, ok)
+    assert np.allclose(spread, 0.0)
+    assert np.allclose(centre[0], [0.1, 0.2, 0.3])
+    assert (nview == 5).all()
+
+
+def test_agreement_uses_the_median_so_one_bad_view_does_not_dominate():
+    P = np.tile(np.array([[0.0, 0.0, 0.0]]), (5, 1, 1)).astype(float)
+    P[4, 0] = [10.0, 0.0, 0.0]                # one wild outlier view
+    ok = np.ones((5, 1), bool)
+    spread, centre, _ = vbp.agreement(P, ok)
+    assert np.allclose(centre[0], 0.0), "the median must ignore the outlier"
+    assert spread[0] == pytest.approx(0.0), "4 of 5 views agree exactly"
+
+
+def test_agreement_needs_at_least_two_views():
+    P = np.full((3, 2, 3), np.nan)
+    ok = np.zeros((3, 2), bool)
+    ok[0] = True
+    P[0] = 0.0
+    spread, _, nview = vbp.agreement(P, ok)
+    assert np.isnan(spread).all(), "one view cannot disagree with itself"
+    assert (nview == 1).all()
