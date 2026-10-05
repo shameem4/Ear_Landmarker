@@ -459,10 +459,17 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
                          f"det {float(best['confidence']):.2f}, {int(qhit.sum())}/55 hit")
         state["busy"] = False
         print(f"  [L] {state['note']}", flush=True)
+        # Rewriting the overlay is what refreshes the 2D window: it polls this
+        # file, so the picture there always matches the pose in the 3D window.
         if cfg["snapshot_png"]:
-            Image.fromarray(img).save(cfg["snapshot_png"])
+            tmp = f"{cfg['snapshot_png']}.{os.getpid()}.tmp.png"
+            Image.fromarray(img).save(tmp, format="PNG")
+            os.replace(tmp, cfg["snapshot_png"])
         if cfg["overlay_png"]:
-            write_overlay(Image.fromarray(img), lm, cfg["overlay_png"])
+            write_overlay(Image.fromarray(img), lm, cfg["overlay_png"],
+                          note=f"yaw {yaw:+.0f}  pitch {pitch:+.0f}  "
+                               f"det {float(best['confidence']):.2f}",
+                          announce=False)
 
     def relandmark():
         """Capture THIS window, through the window's own renderer.
@@ -762,14 +769,38 @@ def _lineset(pts, idx, col):
 
 
 _VIEW_2D = r"""
-import sys
+import os, sys
 import matplotlib
 matplotlib.use("QtAgg")
 import matplotlib.pyplot as plt
-img = plt.imread(sys.argv[1])
+
+path = sys.argv[1]
 fig = plt.figure("landmark placement (2D)", figsize=(6.5, 6.5))
 fig.canvas.manager.set_window_title("landmark placement (2D)")
-ax = fig.add_axes([0, 0, 1, 1]); ax.imshow(img); ax.axis("off")
+ax = fig.add_axes([0, 0, 1, 1]); ax.axis("off")
+art = ax.imshow(plt.imread(path))
+state = {"m": os.path.getmtime(path)}
+
+# Poll the file rather than being told. The window is a separate process -- it
+# has to be, because Open3D's own event loop blocks -- so there is no channel
+# back from the viewer. The overlay is written atomically via os.replace, so a
+# poll can never catch a half-written file.
+def poll():
+    try:
+        m = os.path.getmtime(path)
+        if m == state["m"]:
+            return
+        img = plt.imread(path)
+        state["m"] = m
+        art.set_data(img)
+        art.set_extent((0, img.shape[1], img.shape[0], 0))
+        fig.canvas.draw_idle()
+    except Exception:
+        pass            # a viewer is never worth crashing for
+
+timer = fig.canvas.new_timer(interval=300)
+timer.add_callback(poll)
+timer.start()
 plt.show()
 """
 
@@ -802,18 +833,31 @@ def show_image_window(path):
         return None
 
 
-def write_overlay(crop, lm, path):
-    """The 2D prediction on the render it came from, in the same strip colours."""
-    img = crop.convert("RGB").resize((512, 512), Image.BILINEAR)
-    s = 512 / crop.width            # the WHOLE frame now, not a crop
+def write_overlay(frame, lm, path, note=None, announce=True):
+    """The 2D prediction on the frame it came from, in the same strip colours.
+
+    `note` is stamped into the corner -- the pose it was measured at. Placement
+    changes with angle, so an overlay without its angle is an unlabelled sample.
+
+    Written atomically: the 2D viewer polls this file, and os.replace means it
+    can only ever see a complete image.
+    """
+    img = frame.convert("RGB").resize((512, 512), Image.BILINEAR)
+    s = 512 / frame.width           # the WHOLE frame, not a crop
     d = ImageDraw.Draw(img)
     for i, (a, b) in enumerate(STRIPS):
         c = tuple(int(255 * v) for v in STRIP_COLOURS[i])
         d.line([tuple(p) for p in (lm[a:b] * s)], fill=c, width=2)
         for x, y in lm[a:b] * s:
             d.ellipse([x - 3, y - 3, x + 3, y + 3], fill=c, outline=(0, 0, 0))
-    img.save(path)
-    print(f"wrote {path}")
+    if note:
+        d.rectangle([0, 0, 8 + 6 * len(note), 18], fill=(0, 0, 0))
+        d.text((5, 4), note, fill=(255, 255, 255))
+    tmp = f"{path}.{os.getpid()}.tmp.png"
+    img.save(tmp, format="PNG")
+    os.replace(tmp, path)
+    if announce:
+        print(f"wrote {path}")
 
 
 
@@ -987,7 +1031,8 @@ def main():
         Image.fromarray(img).save(cfg["snapshot_png"])
         print(f"wrote {cfg['snapshot_png']}")
     if cfg["overlay_png"]:
-        write_overlay(Image.fromarray(img), lm, cfg["overlay_png"])
+        write_overlay(Image.fromarray(img), lm, cfg["overlay_png"],
+                      note="face-on  yaw +0  pitch +0")
         if cfg["show_2d"] and cfg["interactive"]:
             show_image_window(cfg["overlay_png"])
 
