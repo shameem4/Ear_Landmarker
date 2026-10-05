@@ -26,12 +26,30 @@ from __future__ import annotations
 import numpy as np
 import open3d as o3d
 
-# Representative sRGB skin tones, light to deep.
+# Representative sRGB skin tones, light to deep: Fitzpatrick I-VI. This is the
+# pool a RANDOM tone is drawn from, so it stays inside plausible human skin --
+# these colours go into training images, where the appearance distribution has to
+# match photographs.
 SKIN_TONES = np.array([
     [0.96, 0.84, 0.76], [0.93, 0.79, 0.69], [0.88, 0.72, 0.60],
     [0.80, 0.63, 0.50], [0.71, 0.54, 0.42], [0.60, 0.44, 0.34],
     [0.48, 0.34, 0.26], [0.36, 0.25, 0.19], [0.27, 0.18, 0.14],
 ])
+
+# Deeper than Fitzpatrick VI, i.e. past real skin. NOT in the random pool, and
+# not for training images. They exist because the landmarker reads the ear more
+# cleanly on them: judged by eye over tones 0-11 on identical geometry, 10 and 11
+# gave the best landmark placement. The measured picture is consistent but
+# weaker -- detector confidence plateaus from tone 6 (0.96-0.97 through 11) while
+# the landmarks keep shifting, so confidence alone could not have chosen these.
+# Index these explicitly, as LABEL_TONE does.
+EXTRA_TONES = np.array([
+    [0.20, 0.13, 0.10], [0.14, 0.09, 0.07], [0.09, 0.06, 0.045], [0.05, 0.035, 0.025],
+])
+ALL_TONES = np.vstack([SKIN_TONES, EXTRA_TONES])
+
+# The tone to render at when the point of the render is to LABEL it.
+LABEL_TONE = 10
 
 
 def ambient_occlusion(mesh, n_rays: int = 24, radius_frac: float = 0.04,
@@ -85,7 +103,10 @@ def apply_skin(mesh, seed: int = 0, tone: int | None = None,
     if not mesh.has_vertex_normals():
         mesh.compute_vertex_normals()
 
-    base = SKIN_TONES[rng.integers(len(SKIN_TONES)) if tone is None else tone].copy()
+    # An explicit index may reach the deep tones; a random draw may not, so
+    # generated training images stay inside plausible human skin.
+    base = (SKIN_TONES[rng.integers(len(SKIN_TONES))] if tone is None
+            else ALL_TONES[tone]).copy()
     base *= rng.uniform(0.94, 1.06)                       # per-subject exposure
 
     acc = ambient_occlusion(mesh, n_rays=n_rays, seed=seed)

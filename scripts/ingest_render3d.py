@@ -79,7 +79,7 @@ from render3d_ears import EAR3D_DIR, VFOV, project, render, rot          # noqa:
 from eval_pose_consistency import crop_to_full, raycast, visible        # noqa: E402
 from eval_test import best_ckpt                                         # noqa: E402
 from inference import LandmarkPredictor                                 # noqa: E402
-from skin import apply_skin                                             # noqa: E402
+from skin import LABEL_TONE, apply_skin                                  # noqa: E402
 
 OUT = ROOT / "data" / "render3d"
 SIZE = 600
@@ -219,6 +219,8 @@ def label_ear(mesh, front, up, det, pred):
     Pass 1 uses the detector's axis-aligned view just to get landmarks; pass 2
     repeats it in the plane those landmarks define. Ray-casting is against the
     WHOLE mesh in both -- there is no ear region, and no region to get wrong.
+
+    `mesh` must ALREADY be skinned: see the note at the call site.
     """
     # --- pass 1: provisional frame from the detector's own view direction ----
     R = frame_from(front, up, front=front)
@@ -287,6 +289,12 @@ def main() -> None:
         mesh = load_head(hp)
         if mesh is None:
             continue
+        # SKIN FIRST, THEN DETECT. Every detector in this script -- the probe
+        # sweep here and the pipeline inside label_ear -- reads clay far worse
+        # than skin: measured, 0.835 against 0.94 on the same ear. Detecting on
+        # clay and colouring afterwards meant every detection in the pipeline was
+        # made on the appearance the models handle worst.
+        mesh = apply_skin(mesh, seed=0, tone=LABEL_TONE)
         for conf0, front, up, _ in find_ears(mesh, det):
             if n_ear >= args.ears:
                 break
@@ -308,7 +316,11 @@ def main() -> None:
                 continue
             n_ear += 1
 
-            base = apply_skin(base, seed=int(rng.integers(1 << 30)))
+            # Re-skin for the OUTPUT images with a random Fitzpatrick I-VI tone.
+            # The labelling tone above is deeper than real skin and must not end
+            # up in training data; the labels are unaffected, being 3D points on
+            # geometry that did not change.
+            base = apply_skin(base, seed=int(rng.integers(1 << 30)), tone=None)
 
             for pitch in args.pitches:
                 for yaw in args.yaws:

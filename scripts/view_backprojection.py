@@ -68,7 +68,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from skin import SKIN_TONES, apply_skin      # noqa: E402  (appearance, not geometry)
+from skin import ALL_TONES, apply_skin       # noqa: E402  (appearance, not geometry)
 
 # ---------------------------------------------------------------- CONFIG ----
 # Third-party research data; not in any repo. Override with EAR3D_DIR.
@@ -83,9 +83,21 @@ CONFIG = dict(
     run="manual_occ_s42",   # checkpoint under runs/checkpoints/<run>/
     device="cuda",
 
+    # --- head pose ----------------------------------------------------------
+    use_mediapipe=True,     # derive the face-on direction from a FaceMesh head
+                            # frame instead of the ear detector's 6-view sweep
+    face_task=os.environ.get(
+        "FACE_LANDMARKER_TASK",
+        "/mnt/14BE47C2BE479ADE/Code/landmarking_stuff/landmarker/face_landmarker.task"),
+
     # --- appearance ---------------------------------------------------------
     skin=True,              # colour the mesh with scripts/skin.py before rendering
-    tone=None,              # SKIN_TONES index 0-8, light to deep; None = random
+    tone=10,                # tone index; None draws a random Fitzpatrick I-VI.
+                            # 10 is deeper than real skin and is there because the
+                            # landmarker reads the ear most cleanly on it -- see
+                            # EXTRA_TONES in scripts/skin.py. Fine here, where the
+                            # point is to inspect landmarks; ingest renders its
+                            # training images with a realistic tone instead.
     skin_seed=0,            # also drives the blotching and grain
     ao_strength=0.75,       # how hard ambient occlusion darkens cavities
     ao_rays=24,             # rays per vertex. The cost of apply_skin is all here.
@@ -298,6 +310,82 @@ def landmark_whole_frame(mesh, cfg, pipe):
     return img, np.asarray(best["landmarks"], float), float(best["confidence"])
 
 
+# MediaPipe FaceMesh canonical indices.
+TRAGION_R, TRAGION_L, FOREHEAD, CHIN = 234, 454, 10, 152
+
+
+def head_pose(mesh, cfg):
+    """Head frame from MediaPipe FaceMesh, in the mesh's own coordinates.
+
+    Returns (lateral, vertical, tragion_R, tragion_L) or None.
+
+    WHY THIS BEATS SWEEPING THE EAR DETECTOR. The sweep renders six axis-aligned
+    views and keeps the two best ear boxes, which on a head gives two nearly equal
+    confidences and no way to tell which side is which. MediaPipe finds a face on
+    exactly ONE of those six views -- on every head tried -- so the frontal
+    direction is unambiguous, and the face landmarks then give a real anatomical
+    frame rather than whichever axis the dataset stored the head on. The ear-to-ear
+    axis comes from the two tragion landmarks, which sit AT the ears.
+
+    IT DOES NOT REMOVE PASS 2, AND IT IS NOT MEASURABLY MORE ACCURATE. Head to
+    head over four heads, pass-2 confidence against the detector sweep: 0.931 vs
+    0.955, 0.942 vs 0.927, fails vs 0.881, 0.980 vs 0.981. The remaining offset
+    from the pinna plane is the same either way (8-35 deg here, 16-37 for the
+    sweep). What it buys is that the SIDE is known -- the sweep returns two ear
+    boxes at near-equal confidence with no way to tell left from right, so "ear 0"
+    is arbitrary and changes between heads. The pinna's own tilt is per-subject
+    anatomy that no face-derived frame can supply, which is why pass 2 stays.
+
+    Measured per side (pass-2 confidence / degrees off the pinna plane), the RIGHT
+    ear is consistently better: pp16 fails/0.839@12, pp12 0.931@33/0.990@28,
+    pp11 0.942@35/0.986@13, pp10 0.980@19/0.982@8. Left and right ears are mirror
+    images, so this is most likely an asymmetry in the landmarker rather than in
+    this frame -- it is not explained, and worth a look before trusting left-ear
+    labels as much as right.
+    """
+    task = cfg.get("face_task")
+    if not task or not Path(task).exists():
+        print(f"mediapipe: no face_landmarker.task at {task} -- using the ear sweep")
+        return None
+    import mediapipe as mp
+    from mediapipe.tasks import python as mpp
+    from mediapipe.tasks.python import vision
+    fl = vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
+        base_options=mpp.BaseOptions(model_asset_path=str(task)), num_faces=1))
+    C0 = np.asarray(mesh.vertices).mean(0)
+    for axis in (0, 1, 2):
+        for sgn in (1, -1):
+            front = np.zeros(3); front[axis] = sgn
+            up = np.array([0.0, 0.0, 1.0]) if axis != 2 else np.array([0.0, 1.0, 0.0])
+            R = frame_from(front, up, front=front)
+            if R is None:
+                continue
+            g = in_frame(mesh, R, C0, 1.0)
+            res = fl.detect(mp.Image(image_format=mp.ImageFormat.SRGB,
+                                     data=np.ascontiguousarray(render(g, cfg))))
+            if not res.face_landmarks:
+                continue
+            uv = np.array([[p.x * cfg["size"], p.y * cfg["size"]]
+                           for p in res.face_landmarks[0]])
+            P, hit = raycast(g, uv, cfg)
+            if not hit[[TRAGION_R, TRAGION_L, FOREHEAD, CHIN]].all():
+                continue
+            # The landmarks come back in THIS frame's coordinates; everything
+            # downstream works in the mesh's own, so convert before using them.
+            # Skipping this put the ear view 62-70 deg off instead of 10-24.
+            P = (P @ R) + C0
+            lat = P[TRAGION_L] - P[TRAGION_R]
+            lat /= np.linalg.norm(lat)
+            vert = P[FOREHEAD] - P[CHIN]
+            vert -= lat * (vert @ lat)
+            vert /= np.linalg.norm(vert)
+            print(f"mediapipe: face on axis {axis}{'+' if sgn > 0 else '-'}, "
+                  f"tragion separation {np.linalg.norm(P[TRAGION_L] - P[TRAGION_R]):.3f}")
+            return lat, vert, P[TRAGION_R], P[TRAGION_L]
+    print("mediapipe: no face found on any of the six views -- using the ear sweep")
+    return None
+
+
 # ============================================================ display ======
 
 def spheres(points, radius, colours):
@@ -415,8 +503,6 @@ def load_subject(cfg):
     (8139 vertices against 12226) and 4 of 55 rays hit. The 55 back-projected
     landmarks are a better definition of the ear: they are on it by construction.
     """
-    from inference import BLAZEEAR_DIR, DETECTOR_WEIGHTS, EarDetector
-    det = EarDetector(BLAZEEAR_DIR / DETECTOR_WEIGHTS, "cpu", 0.5)
     mesh = load_head(cfg["mesh"])
     if mesh is None:
         sys.exit(f"could not read {cfg['mesh']}")
@@ -429,21 +515,35 @@ def load_subject(cfg):
         tone = cfg["tone"]
         apply_skin(mesh, seed=cfg["skin_seed"], tone=tone,
                    ao_strength=cfg["ao_strength"], n_rays=cfg["ao_rays"])
-        shown = SKIN_TONES[tone] if tone is not None else np.asarray(
+        shown = ALL_TONES[tone] if tone is not None else np.asarray(
             mesh.vertex_colors)[::997].mean(0)
         print(f"skin: tone {np.round(shown, 2).tolist()}, "
               f"AO {cfg['ao_rays']} rays over {len(mesh.vertices)} vertices "
               f"({time.perf_counter() - t0:.1f}s)")
+    # ALL DETECTION RUNS ON THE SKINNED MESH, above. Every detector here reads
+    # clay far worse than skin -- measured, 0.835 against 0.94 on the same ear --
+    # so colouring first is not cosmetic, it is what the models are good at.
+    pose = head_pose(mesh, cfg) if cfg["use_mediapipe"] else None
+    if pose is not None:
+        lat, vert, tr_r, tr_l = pose
+        # ear 0 = the subject's left (along +lateral), ear 1 = their right.
+        left = int(cfg["ear"]) % 2 == 0
+        front = lat if left else -lat
+        print(f"using the {'left' if left else 'right'} ear, from the FaceMesh frame")
+        return mesh, front, vert, (tr_l if left else tr_r)
+
+    from inference import BLAZEEAR_DIR, DETECTOR_WEIGHTS, EarDetector
+    det = EarDetector(BLAZEEAR_DIR / DETECTOR_WEIGHTS, "cpu", 0.5)
     found = find_ears(mesh, det, cfg)
     if not found:
-        sys.exit("the detector found no ear on this head")
+        sys.exit("neither MediaPipe nor the ear detector found anything on this head")
     print("detector found " + ", ".join(f"conf={c:.2f}" for c, *_ in found))
     conf, front, up, _ = found[int(cfg["ear"]) % len(found)]
     print(f"using ear {cfg['ear']} (probe confidence {conf:.2f})")
-    return mesh, front, up
+    return mesh, front, up, np.asarray(mesh.vertices).mean(0)
 
 
-def label_two_pass(mesh, front, up, cfg, pipe):
+def label_two_pass(mesh, front, up, cfg, pipe, centre=None):
     """Face-on landmarks in 3D. Returns (mesh in the pinna frame, P3, hit, conf).
 
     PASS 1 uses the detector's axis-aligned view direction purely to get a usable
@@ -460,16 +560,22 @@ def label_two_pass(mesh, front, up, cfg, pipe):
     if R is None:
         sys.exit("degenerate detector frame")
     V = np.asarray(mesh.vertices)
-    g = in_frame(mesh, R, V.mean(0), 1.0)
+    # Centre on the tragion when MediaPipe gave one: the head centroid puts the
+    # ear near the frame edge, where the ROI has least room to grow.
+    C1 = V.mean(0) if centre is None else np.asarray(centre, float)
+    g = in_frame(mesh, R, C1, 1.0)
     img, lm, conf = landmark_whole_frame(g, cfg, pipe)
     if lm is None:
-        sys.exit("pass 1: the pipeline found no ear in the face-on render")
+        sys.exit("pass 1: the pipeline found no ear in the face-on render.\n"
+                 "  With the MediaPipe frame the SIDE is chosen deterministically, so a\n"
+                 "  head whose other ear is easier will still fail here. Try --ear 1,\n"
+                 "  or --no-mediapipe to let the detector sweep pick whichever it likes.")
     P1, hit1 = raycast(g, lm, cfg)
     print(f"pass 1: detector conf {conf:.3f}, {int(hit1.sum())}/55 rays hit")
     if hit1.sum() < 10:
         sys.exit("pass 1: too few rays hit to fit a pinna plane")
 
-    P1w = (P1[hit1] @ R) + V.mean(0)               # back to world coordinates
+    P1w = (P1[hit1] @ R) + C1                      # back to world coordinates
     R2 = frame_from(plane_normal(P1w), up, front=front)
     if R2 is None:
         sys.exit("degenerate pinna frame")
@@ -495,6 +601,7 @@ def main():
     p.add_argument("--ear", type=int, default=None, help="which detected ear, 0 or 1")
     p.add_argument("--tone", type=int, default=None, help="skin tone 0-8, light to deep")
     p.add_argument("--no-skin", action="store_true", help="render bare clay instead")
+    p.add_argument("--no-mediapipe", action="store_true", help="use the ear-detector sweep")
     p.add_argument("--run", default=None, help="checkpoint run name")
     p.add_argument("--device", default=None)
     p.add_argument("--rays", action="store_true", help="draw the camera rays")
@@ -510,6 +617,7 @@ def main():
         if v is not None:
             cfg[k] = v
     cfg["skin"] = cfg["skin"] and not a.no_skin
+    cfg["use_mediapipe"] = cfg["use_mediapipe"] and not a.no_mediapipe
     cfg["show_rays"] |= a.rays
     cfg["show_2d"] = cfg["show_2d"] and not a.no_2d
     cfg["interactive"] = cfg["interactive"] and not a.no_window
@@ -527,8 +635,8 @@ def main():
                                  device=cfg["device"], smooth=False)
     print(f"landmarker {ck.name}")
 
-    mesh, front, up = load_subject(cfg)
-    g, img, lm, P3, hit, conf = label_two_pass(mesh, front, up, cfg, pipe)
+    mesh, front, up, centre = load_subject(cfg)
+    g, img, lm, P3, hit, conf = label_two_pass(mesh, front, up, cfg, pipe, centre)
     V = np.asarray(g.vertices)
 
     # A missed ray has no 3D position at all. Park it on the mesh centroid so the
