@@ -46,6 +46,8 @@ import time
 from pathlib import Path
 
 # MUST COME BEFORE `import open3d`, and it is not optional on a Wayland session.
+# This now gates EVERY render, not just the interactive window: the one renderer
+# is the GLFW visualizer, and a screen capture needs a real GL context.
 # Open3D's interactive window is the legacy GLFW/GLEW visualizer. On Wayland it
 # fails outright -- "Failed to initialize GLEW", then "Failed creating OpenGL
 # window" -- and draw_geometries returns having shown nothing. GLFW has to be
@@ -139,65 +141,134 @@ STRIP_COLOURS = [(0.95, 0.25, 0.25), (0.25, 0.65, 0.95),
 
 
 # ============================================================ camera ========
-# project() and unproject_rays() are exact inverses for this camera. Change one
-# and you must change the other, or the back-projection lands somewhere else.
+# ONE RENDERER AND ONE CAMERA, and they are the same object.
+#
+# camera_ke() produces the intrinsic matrix K and extrinsic E. Those exact arrays
+# are handed to Filament via setup_camera(K, E, w, h) AND used to build the
+# Camera that projects and back-projects. Nothing re-derives a camera from
+# constants, so the forward transform, the inverse transform and the picture
+# cannot drift apart -- there is no second definition to drift from.
+#
+# Two earlier arrangements are what this replaces. Snapshots once went through
+# Filament while the 3D window used the legacy GLFW visualizer: same mesh, same
+# vertex colours, mean brightness 119.9 against 27.8 and a specular highlight in
+# one but not the other, so the landmarker read an image nobody could see.
+# Unifying on the LEGACY renderer instead was measured and is much worse -- its
+# default lighting costs the pipeline badly (pass 2 failed on 3 of 6 skin tones,
+# and the pinna-plane estimate ranged over 16-76 deg against 8-35 here).
 
-def project(P, cfg):
-    P = np.atleast_2d(np.asarray(P, float))
-    z = cfg["eye_z"] - P[:, 2]
-    t = np.tan(np.radians(cfg["vfov"]) / 2.0)
-    s = cfg["size"]
-    return np.stack([(P[:, 0] / np.maximum(z * t, 1e-9) + 1) / 2 * s,
-                     (1 - P[:, 1] / np.maximum(z * t, 1e-9)) / 2 * s], axis=1)
+MATERIAL = o3d.visualization.rendering.MaterialRecord()
+MATERIAL.shader = "defaultLit"
 
 
-def unproject_rays(uv, cfg):
-    t = np.tan(np.radians(cfg["vfov"]) / 2.0)
-    s = cfg["size"]
-    x = (uv[:, 0] / s * 2 - 1) * t
-    y = (1 - uv[:, 1] / s * 2) * t
-    d = np.stack([x, y, -np.ones(len(uv))], axis=1)
-    d /= np.linalg.norm(d, axis=1, keepdims=True)
-    return np.tile(np.array([0.0, 0.0, cfg["eye_z"]]), (len(uv), 1)), d
+def camera_ke(size, cfg):
+    """(K, E) for this project's view. The single camera definition.
+
+    Open3D is OpenCV-style -- x right, y DOWN, z INTO the scene -- while this
+    project has y up and the camera at +Z looking back along -Z, so the extrinsic
+    flips both y and z. cx/cy are size/2 - 0.5, the pixel-centre convention
+    Open3D's own intrinsic requires.
+    """
+    f = (size / 2) / np.tan(np.radians(cfg["vfov"]) / 2)
+    K = np.array([[f, 0.0, size / 2 - 0.5],
+                  [0.0, f, size / 2 - 0.5],
+                  [0.0, 0.0, 1.0]])
+    E = np.array([[1.0, 0, 0, 0], [0, -1.0, 0, 0],
+                  [0, 0, -1.0, cfg["eye_z"]], [0, 0, 0, 1.0]])
+    return K, E
+
+
+class Camera:
+    """Projection and back-projection for a render, from that render's own K/E."""
+
+    def __init__(self, K, E, img_hw, requested):
+        h, w = img_hw
+        # A render can come back at a size we did not ask for. K describes the
+        # requested size, so rescale it to the pixels actually produced --
+        # otherwise every projection is off by that ratio, silently.
+        sx, sy = w / requested, h / requested
+        self.fx, self.fy = K[0, 0] * sx, K[1, 1] * sy
+        self.cx, self.cy = K[0, 2] * sx, K[1, 2] * sy
+        self.scaled = (sx != 1.0 or sy != 1.0)
+        self.w, self.h = w, h
+        self.R, self.t = E[:3, :3], E[:3, 3]
+        self.centre = -self.R.T @ self.t
+
+    def project(self, P):
+        P = np.atleast_2d(np.asarray(P, float))
+        Pc = P @ self.R.T + self.t
+        z = np.maximum(Pc[:, 2], 1e-9)
+        return np.stack([self.fx * Pc[:, 0] / z + self.cx,
+                         self.fy * Pc[:, 1] / z + self.cy], axis=1)
+
+    def rays(self, uv):
+        """Pixel -> (origin, unit direction). Exact inverse of project()."""
+        uv = np.atleast_2d(np.asarray(uv, float))
+        d = np.stack([(uv[:, 0] - self.cx) / self.fx,
+                      (uv[:, 1] - self.cy) / self.fy,
+                      np.ones(len(uv))], axis=1) @ self.R
+        d /= np.linalg.norm(d, axis=1, keepdims=True)
+        return np.tile(self.centre, (len(uv), 1)), d
+
+
+def light_scene(scene, background):
+    """The one lighting setup, shared by the snapshot and the 3D window."""
+    scene.set_background([*background, 1.0])
+    scene.scene.set_sun_light([-0.3, -0.4, -0.9], [1.0, 1.0, 1.0], 95000)
+    scene.scene.enable_sun_light(True)
 
 
 def render(mesh, cfg, size=None, background=(0.5, 0.5, 0.5)):
-    """Offscreen render (EGL -- works headless). Returns HxWx3 uint8.
+    """Render, and return the camera that produced it.
 
-    Open3D only. The Blender/Cycles path was removed: it is ~100x slower, and
-    every part of the pipeline it touched -- camera basis, sensor fit, camera
-    distance, light falloff -- was a separate silent way to render a different
-    view than the labels described. scripts/blender_skin_render.py is gone from
-    the tree; recover it from commit 056dd70 if it is ever wanted back.
+    Returns (image HxWx3 uint8, Camera). Callers must use the returned Camera for
+    anything they project or back-project.
     """
     size = size or cfg["size"]
     r = o3d.visualization.rendering.OffscreenRenderer(size, size)
-    mat = o3d.visualization.rendering.MaterialRecord()
-    mat.shader = "defaultLit"
-    r.scene.add_geometry("m", mesh, mat)
-    r.scene.set_background([*background, 1.0])
-    r.scene.scene.set_sun_light([-0.3, -0.4, -0.9], [1.0, 1.0, 1.0], 95000)
-    r.scene.scene.enable_sun_light(True)
-    r.setup_camera(cfg["vfov"], np.zeros(3, np.float32),
-                   np.array([0, 0, cfg["eye_z"]], np.float32),
-                   np.array([0, 1, 0], np.float32))
+    r.scene.add_geometry("m", mesh, MATERIAL)
+    light_scene(r.scene, background)
+    K, E = camera_ke(size, cfg)
+    r.setup_camera(K, E, size, size)
     img = np.asarray(r.render_to_image())[:, :, :3]
     del r
-    return img
+    return img, Camera(K, E, img.shape[:2], size)
 
 
-def raycast(mesh, uv, cfg):
-    """Exact 2D -> 3D. Returns (points, hit mask); misses are NaN."""
+def raycast(mesh, uv, cam):
+    """Exact 2D -> 3D through the render's own camera. Misses are NaN."""
     t = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
     scene = o3d.t.geometry.RaycastingScene()
     scene.add_triangles(t)
-    o, d = unproject_rays(uv, cfg)
+    o, d = cam.rays(np.asarray(uv, float))
     ans = scene.cast_rays(o3d.core.Tensor(np.hstack([o, d]).astype(np.float32)))
     dist = ans["t_hit"].numpy()
     hit = np.isfinite(dist)
-    P = np.full((len(uv), 3), np.nan)
+    P = np.full((len(o), 3), np.nan)
     P[hit] = o[hit] + d[hit] * dist[hit, None]
     return P, hit
+
+
+def show(geoms, cfg, size=900, background=(0.5, 0.5, 0.5),
+         title="back-projected ear landmarks"):
+    """Interactive window -- SAME renderer and SAME camera as the snapshot.
+
+    O3DVisualizer is Filament-backed, like render() above, so the scene you orbit
+    is lit identically to the image the landmarker read, and it opens on exactly
+    that view. Verified to work after offscreen rendering in the same process.
+    """
+    gui = o3d.visualization.gui
+    app = gui.Application.instance
+    app.initialize()
+    w = o3d.visualization.O3DVisualizer(title, size, size)
+    w.show_skybox(False)
+    for i, g in enumerate(geoms):
+        w.add_geometry(f"g{i}", g)
+    light_scene(w.scene, background)
+    K, E = camera_ke(size, cfg)
+    w.setup_camera(K, E, size, size)
+    app.add_window(w)
+    app.run()
 
 
 # ============================================================ ear finding ===
@@ -214,22 +285,6 @@ def load_head(path):
     return m
 
 
-def _probe(mesh, front, up, dist, size, cfg):
-    r = o3d.visualization.rendering.OffscreenRenderer(size, size)
-    mat = o3d.visualization.rendering.MaterialRecord()
-    mat.shader = "defaultLit"
-    r.scene.add_geometry("m", mesh, mat)
-    r.scene.set_background([0.5, 0.5, 0.5, 1.0])
-    r.scene.scene.set_sun_light([-0.4, -0.3, -0.9], [1, 1, 1], 100000)
-    r.scene.scene.enable_sun_light(True)
-    eye = np.asarray(front, float) * dist
-    r.setup_camera(cfg["vfov"], np.zeros(3, np.float32), eye.astype(np.float32),
-                   np.asarray(up, np.float32))
-    img = np.asarray(r.render_to_image())[:, :, :3]
-    del r
-    return img
-
-
 def find_ears(mesh, det, cfg, probe_size=400, dist=2.4):
     """Locate ears by sweeping the detector around the head.
 
@@ -241,7 +296,11 @@ def find_ears(mesh, det, cfg, probe_size=400, dist=2.4):
         for sgn in (1, -1):
             front = np.zeros(3); front[axis] = sgn
             up = np.array([0.0, 0.0, 1.0]) if axis != 2 else np.array([0.0, 1.0, 0.0])
-            b = det.detect(_probe(mesh, front, up, dist, probe_size, cfg))
+            R = frame_from(front, up, front=front)
+            if R is None:
+                continue
+            g = in_frame(mesh, R, np.asarray(mesh.vertices).mean(0), 1.0)
+            b = det.detect(render(g, cfg, size=probe_size)[0])
             if not len(b):
                 continue
             h, w = b[0, 2] - b[0, 0], b[0, 3] - b[0, 1]
@@ -292,14 +351,15 @@ def landmark_whole_frame(mesh, cfg, pipe):
 
     No crop is made here. EarLandmarkerPipeline detects the ear, builds and
     refines its own ROI, runs the landmarker and maps the 55 points back into
-    full-frame pixels -- which is exactly the space project()/unproject_rays()
-    work in, so the result feeds the ray-cast directly with no mapping of ours
-    in between. Returns (image, landmarks_px, mean confidence) or (img, None, 0).
+    full-frame pixels -- exactly the space the returned Camera works in, so the
+    result feeds the ray-cast directly with no mapping of ours in between.
+
+    Returns (image, Camera, landmarks_px, confidence), landmarks None if no ear.
     """
-    img = render(mesh, cfg)
+    img, cam = render(mesh, cfg)
     res = pipe(img, timestamp=0.0)
     if not res:
-        return img, None, 0.0
+        return img, cam, None, 0.0
     # Several ears can be detected on a head render; take the most confident.
     best = max(res, key=lambda d: float(d["confidence"]))
     # NOTE this is the DETECTOR's box confidence, which is what the pipeline
@@ -307,7 +367,7 @@ def landmark_whole_frame(mesh, cfg, pipe):
     # compared against it -- the pipeline does not expose that, because it owns
     # the crop. Reach into pipe.landmarker.predict(..., with_confidence=True) if
     # you need the per-point values back.
-    return img, np.asarray(best["landmarks"], float), float(best["confidence"])
+    return img, cam, np.asarray(best["landmarks"], float), float(best["confidence"])
 
 
 # MediaPipe FaceMesh canonical indices.
@@ -361,13 +421,16 @@ def head_pose(mesh, cfg):
             if R is None:
                 continue
             g = in_frame(mesh, R, C0, 1.0)
+            img, cam = render(g, cfg)
             res = fl.detect(mp.Image(image_format=mp.ImageFormat.SRGB,
-                                     data=np.ascontiguousarray(render(g, cfg))))
+                                     data=np.ascontiguousarray(img)))
             if not res.face_landmarks:
                 continue
-            uv = np.array([[p.x * cfg["size"], p.y * cfg["size"]]
-                           for p in res.face_landmarks[0]])
-            P, hit = raycast(g, uv, cfg)
+            # MediaPipe normalises to the IMAGE it was handed, so scale by that
+            # image's own shape, never by the size we requested.
+            h, w = img.shape[:2]
+            uv = np.array([[p.x * w, p.y * h] for p in res.face_landmarks[0]])
+            P, hit = raycast(g, uv, cam)
             if not hit[[TRAGION_R, TRAGION_L, FOREHEAD, CHIN]].all():
                 continue
             # The landmarks come back in THIS frame's coordinates; everything
@@ -412,9 +475,9 @@ def strip_lines(points):
     return _lineset(pts, idx, col)
 
 
-def ray_lines(points, cfg):
+def ray_lines(points, cam):
     """Camera ray to each landmark: shows where the back-projection came from."""
-    o, d = unproject_rays(project(points, cfg), cfg)
+    o, d = cam.rays(cam.project(points))
     pts, idx = [], []
     for i, p in enumerate(points):
         if not np.all(np.isfinite(p)):
@@ -544,7 +607,9 @@ def load_subject(cfg):
 
 
 def label_two_pass(mesh, front, up, cfg, pipe, centre=None):
-    """Face-on landmarks in 3D. Returns (mesh in the pinna frame, P3, hit, conf).
+    """Face-on landmarks in 3D.
+
+    Returns (mesh in the pinna frame, image, Camera, landmarks, P3, hit, conf).
 
     PASS 1 uses the detector's axis-aligned view direction purely to get a usable
     face-on render, and back-projects its landmarks.
@@ -564,13 +629,13 @@ def label_two_pass(mesh, front, up, cfg, pipe, centre=None):
     # ear near the frame edge, where the ROI has least room to grow.
     C1 = V.mean(0) if centre is None else np.asarray(centre, float)
     g = in_frame(mesh, R, C1, 1.0)
-    img, lm, conf = landmark_whole_frame(g, cfg, pipe)
+    img, cam1, lm, conf = landmark_whole_frame(g, cfg, pipe)
     if lm is None:
         sys.exit("pass 1: the pipeline found no ear in the face-on render.\n"
                  "  With the MediaPipe frame the SIDE is chosen deterministically, so a\n"
                  "  head whose other ear is easier will still fail here. Try --ear 1,\n"
                  "  or --no-mediapipe to let the detector sweep pick whichever it likes.")
-    P1, hit1 = raycast(g, lm, cfg)
+    P1, hit1 = raycast(g, lm, cam1)
     print(f"pass 1: detector conf {conf:.3f}, {int(hit1.sum())}/55 rays hit")
     if hit1.sum() < 10:
         sys.exit("pass 1: too few rays hit to fit a pinna plane")
@@ -587,12 +652,12 @@ def label_two_pass(mesh, front, up, cfg, pipe, centre=None):
     print(f"pinna plane is {tilt:.1f} deg off the detector's view direction")
 
     g2 = in_frame(mesh, R2, C2, scale)
-    img2, lm2, conf2 = landmark_whole_frame(g2, cfg, pipe)
+    img2, cam2, lm2, conf2 = landmark_whole_frame(g2, cfg, pipe)
     if lm2 is None:
         sys.exit("pass 2: the pipeline found no ear in the pinna-frame render")
-    P3, hit = raycast(g2, lm2, cfg)
+    P3, hit = raycast(g2, lm2, cam2)
     print(f"pass 2: detector conf {conf2:.3f}, {int(hit.sum())}/55 rays hit")
-    return g2, img2, lm2, P3, hit, conf2
+    return g2, img2, cam2, lm2, P3, hit, conf2
 
 
 def main():
@@ -636,7 +701,7 @@ def main():
     print(f"landmarker {ck.name}")
 
     mesh, front, up, centre = load_subject(cfg)
-    g, img, lm, P3, hit, conf = label_two_pass(mesh, front, up, cfg, pipe, centre)
+    g, img, cam, lm, P3, hit, conf = label_two_pass(mesh, front, up, cfg, pipe, centre)
     V = np.asarray(g.vertices)
 
     # A missed ray has no 3D position at all. Park it on the mesh centroid so the
@@ -666,14 +731,12 @@ def main():
                for k in range(len(P3))]
     geoms = [g, spheres(P3, cfg["sphere_frac"], colours), strip_lines(P3)]
     if cfg["show_rays"]:
-        geoms.append(ray_lines(P3, cfg))
+        geoms.append(ray_lines(P3, cam))
 
     if not cfg["interactive"]:
         return
-    print("\norbit to about 60 deg to check depth. Q or Escape to close.")
-    o3d.visualization.draw_geometries(
-        geoms, window_name="back-projected ear landmarks",
-        width=1100, height=900, mesh_show_back_face=True)
+    print("\norbit to about 60 deg to check depth. Close the window to exit.")
+    show(geoms, cfg)
 
 
 if __name__ == "__main__":
