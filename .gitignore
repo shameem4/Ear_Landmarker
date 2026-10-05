@@ -33,3 +33,8 @@
 *.ply
 *.stl
 *.zip
+
+# Renders of third-party head meshes (HUTUBS / AudioEar3D) -- derived works of
+# research data we deliberately do not redistribute. Rebuild with
+# scripts/ingest_render3d.py; the source meshes live in ../clean_3d_data.
+/data/render3d/
