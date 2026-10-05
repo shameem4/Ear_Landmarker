@@ -231,6 +231,26 @@ class Camera:
         return np.stack([self.fx * Pc[:, 0] / z + self.cx,
                          self.fy * Pc[:, 1] / z + self.cy], axis=1)
 
+    @classmethod
+    def from_gui(cls, scene_camera, img_hw):
+        """Camera for a capture taken from inside the GUI window.
+
+        Intrinsics come from the live projection matrix rather than from
+        camera_ke, because the widget can be resized and its aspect is whatever
+        the window is. Verified against camera_ke on a square window: fx 257.34
+        against 257.3, cx/cy 119.5 against size/2 - 0.5.
+        """
+        P = np.asarray(scene_camera.get_projection_matrix(), float)
+        h, w = img_hw
+        obj = cls.__new__(cls)
+        obj.fx, obj.fy = P[0, 0] * w / 2.0, P[1, 1] * h / 2.0
+        obj.cx, obj.cy = w * (1 - P[0, 2]) / 2.0, h * (1 + P[1, 2]) / 2.0
+        obj.scaled, obj.w, obj.h = False, w, h
+        E = extrinsic_of(scene_camera)
+        obj.R, obj.t = E[:3, :3], E[:3, 3]
+        obj.centre = -obj.R.T @ obj.t
+        return obj
+
     def rays(self, uv):
         """Pixel -> (origin, unit direction). Exact inverse of project()."""
         uv = np.atleast_2d(np.asarray(uv, float))
@@ -265,6 +285,29 @@ def render(mesh, cfg, size=None, background=(0.5, 0.5, 0.5), E=None):
     depth = np.asarray(r.render_to_depth_image(z_in_view_space=True))
     del r
     return img, depth, Camera(K, E, img.shape[:2], size)
+
+
+def gui_depth_to_view(depth, scene_camera):
+    """The GUI's normalised depth buffer -> view-space distance, background inf.
+
+    The window's own capture has no z_in_view_space flag, and its projection has
+    an INFINITE far plane: P[2,2] is -1 and P[2,3] is -2*near, so the buffer
+    holds d = 1 + near/z_e with z_e negative in front of the camera, and the
+    distance is near / (1 - d). Measured against a sphere whose apex is exactly
+    2.5 away: 2.5011, matching what the offscreen renderer reports in view space.
+
+    The projection form is asserted rather than assumed -- if Open3D ever ships a
+    finite far plane or reverse-Z, this must fail loudly instead of returning
+    quietly wrong depths.
+    """
+    P = np.asarray(scene_camera.get_projection_matrix(), float)
+    if not (abs(P[2, 2] + 1.0) < 1e-3 and P[2, 3] < 0):
+        raise RuntimeError(f"unexpected projection; cannot linearise depth:\n{P}")
+    near = -P[2, 3] / 2.0
+    d = np.asarray(depth, float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        z = near / (1.0 - d)
+    return np.where(d >= 1.0, np.inf, z)
 
 
 def backproject(depth, uv, cam, max_jump=0.02):
@@ -329,7 +372,7 @@ LINE_MATERIAL.line_width = 2.0
 
 
 def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
-         title="back-projected ear landmarks"):
+         title="back-projected ear landmarks", on_tick=None):
     """Interactive window -- SAME renderer and SAME camera as the snapshot.
 
     Built from gui.Window rather than O3DVisualizer because that class exposes
@@ -377,7 +420,8 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
         panel.frame = gui.Rect(rect.x, rect.y, min(rect.width, 420), pref.height)
     win.set_on_layout(on_layout)
 
-    state = {"drawn": [], "text": None, "note": "face-on, as labelled"}
+    state = {"drawn": [], "text": None, "busy": False,
+             "note": "face-on, as labelled"}
 
     def draw_landmarks(P3, hit):
         for n in state["drawn"]:
@@ -394,20 +438,18 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
 
     draw_landmarks(P3, hit)
 
-    def relandmark():
-        E = extrinsic_of(widget.scene.camera)
-        # Remove the landmarks BEFORE rendering: they are scene geometry, so a
-        # render with them still in it would feed the landmarker a picture of an
-        # ear with 55 spheres stuck to it.
-        for n in state["drawn"]:
-            widget.scene.remove_geometry(n)
-        state["drawn"] = []
-        img, depth, cam = render(mesh, cfg, E=E)
+    def finish(colour, raw_depth):
+        """Landmark the captured frame and redraw. Runs on the main thread."""
+        img = np.asarray(colour)[:, :, :3].copy()
+        cam = Camera.from_gui(widget.scene.camera, img.shape[:2])
+        depth = gui_depth_to_view(np.asarray(raw_depth), widget.scene.camera)
+        yaw, pitch, off = pose_angles(extrinsic_of(widget.scene.camera))
         res = pipe(img, timestamp=0.0)
-        yaw, pitch, off = pose_angles(E)
         if not res:
             state["note"] = f"no ear found at yaw {yaw:+.0f} pitch {pitch:+.0f}"
-            draw_landmarks(P3, hit)                 # put the old ones back
+            draw_landmarks(P3, hit)                 # put the previous ones back
+            state["busy"] = False
+            print(f"  [L] {state['note']}", flush=True)
             return
         best = max(res, key=lambda d: float(d["confidence"]))
         lm = np.asarray(best["landmarks"], float)
@@ -415,20 +457,72 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
         draw_landmarks(Q, qhit)
         state["note"] = (f"re-landmarked at yaw {yaw:+.0f} pitch {pitch:+.0f}: "
                          f"det {float(best['confidence']):.2f}, {int(qhit.sum())}/55 hit")
+        state["busy"] = False
         print(f"  [L] {state['note']}", flush=True)
         if cfg["snapshot_png"]:
             Image.fromarray(img).save(cfg["snapshot_png"])
         if cfg["overlay_png"]:
             write_overlay(Image.fromarray(img), lm, cfg["overlay_png"])
 
+    def relandmark():
+        """Capture THIS window, through the window's own renderer.
+
+        It must not open an OffscreenRenderer: that is a second Filament context,
+        and creating one while the GUI holds the first fails at the driver
+        ("failed to create dri2 screen") and takes the process down. The window's
+        own scene.render_to_image / render_to_depth_image reuse the live context.
+
+        Both are asynchronous, so the colour capture chains into the depth
+        capture, and the work happens once both have arrived. The landmarks are
+        removed BEFORE capturing -- they are scene geometry, and a frame with
+        them in it would show the landmarker an ear with 55 spheres stuck to it.
+        """
+        if state["busy"]:
+            return
+        state["busy"] = True
+        for n in state["drawn"]:
+            widget.scene.remove_geometry(n)
+        state["drawn"] = []
+
+        # Both captures call back from the RENDER thread. Touching the scene
+        # from there corrupts the interpreter state outright ("gilstate_tss_set:
+        # failed to set current tstate"), so each step hops back to the main
+        # thread before doing anything.
+        app = gui.Application.instance
+
+        def got_depth(colour, d):
+            app.post_to_main_thread(win, lambda: finish(colour, d))
+
+        def ask_depth(c):
+            widget.scene.scene.render_to_depth_image(lambda d: got_depth(c, d))
+
+        def got_colour(c):
+            app.post_to_main_thread(win, lambda: ask_depth(c))
+
+        widget.scene.scene.render_to_image(got_colour)
+
     def on_key(e):
+        # gui.Window.set_on_key wants a BOOL -- True to stop dispatching. It is
+        # gui.Widget.set_on_key_event that takes an EventCallbackResult, and
+        # returning one here is not a type error at registration: it crashes
+        # inside app.run() the first time any key is pressed.
         if e.type == gui.KeyEvent.Type.DOWN and e.key == gui.KeyName.L:
             relandmark()
-            return gui.Widget.EventCallbackResult.HANDLED
-        return gui.Widget.EventCallbackResult.IGNORED
+            return True
+        return False
     win.set_on_key(on_key)
 
-    def on_tick():
+    # `on_tick` exists so the L path can be driven without a human at the
+    # keyboard: it is handed the same handles the key binding uses. GUI code that
+    # cannot be exercised automatically is how the first version of this shipped
+    # broken. It is None in normal use.
+    if on_tick is not None:
+        state["hook"] = on_tick
+
+    def tick():
+        if "hook" in state:
+            state["hook"](dict(relandmark=relandmark, state=state, win=win,
+                               widget=widget, app=gui.Application.instance))
         yaw, pitch, off = pose_angles(extrinsic_of(widget.scene.camera))
         text = (f"yaw {yaw:+6.1f}\u00b0   pitch {pitch:+6.1f}\u00b0   "
                 f"off-axis {off:5.1f}\u00b0\n{state['note']}\n"
@@ -438,7 +532,7 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
         state["text"] = text
         info.text = text
         return True
-    win.set_on_tick_event(on_tick)
+    win.set_on_tick_event(tick)
 
     app.run()
 
