@@ -171,6 +171,12 @@ def main() -> None:
                 if vf is not None:
                     out["visfrac"][axis][a].append(vf)
         print(f"  [{n+1}/{len(mem)}] {m}", flush=True)
+        # Checkpoint every ear. Poisson plus a raycasting scene per mesh is
+        # memory-hungry, and an earlier run was killed at 24 of 28 having written
+        # nothing at all; partial results are worth keeping.
+        if args.out:
+            pickle.dump({"out": out, "yaws": YAWS, "pitches": PITCHES, "n": ok},
+                        open(args.out, "wb"))
 
     print(f"\n{ok} ears. Drift normalised by crop side; 0 deg must be ~0 by construction.\n")
     for axis, angles in (("yaw", YAWS), ("pitch", PITCHES)):

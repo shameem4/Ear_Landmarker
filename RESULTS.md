@@ -447,7 +447,10 @@ readings fit -- the model saturates, or the warp stops resembling a head turn.
 Rendering real ear meshes (`scripts/render3d_ears.py`, AudioEar3D) separates them.
 
 **The warp is a poor match to a real rotation at every angle**, not just past 65
-(`scripts/eval_homography_fidelity.py`, 12 ears). There is no cliff:
+(`scripts/eval_homography_fidelity.py`, 12 ears). There is no cliff. NOTE: these
+numbers predate the reconstruction fix below; both sides of each comparison come
+from the same mesh so the NCC column largely cancels the defect, but the
+silhouette IoU column is contaminated and has not been re-measured:
 
 | yaw | NCC(true 3D, homography) | silhouette IoU |
 |-----|--------------------------|----------------|
@@ -458,26 +461,37 @@ Rendering real ear meshes (`scripts/render3d_ears.py`, AudioEar3D) separates the
 | 65  | 0.146 | 0.440 |
 | 80  | -0.086 | 0.231 |
 
-**And it buys pitch robustness, not yaw** (`scripts/eval_pose_consistency.py`,
-28 ears, drift vs each model's own pose-zero landmarks lifted to 3D):
+**And it buys nothing measurable on either axis**
+(`scripts/eval_pose_consistency.py`, 28 ears, drift vs each model's own pose-zero
+landmarks lifted to 3D):
 
 | comparison, abs(angle)>=20 | yaw | pitch |
 |----------------------------|-----|-------|
-| v6_persp65 vs v2_heatmap | -3.2% (t=-0.99, ns) | **-18.0%** (t=-4.00) |
-| manual_occ_s42 vs v2_heatmap | **+40.2%** (t=+10.36) | -7.8% (t=-1.74, ns) |
+| v6_persp65 vs v2_heatmap | +6.2% (t=+2.53) | -3.0% (t=-0.90, ns) |
+| manual_occ_s42 vs v2_heatmap | **+35.2%** (t=+9.67) | +3.3% (t=+0.72, ns) |
 
-Those two agree mechanically: yaw is where the helix rim rotates across the
-concha, which a planar warp cannot represent; pitch mostly foreshortens without
-one structure hiding another, which it can. So the earlier "-36% contour error at
-50 deg yaw" says the model learned to handle the WARP -- under a real head turn
-that benefit is not measurable.
+Perspective augmentation shows no pitch benefit and is slightly WORSE on yaw. So
+the earlier "-36% contour error at 50 deg yaw" says the model learned to handle
+the WARP; under a real head turn no benefit is measurable on either axis. That
+sits consistently with the fidelity table above -- the warp is a poor match to a
+rotation at every angle, so there is little reason to expect transfer.
 
-The shipped model drifting 40% more under yaw is the one result arguing against
-it. Treat it as unresolved rather than as a defect: this metric scores each model
-against its own pose-zero output, so sharper landmarks are a harder reference to
-re-hit, and the ground-truth-free photo comparison found manual_occ placing
-contours better. Separating precision from fragility needs annotated ground
-truth.
+CORRECTION. An earlier version of this section reported the pitch comparison as
+**-18.0% (t=-4.00)** and explained it mechanically: the homography helps where
+self-occlusion is absent (pitch) and cannot help where it dominates (yaw). That
+was measured on meshes whose reconstruction left holes, where only 67% of
+landmark rays hit the surface -- so a third of each contour was dropped, selected
+by where reconstruction failed rather than by anything about pose. On corrected
+meshes (96% hit rate) the pitch benefit is -3.0% and not significant. The
+mechanism story was clean, plausible and an artifact. The yaw conclusion and the
+NCC fidelity measurement both survived.
+
+The shipped model drifting ~35% more under yaw DID survive the fix (+40.2% before,
++35.2% after), and is the one result arguing against it. Treat it as unresolved
+rather than as a defect: this metric scores each model against its own pose-zero
+output, so sharper landmarks are a harder reference to re-hit, and the
+ground-truth-free photo comparison found manual_occ placing contours better.
+Separating precision from fragility needs annotated ground truth.
 
 ### Two measurement routes that failed, so nobody repeats them
 
