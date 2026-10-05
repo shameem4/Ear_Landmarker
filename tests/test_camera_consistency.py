@@ -59,12 +59,12 @@ def _centroids(img):
 
 @pytest.fixture(scope="module")
 def rendered():
-    return vbp.render(_marker_mesh(), CFG)
+    return vbp.render(_marker_mesh(), CFG)        # (image, depth, Camera)
 
 
 def test_projection_matches_where_the_renderer_actually_drew(rendered):
     """Project() must land on the pixels the renderer put the markers at."""
-    img, cam = rendered
+    img, _, cam = rendered
     found = _centroids(img)
     assert len(found) == len(TARGETS), f"saw {len(found)} markers, expected {len(TARGETS)}"
     for p in cam.project(TARGETS):
@@ -72,8 +72,8 @@ def test_projection_matches_where_the_renderer_actually_drew(rendered):
 
 
 def test_rays_invert_projection_exactly(rendered):
-    """Back-projection is the exact inverse of projection, not an approximation."""
-    _, cam = rendered
+    """rays() is the exact inverse of projection, not an approximation."""
+    _, _, cam = rendered
     rng = np.random.default_rng(0)
     P = rng.uniform(-0.8, 0.8, (500, 3))
     o, d = cam.rays(cam.project(P))
@@ -82,16 +82,67 @@ def test_rays_invert_projection_exactly(rendered):
     assert perp.max() < 1e-9
 
 
-def test_raycast_returns_the_surface_the_camera_sees(rendered):
-    """A ray cast at a marker's own pixel must land back on that marker."""
-    _, cam = rendered
-    mesh = _marker_mesh()
-    P, hit = vbp.raycast(mesh, cam.project(TARGETS), cam)
-    assert hit.all(), f"only {hit.sum()} of {len(TARGETS)} rays hit"
-    # The hit is on the sphere's front face, so it sits one radius toward
-    # the camera from the centre -- never off to one side.
-    err = np.linalg.norm(P - TARGETS, axis=1)
-    assert err.max() < 0.06
+def test_backprojection_returns_the_surface_the_camera_sees(rendered):
+    """Back-projecting a marker's own pixel must land back on that marker."""
+    _, depth, cam = rendered
+    P, hit = vbp.backproject(depth, cam.project(TARGETS), cam)
+    assert hit.all(), f"only {hit.sum()} of {len(TARGETS)} points hit"
+    # The surface is the sphere's front face, one radius toward the camera from
+    # the centre -- never off to one side.
+    assert np.linalg.norm(P - TARGETS, axis=1).max() < 0.06
+
+
+def test_depth_backprojection_agrees_with_an_independent_raycast(rendered):
+    """Cross-check the depth buffer against ray-casting the same mesh.
+
+    The script deliberately has only ONE geometry path -- the depth buffer that
+    produced the pixels. This test builds the second path that used to be in the
+    script and asserts they agree, so the cheap, structurally-safe method is
+    pinned against the independent one without shipping it.
+    """
+    _, depth, cam = rendered
+    uv = cam.project(TARGETS)
+    P_depth, hit_d = vbp.backproject(depth, uv, cam)
+
+    t = o3d.t.geometry.TriangleMesh.from_legacy(_marker_mesh())
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(t)
+    o, d = cam.rays(uv)
+    ans = scene.cast_rays(o3d.core.Tensor(np.hstack([o, d]).astype(np.float32)))
+    dist = ans["t_hit"].numpy()
+    hit_r = np.isfinite(dist)
+    P_ray = o + d * dist[:, None]
+
+    assert (hit_d == hit_r).all()
+    both = hit_d & hit_r
+    assert np.linalg.norm(P_depth[both] - P_ray[both], axis=1).max() < 0.01
+
+
+def test_background_is_a_miss_not_an_invented_point(rendered):
+    """Empty background must report no hit rather than a filled-in depth."""
+    _, depth, cam = rendered
+    corners = np.array([[2.0, 2.0], [CFG["size"] - 3.0, 2.0]])
+    _, hit = vbp.backproject(depth, corners, cam)
+    assert not hit.any()
+
+
+def test_silhouette_is_not_blended_into_empty_space():
+    """Sampling across a depth edge must not return a point between surfaces.
+
+    Bilinear interpolation across a silhouette averages a near surface with a far
+    one and lands in the gap. The guard takes the nearest sample instead.
+    """
+    cam = vbp.Camera(*vbp.camera_ke(SIZE, CFG), (SIZE, SIZE), SIZE)
+    near, far = 2.0, 2.9
+    depth = np.full((SIZE, SIZE), far, dtype=np.float32)
+    depth[:, : SIZE // 2] = near                       # a hard vertical edge
+    # sample exactly on the edge, where a blend would give (near + far) / 2
+    uv = np.array([[SIZE // 2 - 0.5, SIZE // 2]])
+    P, hit = vbp.backproject(depth, uv, cam)
+    assert hit.all()
+    z = cam.R @ (P[0] - cam.centre)
+    assert min(abs(z[2] - near), abs(z[2] - far)) < 1e-3, (
+        f"blended to {z[2]:.3f}, between {near} and {far}")
 
 
 def test_camera_rescales_when_the_render_is_not_the_requested_size():
@@ -109,6 +160,8 @@ def test_there_is_only_one_camera_definition():
     """Nothing may build a camera except camera_ke()."""
     src = (ROOT / "scripts" / "view_backprojection.py").read_text()
     assert src.count("def camera_ke") == 1
+    # and only one geometry path: no ray-casting scene in the script
+    assert "RaycastingScene" not in src
     # setup_camera is the renderer handshake; both call sites must pass K/E from
     # camera_ke, never a field-of-view/eye/up form that re-derives the camera.
     for line in src.splitlines():

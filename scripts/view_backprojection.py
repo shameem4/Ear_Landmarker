@@ -219,10 +219,11 @@ def light_scene(scene, background):
 
 
 def render(mesh, cfg, size=None, background=(0.5, 0.5, 0.5)):
-    """Render, and return the camera that produced it.
+    """Render, and return the depth buffer and camera that produced it.
 
-    Returns (image HxWx3 uint8, Camera). Callers must use the returned Camera for
-    anything they project or back-project.
+    Returns (image HxWx3 uint8, depth float32 HxW, Camera). The depth is
+    view-space z, with inf where nothing was drawn. Callers back-project through
+    THIS depth and THIS camera; see backproject().
     """
     size = size or cfg["size"]
     r = o3d.visualization.rendering.OffscreenRenderer(size, size)
@@ -231,21 +232,64 @@ def render(mesh, cfg, size=None, background=(0.5, 0.5, 0.5)):
     K, E = camera_ke(size, cfg)
     r.setup_camera(K, E, size, size)
     img = np.asarray(r.render_to_image())[:, :, :3]
+    depth = np.asarray(r.render_to_depth_image(z_in_view_space=True))
     del r
-    return img, Camera(K, E, img.shape[:2], size)
+    return img, depth, Camera(K, E, img.shape[:2], size)
 
 
-def raycast(mesh, uv, cam):
-    """Exact 2D -> 3D through the render's own camera. Misses are NaN."""
-    t = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
-    scene = o3d.t.geometry.RaycastingScene()
-    scene.add_triangles(t)
-    o, d = cam.rays(np.asarray(uv, float))
-    ans = scene.cast_rays(o3d.core.Tensor(np.hstack([o, d]).astype(np.float32)))
-    dist = ans["t_hit"].numpy()
-    hit = np.isfinite(dist)
-    P = np.full((len(o), 3), np.nan)
-    P[hit] = o[hit] + d[hit] * dist[hit, None]
+def backproject(depth, uv, cam, max_jump=0.02):
+    """2D -> 3D from the DEPTH BUFFER of the same render. Returns (P, hit).
+
+    WHY NOT RAY-CAST. Ray-casting means building a second acceleration structure
+    over the mesh and intersecting it, which is a second geometry path: it agrees
+    with the picture because it is the same mesh seen through the same camera, but
+    nothing makes it agree. The depth buffer IS the rasterisation that produced
+    the pixels, so the surface found here is by construction the surface the
+    landmarker was looking at. It is also free, where the ray-cast was not.
+
+    Precision: the buffer is float32 view-space z, so unlike the 8-bit depth
+    round-trip the reference implementation uses to enable inpainting, nothing is
+    quantised. Background reads as inf and is reported as a miss rather than
+    filled in -- an inpainted depth would invent geometry and hand back a
+    plausible, wrong 3D point with nothing marking it.
+
+    `max_jump` guards the one real hazard of sampling a depth buffer at
+    sub-pixel positions: bilinear interpolation ACROSS A SILHOUETTE blends a near
+    surface with a far one and returns a depth that lies in empty space between
+    them. Where the four neighbours disagree by more than this fraction, the
+    nearest sample is taken instead of a blend.
+    """
+    depth = np.asarray(depth, float)
+    h, w = depth.shape
+    uv = np.atleast_2d(np.asarray(uv, float))
+    x0 = np.clip(np.floor(uv[:, 0]).astype(int), 0, w - 2)
+    y0 = np.clip(np.floor(uv[:, 1]).astype(int), 0, h - 2)
+    fx, fy = uv[:, 0] - x0, uv[:, 1] - y0
+    q = np.stack([depth[y0, x0], depth[y0, x0 + 1],
+                  depth[y0 + 1, x0], depth[y0 + 1, x0 + 1]], axis=1)
+    wts = np.stack([(1 - fx) * (1 - fy), fx * (1 - fy),
+                    (1 - fx) * fy, fx * fy], axis=1)
+    good = np.isfinite(q)
+    hit = good.any(axis=1)
+    z = np.full(len(uv), np.nan)
+    qf = np.where(good, q, np.nan)
+    near = np.nanmin(np.where(good, q, np.inf), axis=1, initial=np.inf)
+    far = np.nanmax(np.where(good, q, -np.inf), axis=1, initial=-np.inf)
+    blend = hit & good.all(axis=1) & ((far - near) <= max_jump * np.maximum(near, 1e-9))
+    with np.errstate(invalid="ignore"):
+        z[blend] = (q[blend] * wts[blend]).sum(axis=1)
+    # Anything not safely blendable takes its nearest-neighbour sample: the
+    # closest of the four that actually has geometry.
+    rest = hit & ~blend
+    if rest.any():
+        pick = np.nanargmin(np.where(good[rest], np.abs(qf[rest] - near[rest, None]),
+                                     np.nan), axis=1)
+        z[rest] = q[rest, pick]
+    P = np.full((len(uv), 3), np.nan)
+    Pc = np.stack([(uv[hit, 0] - cam.cx) / cam.fx * z[hit],
+                   (uv[hit, 1] - cam.cy) / cam.fy * z[hit],
+                   z[hit]], axis=1)
+    P[hit] = (Pc - cam.t) @ cam.R        # camera -> world; R is orthonormal
     return P, hit
 
 
@@ -354,12 +398,12 @@ def landmark_whole_frame(mesh, cfg, pipe):
     full-frame pixels -- exactly the space the returned Camera works in, so the
     result feeds the ray-cast directly with no mapping of ours in between.
 
-    Returns (image, Camera, landmarks_px, confidence), landmarks None if no ear.
+    Returns (image, depth, Camera, landmarks_px, confidence); landmarks None if no ear.
     """
-    img, cam = render(mesh, cfg)
+    img, depth, cam = render(mesh, cfg)
     res = pipe(img, timestamp=0.0)
     if not res:
-        return img, cam, None, 0.0
+        return img, depth, cam, None, 0.0
     # Several ears can be detected on a head render; take the most confident.
     best = max(res, key=lambda d: float(d["confidence"]))
     # NOTE this is the DETECTOR's box confidence, which is what the pipeline
@@ -367,7 +411,7 @@ def landmark_whole_frame(mesh, cfg, pipe):
     # compared against it -- the pipeline does not expose that, because it owns
     # the crop. Reach into pipe.landmarker.predict(..., with_confidence=True) if
     # you need the per-point values back.
-    return img, cam, np.asarray(best["landmarks"], float), float(best["confidence"])
+    return img, depth, cam, np.asarray(best["landmarks"], float), float(best["confidence"])
 
 
 # MediaPipe FaceMesh canonical indices.
@@ -421,7 +465,7 @@ def head_pose(mesh, cfg):
             if R is None:
                 continue
             g = in_frame(mesh, R, C0, 1.0)
-            img, cam = render(g, cfg)
+            img, depth, cam = render(g, cfg)
             res = fl.detect(mp.Image(image_format=mp.ImageFormat.SRGB,
                                      data=np.ascontiguousarray(img)))
             if not res.face_landmarks:
@@ -430,7 +474,7 @@ def head_pose(mesh, cfg):
             # image's own shape, never by the size we requested.
             h, w = img.shape[:2]
             uv = np.array([[p.x * w, p.y * h] for p in res.face_landmarks[0]])
-            P, hit = raycast(g, uv, cam)
+            P, hit = backproject(depth, uv, cam)
             if not hit[[TRAGION_R, TRAGION_L, FOREHEAD, CHIN]].all():
                 continue
             # The landmarks come back in THIS frame's coordinates; everything
@@ -629,13 +673,13 @@ def label_two_pass(mesh, front, up, cfg, pipe, centre=None):
     # ear near the frame edge, where the ROI has least room to grow.
     C1 = V.mean(0) if centre is None else np.asarray(centre, float)
     g = in_frame(mesh, R, C1, 1.0)
-    img, cam1, lm, conf = landmark_whole_frame(g, cfg, pipe)
+    img, depth1, cam1, lm, conf = landmark_whole_frame(g, cfg, pipe)
     if lm is None:
         sys.exit("pass 1: the pipeline found no ear in the face-on render.\n"
                  "  With the MediaPipe frame the SIDE is chosen deterministically, so a\n"
                  "  head whose other ear is easier will still fail here. Try --ear 1,\n"
                  "  or --no-mediapipe to let the detector sweep pick whichever it likes.")
-    P1, hit1 = raycast(g, lm, cam1)
+    P1, hit1 = backproject(depth1, lm, cam1)
     print(f"pass 1: detector conf {conf:.3f}, {int(hit1.sum())}/55 rays hit")
     if hit1.sum() < 10:
         sys.exit("pass 1: too few rays hit to fit a pinna plane")
@@ -652,10 +696,10 @@ def label_two_pass(mesh, front, up, cfg, pipe, centre=None):
     print(f"pinna plane is {tilt:.1f} deg off the detector's view direction")
 
     g2 = in_frame(mesh, R2, C2, scale)
-    img2, cam2, lm2, conf2 = landmark_whole_frame(g2, cfg, pipe)
+    img2, depth2, cam2, lm2, conf2 = landmark_whole_frame(g2, cfg, pipe)
     if lm2 is None:
         sys.exit("pass 2: the pipeline found no ear in the pinna-frame render")
-    P3, hit = raycast(g2, lm2, cam2)
+    P3, hit = backproject(depth2, lm2, cam2)
     print(f"pass 2: detector conf {conf2:.3f}, {int(hit.sum())}/55 rays hit")
     return g2, img2, cam2, lm2, P3, hit, conf2
 
