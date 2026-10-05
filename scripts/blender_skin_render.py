@@ -153,6 +153,27 @@ def main():
     # Key light offset from the camera so the ear's relief casts readable shadow,
     # plus a soft fill: a single frontal light flattens exactly the structure the
     # landmarker needs.
+    if args.get("key_type", "AREA").upper() == "SUN":
+        # Directional light, matching the Open3D viewer's set_sun_light. MEASURED
+        # WARNING: in Open3D that sun is not what makes the clay render crisp --
+        # turning it OFF there RAISES relief (0.01299 against 0.01212) and raising
+        # it 10x nearly halves it, because the look comes from Filament's default
+        # image-based lighting, not the sun. Offered for comparison, not as a
+        # default. `key_direction` is the direction light TRAVELS, in Blender axes.
+        from mathutils import Vector
+        sun = bpy.data.lights.new("key", type="SUN")
+        sun.energy = args.get("key_energy", 3.0)
+        sun.angle = math.radians(args.get("sun_angle_deg", 1.0))
+        so = bpy.data.objects.new("key", sun)
+        d = Vector(args.get("key_direction", [0.0, 0.0, -1.0])).normalized()
+        so.rotation_mode = "QUATERNION"
+        so.rotation_quaternion = d.to_track_quat("-Z", "Y")
+        scene.collection.objects.link(so)
+        scene.render.filepath = args["out"]
+        scene.render.image_settings.file_format = "PNG"
+        bpy.ops.render.render(write_still=True)
+        return
+
     key = bpy.data.lights.new("key", type="AREA")
     key.energy = args.get("key_energy", 60.0)
     # Light SIZE sets shadow softness, and at the default 1.2 the source is wider

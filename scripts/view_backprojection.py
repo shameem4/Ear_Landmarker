@@ -94,6 +94,8 @@ CONFIG = dict(
     key_azimuth=20.0,       # NEGATIVE swings the key toward the front of the
                             # face, positive behind the head.
     key_elevation=30.0,
+    key_type="AREA",        # "SUN" uses a directional light with the Open3D
+                            # viewer's own direction instead. See render_blender.
     key_size=0.5,           # key light width, as a fraction of camera distance.
                             # NOT part of the original sweep. The script's own
                             # default of 1.2 makes the source wider than the head,
@@ -101,7 +103,14 @@ CONFIG = dict(
                             # Shrinking it raises in-ear contrast (sd 9.7 -> 10.4)
                             # and confidence (+0.004); 0.2 is no better than 0.5.
                             # Much the smaller effect: azimuth is worth +0.030.
-    key_energy=5.0,         # as swept, AT light_ref_dist. See below.
+    key_energy=20.0,        # at light_ref_dist; scaled by the inverse square below.
+                            # RESULTS.md's 5 W optimum was swept at ambient 0.35
+                            # with the broken camera. Re-swept at ambient 0.06,
+                            # relief peaks at 20 W (0.01727, 143% of the clay
+                            # render) with mean brightness 99 against 5 W's 56 --
+                            # brighter AND crisper. Past that the highlights blow
+                            # out and relief falls back: 60 W 0.01411, 150 W
+                            # 0.01079. Detection is 0.94 and 55/55 throughout.
     fill_energy=1.5,
     ambient=0.06,           # world light, and the ONE setting that governs whether
                             # the ear reads as a surface or a flat blob. It lights
@@ -259,7 +268,10 @@ def render_blender(mesh, cfg, size=None):
                     ambient=float(cfg["ambient"]), denoise=bool(cfg["denoise"]),
                     sss=float(cfg["sss"]), sss_scale=float(cfg["sss_scale"]),
                     freckles=float(cfg["freckles"]),
-                    key_size=float(cfg["key_size"]),
+                    key_type=cfg["key_type"], key_size=float(cfg["key_size"]),
+                    # Open3D's sun travels (-0.3, -0.4, -0.9) in OUR axes, so it
+                    # has to go through the same basis change as the mesh.
+                    key_direction=list(np.array([-0.3, -0.4, -0.9]) @ TO_BLENDER.T),
                     key_azimuth=float(cfg["key_azimuth"]),
                     key_elevation=float(cfg["key_elevation"]))
         ap = os.path.join(td, "a.json")
@@ -610,6 +622,7 @@ def main():
     p.add_argument("--key-azimuth", type=float, default=None, help="key light, degrees")
     p.add_argument("--key-energy", type=float, default=None, help="key light W, pre-falloff")
     p.add_argument("--key-size", type=float, default=None, help="key light width / distance")
+    p.add_argument("--key-type", choices=["AREA", "SUN"], default=None)
     p.add_argument("--samples", type=int, default=None, help="Cycles samples")
     p.add_argument("--no-2d", action="store_true", help="skip the 2D overlay window")
     p.add_argument("--no-window", action="store_true", help="stats and PNG only")
@@ -621,7 +634,8 @@ def main():
     for k, v in (("ear", a.ear), ("run", a.run), ("device", a.device),
                  ("renderer", a.renderer), ("tone", a.tone),
                  ("key_azimuth", a.key_azimuth), ("samples", a.samples),
-                 ("key_energy", a.key_energy), ("key_size", a.key_size)):
+                 ("key_energy", a.key_energy), ("key_size", a.key_size),
+                 ("key_type", a.key_type)):
         if v is not None:
             cfg[k] = v
     cfg["show_rays"] |= a.rays

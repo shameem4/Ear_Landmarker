@@ -112,7 +112,11 @@ TO_BLENDER = np.array([[-1.0, 0.0, 0.0],
 # swept with dist=2.2. The camera must be at EYE_Z for project() to be correct,
 # so the energy is scaled by the inverse square to keep the swept lighting.
 LIGHT_REF_DIST = 2.2
-KEY_W, FILL_W = 5.0, 1.5
+# Re-swept at AMBIENT 0.06: relief peaks at 20 W (143% of an Open3D clay render)
+# with mean brightness 99 against 5 W's 56, so brighter and crisper at once. Past
+# that the highlights blow out and relief falls back (60 W, 150 W both worse).
+# RESULTS.md's 5 W figure was swept at ambient 0.35 with the broken camera.
+KEY_W, FILL_W = 20.0, 6.0
 
 # World light. The single setting that decides whether the ear reads as a surface
 # or a flat blob: it lights from every direction at once, so it fills exactly the
