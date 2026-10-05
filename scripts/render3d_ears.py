@@ -37,6 +37,7 @@ import zipfile
 import numpy as np
 import open3d as o3d
 from pathlib import Path
+from scipy.spatial import cKDTree
 
 EYE_Z = 3.0
 VFOV = 50.0
@@ -98,14 +99,37 @@ def render(mesh, yaw_deg: float = 0.0, pitch_deg: float = 0.0, size: int = 500,
     return img
 
 
-def load_ear(member: str, zip_path: str = AUDIOEAR3D, depth: int = 9, keep: float = 0.6):
+def load_ear(member: str, zip_path: str = AUDIOEAR3D, depth: int = 9,
+             max_dist: float = 12.0):
     """One AudioEar3D ear, Poisson-reconstructed into a canonically oriented mesh.
 
     Canonical frame: the ear's smallest principal extent is its surface normal, so
     that axis goes to +Z (toward the camera) and the largest to +Y. Pose zero is
     then "facing the ear" for every subject, independent of how the scan was
-    stored. `keep` drops the lowest-density Poisson vertices, which are the
-    invented surface that closes a single-sided scan.
+    stored.
+
+    Poisson is used despite inventing surface: ball pivoting, which only connects
+    points that exist and so needs no culling at all, fragments badly on these
+    scans (110k triangles with large holes, against Poisson's 297k clean ones).
+
+    WHAT max_dist IS FOR, and why it should be LOOSE. Poisson always returns a
+    watertight surface, but these are single-sided scans, so it invents a back
+    and -- the part that actually shows -- flat sheets spilling into empty space
+    where nothing constrains it. The invented BACK is harmless: it sits behind
+    real surface and is occluded at every pose this is used for. Only the sheets
+    need removing, so cull only as hard as that requires.
+
+    Vertices are dropped by distance to the nearest actual scanned point, in
+    units of the cloud's mean point spacing. Those two populations separate
+    cleanly: real surface is at or under ~4x spacing (95th percentile 4.1x), the
+    sheets are at ~30x (99th percentile 30.6x). 12x sits in the empty gap.
+
+    Two earlier settings were far too aggressive and sculpted holes into real
+    anatomy -- a lowest-density quantile (keep=0.6 dropped 40% of vertices, with
+    visible gaps in lobe and tragus; still porous at 0.9), then 3.5x spacing,
+    which is BELOW the 95th percentile of genuine surface. Holes are not
+    cosmetic: a landmark ray through one misses the mesh and the point is
+    silently dropped from any pose measurement, which cost ~33% of each contour.
     """
     z = zipfile.ZipFile(zip_path)
     fd, tmp = tempfile.mkstemp(suffix=".ply")
@@ -115,11 +139,19 @@ def load_ear(member: str, zip_path: str = AUDIOEAR3D, depth: int = 9, keep: floa
         pcd = o3d.io.read_point_cloud(tmp)
     finally:
         os.unlink(tmp)
-    pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=1.0, max_nn=40))
-    pcd.orient_normals_consistent_tangent_plane(30)
-    mesh, dens = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=depth)
-    dens = np.asarray(dens)
-    mesh.remove_vertices_by_mask(dens < np.quantile(dens, 1.0 - keep))
+    # AudioEar3D's PLY files already carry scanner normals (nx, ny, nz). Use
+    # them. Re-estimating is worse -- the scanner knows its own view direction --
+    # and orient_normals_consistent_tangent_plane is order-dependent, so it made
+    # reconstruction quality vary between runs on identical input.
+    if not pcd.has_normals():
+        pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=1.0, max_nn=40))
+        pcd.orient_normals_consistent_tangent_plane(30)
+    mesh, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=depth)
+    pts = np.asarray(pcd.points)
+    tree = cKDTree(pts)
+    spacing = tree.query(pts, k=2)[0][:, 1].mean()
+    far = tree.query(np.asarray(mesh.vertices))[0] > max_dist * spacing
+    mesh.remove_vertices_by_mask(far)
     V = np.asarray(mesh.vertices)
     if len(V) == 0:
         return None

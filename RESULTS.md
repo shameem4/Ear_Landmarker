@@ -504,3 +504,71 @@ shortcut absent from real images. Using them would mean compositing onto real
 head backgrounds first, and even then they add pose diversity for 112 subjects
 rather than new subjects. The narrow target is yaw, since pitch is already
 covered.
+
+## Rendering real geometry so a photo-trained model can read it
+
+Renders are only useful here if the landmarker treats them like photographs.
+Measured by the model's own mean landmark confidence, on HUTUBS heads against
+60 real crops from data/manual:
+
+| render                              | confidence | of real |
+|-------------------------------------|------------|---------|
+| grey clay                           | 0.336      | 82%     |
+| Open3D, baked AO + reddening (`scripts/skin.py`) | 0.346 | 84% |
+| **Blender Cycles, Principled BSDF** (`scripts/blender_skin_render.py`) | **0.392** | **96%** |
+| real photographs                    | 0.410      | 100%    |
+
+Blender beats the Open3D shader by +0.0456 (t=+3.10, n=10), closing three
+quarters of the remaining gap. Real subsurface scattering and specularity are
+worth the ~100x render cost for a final measurement; Open3D is still right for
+iteration.
+
+### What actually moves it
+
+One factor at a time, 3 ears, Cycles. Those 3 ears are easier than average
+(baseline 0.426 against 0.392 over 10), so read the spreads against each other,
+not against 100%.
+
+| factor          | spread | note |
+|-----------------|--------|------|
+| **light azimuth** | **0.041** | -80deg 0.385 -> -40deg 0.426 |
+| skin tone       | 0.020  | palest 0.413, mid/deep 0.430-0.433 |
+| key energy      | 0.020  | shallow optimum at 5W |
+| subsurface      | 0.009  | 0.421 (none) -> 0.430 |
+| freckles        | 0.007  | slightly NEGATIVE: 0.426 -> 0.419 |
+| roughness       | 0.003  | flat |
+
+**Randomise lighting azimuth per render.** This is the finding that matters, and
+it is about measurement validity rather than realism: a fixed light contributes
+as much confidence variation as the whole renderer upgrade, and in a pose sweep
+it rakes across the geometry as the ear turns, confounding appearance with pose.
+
+### Lighting in the real data is not uniform either
+
+Estimating in-image light direction from the brightness centroid within the ear
+(handedness folded), over 1,200 training crops: **89% falls in a contiguous
+140-degree arc**, circular concentration R=0.715. The estimator was validated on
+renders with known azimuth -- it tracked them monotonically over 77deg of
+estimated range -- but it is compressed and carries a shape-dependent bias, so
+absolute angles do NOT compare across the render/photo domains. Randomise over a
+concentrated arc, and calibrate it by matching this estimator's output
+distribution rather than by angle arithmetic.
+
+The deployment fixtures (overhead plus monitor) sit at +173deg against training's
+-161deg -- 26deg apart, with matching brightness and contrast. The shipped model
+is being used in the lighting it was trained for.
+
+### Specular: the amount is right, the placement is wrong
+
+In 1,500 training crops the brightest 1% of ear pixels fall on the antihelix
+(36.7%), concha/tragus (35.6%) and helix rim (31.1%), and avoid the lobe (10.6%).
+Specular pixels are 0.33% of ear area; renders already produce 0.39-0.62%, so
+there is no deficit of specularity. But by region the renders put ~0% in the
+concha against 29% in reality, and 32% on the superior crus against 7%.
+
+Driving roughness from mesh curvature does not fix it and changes confidence not
+at all (0.424 at every level). The reason is that the concha is glossy because it
+is oily and wet, not because of its curvature -- being concave, curvature-driven
+gloss makes it MATTE, which is backwards. Fixing it needs an anatomy-based gloss
+mask and a small bright light; whether that is worth doing is unproven, since
+appearance effects cancel between models in any paired comparison.
