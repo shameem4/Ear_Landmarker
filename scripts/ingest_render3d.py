@@ -116,12 +116,13 @@ KEY_W, FILL_W = 5.0, 1.5
 
 # World light. The single setting that decides whether the ear reads as a surface
 # or a flat blob: it lights from every direction at once, so it fills exactly the
-# shadows that carry relief. At the old 0.35 the key is roughly an order of
-# magnitude weaker than the world and the render is a lightbox -- measured over
-# two heads, relief falls to 64% of an Open3D clay render, and the pipeline itself
-# degrades: detector confidence 0.40 and 27.5 of 55 rays hitting, against 0.91 and
-# 55/55 at 0.12. Flat renders were costing labels, not just looks.
-AMBIENT = 0.12
+# shadows that carry relief. Calibrated against 300 real crops from data/manual
+# rather than against a clay render, which is itself only 0.47x their relief.
+# As a fraction of the real median: 0.20 -> 0.39x, 0.12 -> 0.49x, 0.06 -> 0.64x.
+# At the original 0.35 the pipeline half failed to find the ear at all (detector
+# confidence 0.40, 27.5 of 55 rays), against 0.95 and 55/55 here. Flat renders
+# were costing labels, not just looks.
+AMBIENT = 0.06
 
 
 def load_head(path: str):

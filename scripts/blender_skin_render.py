@@ -100,7 +100,11 @@ def main():
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
     scene.cycles.samples = args.get("samples", 96)
-    scene.cycles.use_denoising = True
+    # Denoising is a SOFTENING FILTER. OIDN infers clean pixels from a noisy
+    # render, and at low sample counts it cannot tell fine surface relief from
+    # noise, so it smooths the antihelix and concha edges away -- the structure
+    # the landmarker reads. Off by default: pay for detail with samples instead.
+    scene.cycles.use_denoising = bool(args.get("denoise", False))
     scene.render.resolution_x = scene.render.resolution_y = args.get("size", 512)
     scene.render.film_transparent = False
 
@@ -120,6 +124,9 @@ def main():
                                             sss_scale=args.get("sss_scale", 0.012),
                                             freckles=args.get("freckles", 0.0),
                                             curvature_spec=args.get("curvature_spec", 0.0)))
+    # Shade-smooth. NOT a filter: it interpolates vertex normals across each face
+    # instead of shading it flat, which is what Open3D's compute_vertex_normals
+    # does too. Without it the render is visibly faceted. Keep.
     for p in obj.data.polygons:
         p.use_smooth = True
 

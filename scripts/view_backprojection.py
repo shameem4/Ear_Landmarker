@@ -103,17 +103,23 @@ CONFIG = dict(
                             # Much the smaller effect: azimuth is worth +0.030.
     key_energy=5.0,         # as swept, AT light_ref_dist. See below.
     fill_energy=1.5,
-    ambient=0.12,           # world light, and the ONE setting that governs whether
-                            # the ear reads as a surface or as a flat blob. It
-                            # lights from every direction at once, so it fills
-                            # exactly the shadows that make relief legible. At the
-                            # old 0.35 the key light is roughly an order of
-                            # magnitude weaker than the world, and the render is a
-                            # lightbox: measured over two heads, relief falls to
-                            # 64% of the Open3D clay render, DETECTOR confidence
-                            # drops to 0.40 and only 27.5 of 55 rays hit. At 0.12
-                            # relief is 103% of clay, confidence 0.91, 55/55 rays.
-                            # 0.06 gives 134% of clay if you want more bite.
+    ambient=0.06,           # world light, and the ONE setting that governs whether
+                            # the ear reads as a surface or a flat blob. It lights
+                            # from every direction at once, so it fills exactly the
+                            # shadows that make relief legible.
+                            # CALIBRATED AGAINST REAL PHOTOGRAPHS, not against the
+                            # clay render -- clay is itself only 0.47x the relief
+                            # of 300 real crops from data/manual, so matching it
+                            # was the wrong target. Relief as a fraction of the
+                            # real median (0.02868): 0.20 -> 0.39x, 0.12 -> 0.49x,
+                            # 0.06 -> 0.64x, 0.03 -> 0.78x. Renders stay BELOW
+                            # real at every setting, so lower is better here --
+                            # though real crops also carry hair, skin texture and
+                            # compression noise, which inflate the measure, so
+                            # 1.0x is not a target to chase. At the original 0.35
+                            # the pipeline itself half failed: detector confidence
+                            # 0.40 and 27.5 of 55 rays hitting, against 0.95 and
+                            # 55/55 here.
     sss=0.35,               # subsurface weight. NOT the cause of flatness, though
                             # it looks like it: 0.35 -> 0.0 moves relief by 0.7%
                             # (0.00569 -> 0.00565), against ambient's 63% -> 105%.
@@ -126,6 +132,10 @@ CONFIG = dict(
     # the irradiance -- ambient then dominates and the ear renders FLAT. Scaling
     # by the inverse square keeps the swept lighting, at the correct distance.
     light_ref_dist=2.2,
+    denoise=False,          # Cycles' denoiser is a softening filter: at low
+                            # sample counts it cannot separate fine relief from
+                            # noise and smooths the antihelix and concha edges
+                            # away. Raise `samples` instead.
     samples=48,             # Cycles samples. 48 is enough to landmark; raise for a
                             # cleaner picture, lower to iterate faster.
     blender="blender",      # the executable
@@ -246,7 +256,7 @@ def render_blender(mesh, cfg, size=None):
                     size=int(size), samples=int(cfg["samples"]),
                     key_energy=float(cfg["key_energy"]) * falloff,
                     fill_energy=float(cfg["fill_energy"]) * falloff,
-                    ambient=float(cfg["ambient"]),
+                    ambient=float(cfg["ambient"]), denoise=bool(cfg["denoise"]),
                     sss=float(cfg["sss"]), sss_scale=float(cfg["sss_scale"]),
                     freckles=float(cfg["freckles"]),
                     key_size=float(cfg["key_size"]),
