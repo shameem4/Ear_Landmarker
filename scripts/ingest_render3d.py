@@ -41,21 +41,17 @@ face-on accuracy. Nor does it solve the scalp problem -- a ray passing just
 outside the pinna hits the head behind it, and nothing here measures depth
 against anything that knows where the ear ends. See scripts/view_backprojection.py.
 
-Appearance choices, all measured (see RESULTS.md):
-  - lighting azimuth is RANDOMISED per render. It is the single largest factor in
-    how photo-like a render is, and a fixed light would rake across the ear as it
-    turns, confounding appearance with pose. The arc below was re-measured after
-    the camera fix; RESULTS.md's -40 deg optimum predates it and is about a
-    different axis.
-  - skin tone randomised over Fitzpatrick I-VI; second largest factor (0.020).
-  - no freckles: they COST confidence (0.426 -> 0.419).
-  - occupancy is drawn per sample from N(0.777, 0.093), matching the real
-    corpus. A constant occupancy puts 99% of the real test set outside the
-    training range -- that bug has been made once already.
+RENDERING IS OPEN3D ONLY. The Blender/Cycles path was removed: it is ~100x
+slower, and every part of the pipeline it touched -- camera basis, sensor fit,
+camera distance, light falloff -- was a separate silent way to render a different
+view than the labels described. Skin comes from scripts/skin.py instead.
+
+Occupancy is drawn per sample from N(0.777, 0.093), matching the real corpus. A
+constant occupancy puts 99% of the real test set outside the training range --
+that bug has been made once already.
 
 Usage:
-    python scripts/ingest_render3d.py --ears 150 --renderer blender
-    python scripts/ingest_render3d.py --ears 20 --renderer open3d   # fast check
+    python scripts/ingest_render3d.py --ears 150
 """
 
 from __future__ import annotations
@@ -64,11 +60,8 @@ import argparse
 import copy
 import csv
 import glob
-import json
 import os
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -79,11 +72,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from render3d_ears import EAR3D_DIR, EYE_Z, VFOV, project, render, rot  # noqa: E402
+from render3d_ears import EAR3D_DIR, VFOV, project, render, rot          # noqa: E402
 from eval_pose_consistency import crop_to_full, raycast, visible        # noqa: E402
 from eval_test import best_ckpt                                         # noqa: E402
 from inference import LandmarkPredictor                                 # noqa: E402
-from skin import SKIN_TONES, apply_skin                                 # noqa: E402
+from skin import apply_skin                                             # noqa: E402
 
 OUT = ROOT / "data" / "render3d"
 SIZE = 600
@@ -91,43 +84,6 @@ MEAN_OCC, SD_OCC = 0.777, 0.093
 OCC_CLIP = (0.55, 0.95)
 HUTUBS = EAR3D_DIR / "3D head meshes"
 SONICOM = EAR3D_DIR / "sonicom_raw_headtorso"
-
-# Key-light azimuth arc, degrees, re-measured in the corrected camera frame over
-# two heads: +20 is best (0.407 mean confidence) falling monotonically to 0.387 at
-# +80, with -40 -- RESULTS.md's figure, measured about the wrong axis -- at 0.366.
-AZIMUTH_ARC = (-10.0, 60.0)
-
-# Change of basis from this project's camera frame into the one Blender renders.
-# Blender's camera sits at +Y looking down -Y with +Z up, and bpy.ops.wm.ply_import
-# applies no axis conversion, so an untransformed mesh is rendered from a
-# different axis entirely: measured, our +Z lands UP in the image and our +X lands
-# LEFT -- a 90 deg rotation plus a mirror. This maps our (x, y, z) to Blender's
-# (-x, z, y), after which markers land within 0.5 px of where project() puts them.
-# Without it every Blender-rendered sample carried labels for a different view.
-TO_BLENDER = np.array([[-1.0, 0.0, 0.0],
-                       [0.0, 0.0, 1.0],
-                       [0.0, 1.0, 0.0]])
-
-# The Blender key light sits at dist*1.1, and the 5 W optimum in RESULTS.md was
-# swept with dist=2.2. The camera must be at EYE_Z for project() to be correct,
-# so the energy is scaled by the inverse square to keep the swept lighting.
-LIGHT_REF_DIST = 2.2
-# Re-swept at AMBIENT 0.06: relief peaks at 20 W (143% of an Open3D clay render)
-# with mean brightness 99 against 5 W's 56, so brighter and crisper at once. Past
-# that the highlights blow out and relief falls back (60 W, 150 W both worse).
-# RESULTS.md's 5 W figure was swept at ambient 0.35 with the broken camera.
-KEY_W, FILL_W = 20.0, 6.0
-
-# World light. The single setting that decides whether the ear reads as a surface
-# or a flat blob: it lights from every direction at once, so it fills exactly the
-# shadows that carry relief. Calibrated against 300 real crops from data/manual
-# rather than against a clay render, which is itself only 0.47x their relief.
-# As a fraction of the real median: 0.20 -> 0.39x, 0.12 -> 0.49x, 0.06 -> 0.64x.
-# At the original 0.35 the pipeline half failed to find the ear at all (detector
-# confidence 0.40, 27.5 of 55 rays), against 0.95 and 55/55 here. Flat renders
-# were costing labels, not just looks.
-AMBIENT = 0.06
-
 
 def load_head(path: str):
     """Head mesh, centred and scaled to unit radius. These are already meshes."""
@@ -254,44 +210,6 @@ def sample_occ(rng):
     return float(np.clip(rng.normal(MEAN_OCC, SD_OCC), *OCC_CLIP))
 
 
-def render_frame(mesh, renderer="open3d", tone=None, light_az=None, script=None,
-                 size=SIZE):
-    """Face-on render by either renderer. Returns HxWx3 uint8, or None."""
-    if renderer == "blender":
-        return _blender_render(mesh, tone, light_az, size, script)
-    return render(mesh, 0, 0, size=size)[:, :, :3]
-
-
-def _blender_render(mesh, tone, light_az, size, script):
-    """Cycles skin render, in a camera frame that matches project().
-
-    TO_BLENDER and dist=EYE_Z are both load-bearing: without them the render is a
-    different view of the mesh than the labels describe, and the error is silent.
-    """
-    falloff = (EYE_Z / LIGHT_REF_DIST) ** 2
-    g = copy.deepcopy(mesh)
-    g.vertices = o3d.utility.Vector3dVector(np.asarray(g.vertices) @ TO_BLENDER.T)
-    g.compute_vertex_normals()
-    with tempfile.TemporaryDirectory() as td:
-        mp = os.path.join(td, "m.ply")
-        o3d.io.write_triangle_mesh(mp, g)
-        args = dict(mesh=mp, ear=[0.0, 0.0, 0.0], dist=float(EYE_Z),
-                    tone=[float(v) for v in tone],
-                    out=os.path.join(td, "r"), size=int(size), samples=48,
-                    key_energy=KEY_W * falloff, fill_energy=FILL_W * falloff,
-                    ambient=AMBIENT, key_size=0.5,
-                    key_azimuth=float(light_az), key_elevation=30.0)
-        ap = os.path.join(td, "a.json")
-        json.dump(args, open(ap, "w"))
-        try:
-            subprocess.run(["blender", "-b", "-P", script, "--", ap],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           timeout=900, check=False)
-            return np.asarray(Image.open(os.path.join(td, "r.png")).convert("RGB"))
-        except Exception:
-            return None
-
-
 def label_ear(mesh, front, up, det, pred):
     """Two-pass face-on labelling. Returns (mesh in pinna frame, P3, hit, conf).
 
@@ -341,7 +259,6 @@ def label_ear(mesh, front, up, det, pred):
 def main() -> None:
     p = argparse.ArgumentParser(description="Render 3D ears at varied yaw for training")
     p.add_argument("--ears", type=int, default=150)
-    p.add_argument("--renderer", choices=["open3d", "blender"], default="blender")
     p.add_argument("--yaws", type=float, nargs="*",
                    default=[-40, -25, -12, 0, 12, 25, 40])
     p.add_argument("--pitches", type=float, nargs="*", default=[0.0])
@@ -354,7 +271,6 @@ def main() -> None:
     from inference import BLAZEEAR_DIR, DETECTOR_WEIGHTS, EarDetector
     det = EarDetector(BLAZEEAR_DIR / DETECTOR_WEIGHTS, "cpu", 0.5)
     pred = LandmarkPredictor(best_ckpt(args.label_run), "cuda")
-    bscript = str(ROOT / "scripts" / "blender_skin_render.py")
 
     heads = sorted(glob.glob(str(HUTUBS / "*.ply"))) + sorted(glob.glob(str(SONICOM / "*.stl")))
     rng = np.random.default_rng(args.seed)
@@ -389,9 +305,7 @@ def main() -> None:
                 continue
             n_ear += 1
 
-            tone = SKIN_TONES[rng.integers(len(SKIN_TONES))]
-            if args.renderer == "open3d":
-                base = apply_skin(base, seed=int(rng.integers(1 << 30)))
+            base = apply_skin(base, seed=int(rng.integers(1 << 30)))
 
             for pitch in args.pitches:
                 for yaw in args.yaws:
@@ -399,10 +313,7 @@ def main() -> None:
                     mr = copy.deepcopy(base)
                     mr.rotate(Rr, center=(0, 0, 0))
                     Pr = P3 @ Rr.T
-                    az = float(rng.uniform(*AZIMUTH_ARC))   # randomised; see docstring
-                    img = render_frame(mr, args.renderer, tone, az, bscript)
-                    if img is None:
-                        continue
+                    img = render(mr, 0, 0, size=SIZE)[:, :, :3]
                     occ = sample_occ(rng)
                     out = crop_from_points(img, Pr[hit], occ)
                     if out[0] is None:

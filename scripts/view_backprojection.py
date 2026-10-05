@@ -28,7 +28,7 @@ Controls: drag to orbit, scroll to zoom, R resets the view, Q or Escape closes.
 Usage:
     python scripts/view_backprojection.py
     python scripts/view_backprojection.py --mesh /path/pp16_3DheadMesh.ply --ear 1
-    python scripts/view_backprojection.py --renderer open3d --rays
+    python scripts/view_backprojection.py --rays
     python scripts/view_backprojection.py --no-window      # just stats + PNG
 """
 
@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import json
 import os
 import subprocess
 import sys
@@ -78,78 +77,6 @@ CONFIG = dict(
     run="manual_occ_s42",   # checkpoint under runs/checkpoints/<run>/
     device="cuda",
 
-    # --- renderer -----------------------------------------------------------
-    renderer="blender",     # "blender" = Cycles skin (slow, photo-like),
-                            # "open3d" = clay shading (~100x faster)
-    tone=None,              # index into SKIN_TONES (0 = lightest, 8 = darkest);
-                            # None picks one at random per run
-    freckles=0.0,           # they COST landmarker confidence (0.426 -> 0.419)
-    # RESULTS.md swept these one factor at a time and found azimuth -40 deg with a
-    # shallow energy optimum at 5 W. The ENERGY carries over; the AZIMUTH does
-    # not, because that sweep ran before the camera-orientation bug below was
-    # found, so its angles were measured about a different axis than the ear's.
-    # Re-swept here in the corrected frame, on two heads: +20 is best at 0.407
-    # mean confidence, falling monotonically to 0.387 at +80, and -40 gives only
-    # 0.362-0.366. Azimuth remains the largest single appearance factor.
-    key_azimuth=20.0,       # NEGATIVE swings the key toward the front of the
-                            # face, positive behind the head.
-    key_elevation=30.0,
-    key_type="AREA",        # "SUN" uses a directional light with the Open3D
-                            # viewer's own direction instead. See render_blender.
-    key_size=0.5,           # key light width, as a fraction of camera distance.
-                            # NOT part of the original sweep. The script's own
-                            # default of 1.2 makes the source wider than the head,
-                            # so shadows wash out and the ear renders FLAT.
-                            # Shrinking it raises in-ear contrast (sd 9.7 -> 10.4)
-                            # and confidence (+0.004); 0.2 is no better than 0.5.
-                            # Much the smaller effect: azimuth is worth +0.030.
-    key_energy=20.0,        # at light_ref_dist; scaled by the inverse square below.
-                            # RESULTS.md's 5 W optimum was swept at ambient 0.35
-                            # with the broken camera. Re-swept at ambient 0.06,
-                            # relief peaks at 20 W (0.01727, 143% of the clay
-                            # render) with mean brightness 99 against 5 W's 56 --
-                            # brighter AND crisper. Past that the highlights blow
-                            # out and relief falls back: 60 W 0.01411, 150 W
-                            # 0.01079. Detection is 0.94 and 55/55 throughout.
-    fill_energy=1.5,
-    ambient=0.06,           # world light, and the ONE setting that governs whether
-                            # the ear reads as a surface or a flat blob. It lights
-                            # from every direction at once, so it fills exactly the
-                            # shadows that make relief legible.
-                            # CALIBRATED AGAINST REAL PHOTOGRAPHS, not against the
-                            # clay render -- clay is itself only 0.47x the relief
-                            # of 300 real crops from data/manual, so matching it
-                            # was the wrong target. Relief as a fraction of the
-                            # real median (0.02868): 0.20 -> 0.39x, 0.12 -> 0.49x,
-                            # 0.06 -> 0.64x, 0.03 -> 0.78x. Renders stay BELOW
-                            # real at every setting, so lower is better here --
-                            # though real crops also carry hair, skin texture and
-                            # compression noise, which inflate the measure, so
-                            # 1.0x is not a target to chase. At the original 0.35
-                            # the pipeline itself half failed: detector confidence
-                            # 0.40 and 27.5 of 55 rays hitting, against 0.95 and
-                            # 55/55 here.
-    sss=0.35,               # subsurface weight. NOT the cause of flatness, though
-                            # it looks like it: 0.35 -> 0.0 moves relief by 0.7%
-                            # (0.00569 -> 0.00565), against ambient's 63% -> 105%.
-    sss_scale=0.012,        # scatter radius in MESH UNITS, so it means different
-                            # things at different mesh scales -- the ear spans
-                            # ~0.2 units in the pass-1 frame and ~2.1 in pass 2.
-    # Those energies were swept with the camera (and so the key light, which sits
-    # at dist*1.1) at 2.2. This viewer must put the camera at eye_z=3.0 for the
-    # back-projection to be correct, which is 1.86x further and delivers 54% of
-    # the irradiance -- ambient then dominates and the ear renders FLAT. Scaling
-    # by the inverse square keeps the swept lighting, at the correct distance.
-    light_ref_dist=2.2,
-    denoise=False,          # Cycles' denoiser is a softening filter: at low
-                            # sample counts it cannot separate fine relief from
-                            # noise and smooths the antihelix and concha edges
-                            # away. Raise `samples` instead.
-    samples=48,             # Cycles samples. 48 is enough to landmark; raise for a
-                            # cleaner picture, lower to iterate faster.
-    blender="blender",      # the executable
-    blender_script=str(ROOT / "scripts" / "blender_skin_render.py"),
-
     # --- camera / framing (these mirror the training pipeline) --------------
     size=600,               # full render resolution before cropping
     eye_z=3.0,              # camera at (0, 0, eye_z) looking at the origin
@@ -172,31 +99,12 @@ CONFIG = dict(
     sphere_frac=0.022,      # landmark sphere radius, in mesh units (ear spans ~1)
     show_2d=True,           # pop the landmark overlay in its own window
     show_rays=False,        # draw the camera ray to each landmark
-    # the render derives from third-party 3D data, so this defaults OUTSIDE the repo
+    # these derive from third-party 3D data, so they default OUTSIDE the repo
+    snapshot_png=str(Path(tempfile.gettempdir()) / "backprojection_snapshot.png"),
     overlay_png=str(Path(tempfile.gettempdir()) / "backprojection_overlay.png"),
     interactive=True,
 )
 # ---------------------------------------------------------------------------
-
-# Fitzpatrick I-VI, lightest to darkest. Tone is the second largest factor in
-# how photo-like a render is (0.020 confidence spread), after lighting azimuth.
-SKIN_TONES = np.array([
-    [0.96, 0.84, 0.76], [0.93, 0.79, 0.69], [0.88, 0.72, 0.60],
-    [0.80, 0.63, 0.50], [0.71, 0.54, 0.42], [0.60, 0.44, 0.34],
-    [0.48, 0.34, 0.26], [0.36, 0.25, 0.19], [0.27, 0.18, 0.14],
-])
-
-# Change of basis from THIS script's camera frame into the one Blender renders.
-# Blender's camera sits at +Y looking down -Y with +Z up, and bpy.ops.wm.ply_import
-# applies no axis conversion, so an untransformed mesh is rendered from a
-# different axis entirely -- measured: our +Z lands UP in the image and our +X
-# lands LEFT, i.e. a 90 deg rotation plus a mirror. This maps our (x, y, z) to
-# Blender's (-x, z, y), after which markers land within 0.5 px of where project()
-# puts them. It is applied ONLY to the copy handed to Blender; the mesh that gets
-# ray-cast is never touched.
-TO_BLENDER = np.array([[-1.0, 0.0, 0.0],
-                       [0.0, 0.0, 1.0],
-                       [0.0, 1.0, 0.0]])
 
 # 55-point iBUG ear scheme, four ordered linestrips.
 STRIPS = [(0, 20), (20, 35), (35, 50), (50, 55)]
@@ -229,70 +137,14 @@ def unproject_rays(uv, cfg):
 
 
 def render(mesh, cfg, size=None, background=(0.5, 0.5, 0.5)):
-    """Render face-on. Returns HxWx3 uint8. Dispatches on cfg["renderer"]."""
-    if cfg.get("renderer") == "blender":
-        img = render_blender(mesh, cfg, size=size)
-        if img is not None:
-            return img
-        print("  blender render failed -- falling back to open3d")
-    return render_open3d(mesh, cfg, size=size, background=background)
+    """Offscreen render (EGL -- works headless). Returns HxWx3 uint8.
 
-
-def render_blender(mesh, cfg, size=None):
-    """Cycles skin render: Principled BSDF with subsurface scattering.
-
-    Open3D fakes skin by baking ambient occlusion into vertex colours. It cannot
-    do subsurface scattering or specular highlights, and the helix rim is almost
-    always the brightest thing in a real ear photograph. Cycles does both, and
-    reaches 96% of real-photo landmarker confidence against clay's ~84%.
-
-    The mesh is rotated into Blender's camera frame by TO_BLENDER first, and the
-    camera distance is cfg["eye_z"], so the result is pixel-aligned with what
-    project() predicts. Both of those are easy to get wrong and silent when wrong.
+    Open3D only. The Blender/Cycles path was removed: it is ~100x slower, and
+    every part of the pipeline it touched -- camera basis, sensor fit, camera
+    distance, light falloff -- was a separate silent way to render a different
+    view than the labels described. scripts/blender_skin_render.py is gone from
+    the tree; recover it from commit 056dd70 if it is ever wanted back.
     """
-    size = size or cfg["size"]
-    tone = SKIN_TONES[cfg["tone"] if cfg["tone"] is not None
-                      else np.random.default_rng().integers(len(SKIN_TONES))]
-    falloff = (float(cfg["eye_z"]) / float(cfg["light_ref_dist"])) ** 2
-    g = copy.deepcopy(mesh)
-    g.vertices = o3d.utility.Vector3dVector(np.asarray(g.vertices) @ TO_BLENDER.T)
-    g.compute_vertex_normals()
-    with tempfile.TemporaryDirectory() as td:
-        mp = os.path.join(td, "m.ply")
-        o3d.io.write_triangle_mesh(mp, g)
-        args = dict(mesh=mp, ear=[0.0, 0.0, 0.0], dist=float(cfg["eye_z"]),
-                    tone=[float(v) for v in tone], out=os.path.join(td, "r"),
-                    size=int(size), samples=int(cfg["samples"]),
-                    key_energy=float(cfg["key_energy"]) * falloff,
-                    fill_energy=float(cfg["fill_energy"]) * falloff,
-                    ambient=float(cfg["ambient"]), denoise=bool(cfg["denoise"]),
-                    sss=float(cfg["sss"]), sss_scale=float(cfg["sss_scale"]),
-                    freckles=float(cfg["freckles"]),
-                    key_type=cfg["key_type"], key_size=float(cfg["key_size"]),
-                    # Open3D's sun travels (-0.3, -0.4, -0.9) in OUR axes, so it
-                    # has to go through the same basis change as the mesh.
-                    key_direction=list(np.array([-0.3, -0.4, -0.9]) @ TO_BLENDER.T),
-                    key_azimuth=float(cfg["key_azimuth"]),
-                    key_elevation=float(cfg["key_elevation"]))
-        ap = os.path.join(td, "a.json")
-        with open(ap, "w") as f:
-            json.dump(args, f)
-        r = subprocess.run([cfg["blender"], "-b", "-P", cfg["blender_script"], "--", ap],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                           timeout=900)
-        out = os.path.join(td, "r.png")
-        if not os.path.exists(out):
-            print("  blender:", r.stderr.decode()[-300:].strip())
-            return None
-        print(f"  blender: tone {tone.round(2).tolist()}, key azimuth "
-              f"{cfg['key_azimuth']:+.0f} deg, key {cfg['key_energy'] * falloff:.1f} W "
-              f"({cfg['key_energy']:.1f} W swept x{falloff:.2f} for distance), "
-              f"{cfg['samples']} samples")
-        return np.asarray(Image.open(out).convert("RGB"))
-
-
-def render_open3d(mesh, cfg, size=None, background=(0.5, 0.5, 0.5)):
-    """Offscreen clay render (EGL -- works headless). Returns HxWx3 uint8."""
     size = size or cfg["size"]
     r = o3d.visualization.rendering.OffscreenRenderer(size, size)
     mat = o3d.visualization.rendering.MaterialRecord()
@@ -617,13 +469,6 @@ def main():
     p.add_argument("--run", default=None, help="checkpoint run name")
     p.add_argument("--device", default=None)
     p.add_argument("--rays", action="store_true", help="draw the camera rays")
-    p.add_argument("--renderer", choices=["blender", "open3d"], default=None)
-    p.add_argument("--tone", type=int, default=None, help="skin tone 0-8, light to dark")
-    p.add_argument("--key-azimuth", type=float, default=None, help="key light, degrees")
-    p.add_argument("--key-energy", type=float, default=None, help="key light W, pre-falloff")
-    p.add_argument("--key-size", type=float, default=None, help="key light width / distance")
-    p.add_argument("--key-type", choices=["AREA", "SUN"], default=None)
-    p.add_argument("--samples", type=int, default=None, help="Cycles samples")
     p.add_argument("--no-2d", action="store_true", help="skip the 2D overlay window")
     p.add_argument("--no-window", action="store_true", help="stats and PNG only")
     a = p.parse_args()
@@ -631,11 +476,7 @@ def main():
     cfg = dict(CONFIG)
     if a.mesh:
         cfg["mesh"] = a.mesh
-    for k, v in (("ear", a.ear), ("run", a.run), ("device", a.device),
-                 ("renderer", a.renderer), ("tone", a.tone),
-                 ("key_azimuth", a.key_azimuth), ("samples", a.samples),
-                 ("key_energy", a.key_energy), ("key_size", a.key_size),
-                 ("key_type", a.key_type)):
+    for k, v in (("ear", a.ear), ("run", a.run), ("device", a.device)):
         if v is not None:
             cfg[k] = v
     cfg["show_rays"] |= a.rays
@@ -670,6 +511,11 @@ def main():
         print(f"  {STRIP_NAMES[i]:<14s} z {P3[a_:b_,2].min():+.3f} .. "
               f"{P3[a_:b_,2].max():+.3f}   misses {int((~hit[a_:b_]).sum())}")
 
+    if cfg["snapshot_png"]:
+        # The snapshot the landmarks were read from, saved UNMARKED so it can be
+        # re-landmarked or diffed without the overlay in the way.
+        Image.fromarray(img).save(cfg["snapshot_png"])
+        print(f"wrote {cfg['snapshot_png']}")
     if cfg["overlay_png"]:
         write_overlay(Image.fromarray(img), lm, cfg["overlay_png"])
         if cfg["show_2d"] and cfg["interactive"]:
