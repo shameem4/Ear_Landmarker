@@ -122,29 +122,26 @@ CONFIG = dict(
     # --- back-projection ----------------------------------------------------
     snap=True,              # place landmarks that sit behind a depth cliff onto
                             # the near lip of that cliff. See snap_to_cliff().
-    snap_radius=0.15,       # JITTER RANGE: the search window, as a fraction of
-                            # ear extent -- ~65 px at the usual framing, a 131x131
+    snap_radius=0.08,       # JITTER RANGE: the search window, as a fraction of
+                            # ear extent -- ~35 px at the usual framing, a 71x71
                             # window. This is the whole safety bound: the further
                             # it reaches, the more a "snap" becomes a relocation
                             # of a landmark the model put in the wrong place.
-                            #
-                            # SET BY EYE, AND THE NUMBERS DO NOT SHOW WHY. The
-                            # automated count saturates at 8% -- all 13 landmarks
-                            # it calls bad are fixed there, and 10/15/20% fix no
-                            # more while moving steadily more points:
+                            # 8% is the knee. Over four heads, every one of the 13
+                            # landmarks flagged bad is already fixed there, and
+                            # going further fixes none and moves steadily more
+                            # points that were never flagged:
                             #   radius   fixed   disturbed   moved >0.15
                             #      5%      11        13           10
                             #      8%      13        16           13
                             #     10%      13        20           17
                             #     15%      13        24           21
                             #     20%      13        31           28
-                            # But that count only flags z < median - 0.30, i.e.
-                            # gross depth outliers, and anatomical placement is
-                            # not what it measures. Inspected on the rendered ear,
-                            # 10% still leaves contour points off the anatomy;
-                            # 15% does not. The extra points it moves are inside
-                            # the band the metric is blind to, so trust the eye
-                            # here and treat the table as a cost, not a verdict.
+                            # Note the flag behind "fixed" only catches
+                            # z < median - 0.30, so it is blind to a landmark on
+                            # the wrong anatomy at roughly the right depth. It
+                            # cannot separate these radii on placement; nothing
+                            # here can yet.
     snap_step=0.30,         # how big a depth step counts as a cliff, in mesh
                             # units with the ear spanning ~1. Scalp-behind-pinna
                             # measures 0.85-1.08; concha bowl structure varies by
