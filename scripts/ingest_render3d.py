@@ -73,6 +73,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from render3d_ears import EAR3D_DIR, VFOV, project, render, rot          # noqa: E402
+# raycast() and visible() default to eval_pose_consistency's OWN SIZE, so every
+# call below passes this module's SIZE explicitly. They agree at 600 today, which
+# is exactly what would make a divergence silent.
 from eval_pose_consistency import crop_to_full, raycast, visible        # noqa: E402
 from eval_test import best_ckpt                                         # noqa: E402
 from inference import LandmarkPredictor                                 # noqa: E402
@@ -232,7 +235,7 @@ def label_ear(mesh, front, up, det, pred):
     if crop is None:
         return None, None, None, None, "pass-1 crop too small"
     lm = np.asarray(pred.predict(np.asarray(crop)), float)
-    P1, hit1 = raycast(g, crop_to_full(lm, box))
+    P1, hit1 = raycast(g, crop_to_full(lm, box), size=SIZE)
     if hit1.sum() < 45:
         return None, None, None, None, f"pass 1: only {int(hit1.sum())}/55 rays hit"
 
@@ -252,7 +255,7 @@ def label_ear(mesh, front, up, det, pred):
     if crop2 is None:
         return None, None, None, None, "pass-2 crop too small"
     lm2, conf = pred.predict(np.asarray(crop2), with_confidence=True)
-    P3, hit = raycast(g2, crop_to_full(np.asarray(lm2, float), box2))
+    P3, hit = raycast(g2, crop_to_full(np.asarray(lm2, float), box2), size=SIZE)
     return g2, P3, hit, float(np.mean(conf)), None
 
 
@@ -319,7 +322,7 @@ def main() -> None:
                     if out[0] is None:
                         continue
                     crop, box2 = out
-                    vis = hit & visible(mr, Pr)
+                    vis = hit & visible(mr, Pr, size=SIZE)
                     uv = project(Pr, SIZE)
                     lm = np.stack([(uv[:, 0] - box2[0]) / box2[2],
                                    (uv[:, 1] - box2[1]) / box2[2]], axis=1)

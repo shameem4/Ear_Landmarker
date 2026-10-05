@@ -104,9 +104,15 @@ def crop_to_full(pts, box):
     return np.stack([pts[:, 0] / out * s + l, pts[:, 1] / out * s + t], axis=1)
 
 
-def visible(mesh_rot, P3, tol=0.012):
-    """Is the camera ray to each landmark unobstructed?"""
-    Q, hit = raycast(mesh_rot, project(P3, SIZE))
+def visible(mesh_rot, P3, tol=0.012, size=SIZE):
+    """Is the camera ray to each landmark unobstructed?
+
+    `size` must match the render the landmarks came from. It is a parameter and
+    not this module's SIZE because callers import this function -- if it silently
+    used SIZE, a caller with a different render size would get a visibility mask
+    computed in the wrong image space, and nothing would fail.
+    """
+    Q, hit = raycast(mesh_rot, project(P3, size), size=size)
     d = np.full(len(P3), np.inf)
     d[hit] = np.linalg.norm(Q[hit] - P3[hit], axis=1)
     return hit & (d < tol)
