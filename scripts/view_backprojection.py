@@ -161,8 +161,12 @@ MATERIAL = o3d.visualization.rendering.MaterialRecord()
 MATERIAL.shader = "defaultLit"
 
 
-def camera_ke(size, cfg):
+def camera_ke(size, cfg, E=None):
     """(K, E) for this project's view. The single camera definition.
+
+    `E` overrides the face-on extrinsic -- used to re-render from wherever the
+    interactive window's camera has been orbited to. K is unchanged, so the
+    intrinsics the landmarker and the back-projection see never vary with pose.
 
     Open3D is OpenCV-style -- x right, y DOWN, z INTO the scene -- while this
     project has y up and the camera at +Z looking back along -Z, so the extrinsic
@@ -173,9 +177,35 @@ def camera_ke(size, cfg):
     K = np.array([[f, 0.0, size / 2 - 0.5],
                   [0.0, f, size / 2 - 0.5],
                   [0.0, 0.0, 1.0]])
-    E = np.array([[1.0, 0, 0, 0], [0, -1.0, 0, 0],
-                  [0, 0, -1.0, cfg["eye_z"]], [0, 0, 0, 1.0]])
-    return K, E
+    if E is None:
+        E = np.array([[1.0, 0, 0, 0], [0, -1.0, 0, 0],
+                      [0, 0, -1.0, cfg["eye_z"]], [0, 0, 0, 1.0]])
+    return K, np.asarray(E, float)
+
+
+# Filament's view matrix is OpenGL-style (y up, -z forward); our extrinsic is
+# OpenCV-style (y down, +z forward). Verified exact: FLIP @ get_view_matrix()
+# returns the very matrix that was handed to setup_camera.
+VIEW_TO_EXTRINSIC = np.diag([1.0, -1.0, -1.0, 1.0])
+
+
+def extrinsic_of(scene_camera):
+    """The extrinsic for whatever the window's camera is looking at right now."""
+    return VIEW_TO_EXTRINSIC @ np.asarray(scene_camera.get_view_matrix(), float)
+
+
+def pose_angles(E):
+    """Yaw and pitch of this camera relative to the face-on view, in degrees.
+
+    These are the angles the back-projection is working at: the mesh is fixed in
+    its pinna frame, so orbiting the camera IS the pose. Face-on reads 0/0 by
+    construction, yaw grows as the camera swings toward +X, pitch as it rises.
+    """
+    d = E[:3, :3].T @ np.array([0.0, 0.0, 1.0])      # view direction, world frame
+    yaw = np.degrees(np.arctan2(-d[0], -d[2]))
+    pitch = np.degrees(np.arcsin(np.clip(-d[1], -1.0, 1.0)))
+    off = np.degrees(np.arccos(np.clip(-d[2], -1.0, 1.0)))
+    return yaw, pitch, off
 
 
 class Camera:
@@ -218,7 +248,7 @@ def light_scene(scene, background):
     scene.scene.enable_sun_light(True)
 
 
-def render(mesh, cfg, size=None, background=(0.5, 0.5, 0.5)):
+def render(mesh, cfg, size=None, background=(0.5, 0.5, 0.5), E=None):
     """Render, and return the depth buffer and camera that produced it.
 
     Returns (image HxWx3 uint8, depth float32 HxW, Camera). The depth is
@@ -229,7 +259,7 @@ def render(mesh, cfg, size=None, background=(0.5, 0.5, 0.5)):
     r = o3d.visualization.rendering.OffscreenRenderer(size, size)
     r.scene.add_geometry("m", mesh, MATERIAL)
     light_scene(r.scene, background)
-    K, E = camera_ke(size, cfg)
+    K, E = camera_ke(size, cfg, E)
     r.setup_camera(K, E, size, size)
     img = np.asarray(r.render_to_image())[:, :, :3]
     depth = np.asarray(r.render_to_depth_image(z_in_view_space=True))
@@ -293,25 +323,123 @@ def backproject(depth, uv, cam, max_jump=0.02):
     return P, hit
 
 
-def show(geoms, cfg, size=900, background=(0.5, 0.5, 0.5),
+LINE_MATERIAL = o3d.visualization.rendering.MaterialRecord()
+LINE_MATERIAL.shader = "unlitLine"
+LINE_MATERIAL.line_width = 2.0
+
+
+def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
          title="back-projected ear landmarks"):
     """Interactive window -- SAME renderer and SAME camera as the snapshot.
 
-    O3DVisualizer is Filament-backed, like render() above, so the scene you orbit
-    is lit identically to the image the landmarker read, and it opens on exactly
-    that view. Verified to work after offscreen rendering in the same process.
+    Built from gui.Window rather than O3DVisualizer because that class exposes
+    neither key events nor a tick callback in the Python bindings, and both are
+    needed here.
+
+    Two things it does beyond showing the scene:
+
+      the readout tracks the camera as you orbit, in the angles the
+      back-projection actually works at. The mesh is fixed in its pinna frame, so
+      camera yaw/pitch IS the pose; face-on reads 0/0 by construction.
+
+      L re-landmarks from where you are standing. The 3D landmarks are removed,
+      the mesh alone is re-rendered through the window's CURRENT camera, the
+      pipeline runs on that image, and the result is back-projected through the
+      depth buffer of that same render. So it answers "what would the model make
+      of the ear from here?" rather than re-showing the face-on answer. The
+      landmarks it draws are a fresh measurement at this pose, not the pose-zero
+      ones rotated.
     """
     gui = o3d.visualization.gui
+    rendering = o3d.visualization.rendering
     app = gui.Application.instance
     app.initialize()
-    w = o3d.visualization.O3DVisualizer(title, size, size)
-    w.show_skybox(False)
-    for i, g in enumerate(geoms):
-        w.add_geometry(f"g{i}", g)
-    light_scene(w.scene, background)
-    K, E = camera_ke(size, cfg)
-    w.setup_camera(K, E, size, size)
-    app.add_window(w)
+    win = app.create_window(title, size, size)
+
+    widget = gui.SceneWidget()
+    widget.scene = rendering.Open3DScene(win.renderer)
+    widget.scene.add_geometry("mesh", mesh, MATERIAL)
+    light_scene(widget.scene, background)
+    K, E0 = camera_ke(size, cfg)
+    widget.setup_camera(K, E0, size, size, mesh.get_axis_aligned_bounding_box())
+
+    info = gui.Label("")
+    panel = gui.Vert(0, gui.Margins(10, 10, 10, 10))
+    panel.background_color = gui.Color(0, 0, 0, 0.6)
+    panel.add_child(info)
+    win.add_child(widget)
+    win.add_child(panel)
+
+    def on_layout(ctx):
+        rect = win.content_rect
+        widget.frame = rect
+        pref = panel.calc_preferred_size(ctx, gui.Widget.Constraints())
+        panel.frame = gui.Rect(rect.x, rect.y, min(rect.width, 420), pref.height)
+    win.set_on_layout(on_layout)
+
+    state = {"drawn": [], "text": None, "note": "face-on, as labelled"}
+
+    def draw_landmarks(P3, hit):
+        for n in state["drawn"]:
+            widget.scene.remove_geometry(n)
+        state["drawn"] = []
+        colours = [(0.0, 0.0, 0.0) if not hit[k]
+                   else STRIP_COLOURS[next(i for i, (a, b) in enumerate(STRIPS)
+                                           if a <= k < b)]
+                   for k in range(len(P3))]
+        widget.scene.add_geometry("lm", spheres(P3, cfg["sphere_frac"], colours),
+                                  MATERIAL)
+        widget.scene.add_geometry("lmlines", strip_lines(P3), LINE_MATERIAL)
+        state["drawn"] = ["lm", "lmlines"]
+
+    draw_landmarks(P3, hit)
+
+    def relandmark():
+        E = extrinsic_of(widget.scene.camera)
+        # Remove the landmarks BEFORE rendering: they are scene geometry, so a
+        # render with them still in it would feed the landmarker a picture of an
+        # ear with 55 spheres stuck to it.
+        for n in state["drawn"]:
+            widget.scene.remove_geometry(n)
+        state["drawn"] = []
+        img, depth, cam = render(mesh, cfg, E=E)
+        res = pipe(img, timestamp=0.0)
+        yaw, pitch, off = pose_angles(E)
+        if not res:
+            state["note"] = f"no ear found at yaw {yaw:+.0f} pitch {pitch:+.0f}"
+            draw_landmarks(P3, hit)                 # put the old ones back
+            return
+        best = max(res, key=lambda d: float(d["confidence"]))
+        lm = np.asarray(best["landmarks"], float)
+        Q, qhit = backproject(depth, lm, cam)
+        draw_landmarks(Q, qhit)
+        state["note"] = (f"re-landmarked at yaw {yaw:+.0f} pitch {pitch:+.0f}: "
+                         f"det {float(best['confidence']):.2f}, {int(qhit.sum())}/55 hit")
+        print(f"  [L] {state['note']}", flush=True)
+        if cfg["snapshot_png"]:
+            Image.fromarray(img).save(cfg["snapshot_png"])
+        if cfg["overlay_png"]:
+            write_overlay(Image.fromarray(img), lm, cfg["overlay_png"])
+
+    def on_key(e):
+        if e.type == gui.KeyEvent.Type.DOWN and e.key == gui.KeyName.L:
+            relandmark()
+            return gui.Widget.EventCallbackResult.HANDLED
+        return gui.Widget.EventCallbackResult.IGNORED
+    win.set_on_key(on_key)
+
+    def on_tick():
+        yaw, pitch, off = pose_angles(extrinsic_of(widget.scene.camera))
+        text = (f"yaw {yaw:+6.1f}\u00b0   pitch {pitch:+6.1f}\u00b0   "
+                f"off-axis {off:5.1f}\u00b0\n{state['note']}\n"
+                f"[L] re-landmark from this view")
+        if text == state["text"]:
+            return False
+        state["text"] = text
+        info.text = text
+        return True
+    win.set_on_tick_event(on_tick)
+
     app.run()
 
 
@@ -769,18 +897,11 @@ def main():
         if cfg["show_2d"] and cfg["interactive"]:
             show_image_window(cfg["overlay_png"])
 
-    colours = [(0.0, 0.0, 0.0) if not hit[k]          # the ray missed entirely
-               else STRIP_COLOURS[next(i for i, (a_, b_) in enumerate(STRIPS)
-                                       if a_ <= k < b_)]
-               for k in range(len(P3))]
-    geoms = [g, spheres(P3, cfg["sphere_frac"], colours), strip_lines(P3)]
-    if cfg["show_rays"]:
-        geoms.append(ray_lines(P3, cam))
-
     if not cfg["interactive"]:
         return
-    print("\norbit to about 60 deg to check depth. Close the window to exit.")
-    show(geoms, cfg)
+    print("\norbit to about 60 deg to check depth; press L to re-landmark from "
+          "wherever you are. Close the window to exit.")
+    show(g, P3, hit, cfg, pipe)
 
 
 if __name__ == "__main__":

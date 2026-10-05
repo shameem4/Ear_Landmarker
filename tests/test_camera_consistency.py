@@ -167,3 +167,71 @@ def test_there_is_only_one_camera_definition():
     for line in src.splitlines():
         if "setup_camera(" in line and "def " not in line:
             assert "K, E" in line, f"camera built some other way: {line.strip()}"
+
+
+# --- the interactive window's pose readout ----------------------------------
+# The window orbits the CAMERA while the mesh stays in its pinna frame, so the
+# camera's yaw/pitch are the pose the back-projection is working at. These pin
+# the sign conventions, which are the part that silently misleads if wrong.
+
+def _orbit(cfg, C, size=SIZE):
+    """Extrinsic for a camera at world position C, looking at the origin."""
+    z = -np.asarray(C, float)
+    z /= np.linalg.norm(z)                      # +z points INTO the scene
+    x = np.cross([0.0, 1.0, 0.0], z)
+    x /= np.linalg.norm(x)
+    y = np.cross(z, x)
+    R = np.stack([x, y, z])
+    E = np.eye(4)
+    E[:3, :3], E[:3, 3] = R, -R @ np.asarray(C, float)
+    return E
+
+
+def test_face_on_reads_zero():
+    _, E0 = vbp.camera_ke(SIZE, CFG)
+    yaw, pitch, off = vbp.pose_angles(E0)
+    assert abs(yaw) < 1e-6 and abs(pitch) < 1e-6 and abs(off) < 1e-6
+
+
+def test_yaw_is_positive_toward_plus_x():
+    d = CFG["eye_z"]
+    yaw, pitch, off = vbp.pose_angles(_orbit(CFG, [d * np.sin(np.radians(30)), 0,
+                                                   d * np.cos(np.radians(30))]))
+    assert yaw == pytest.approx(30.0, abs=0.1)
+    assert abs(pitch) < 0.1
+    assert off == pytest.approx(30.0, abs=0.1)
+
+
+def test_pitch_is_positive_when_the_camera_is_above():
+    d = CFG["eye_z"]
+    yaw, pitch, off = vbp.pose_angles(_orbit(CFG, [0, d * np.sin(np.radians(25)),
+                                                   d * np.cos(np.radians(25))]))
+    assert pitch == pytest.approx(25.0, abs=0.1)
+    assert abs(yaw) < 0.1
+
+
+def test_extrinsic_override_actually_moves_the_camera():
+    """render(E=...) must render from E, and its Camera must agree with it."""
+    mesh = _marker_mesh()
+    E = _orbit(CFG, [1.5, 0.0, CFG["eye_z"] * 0.8])
+    img_a, _, cam_a = vbp.render(mesh, CFG)
+    img_b, _, cam_b = vbp.render(mesh, CFG, E=E)
+    assert not np.array_equal(img_a, img_b), "the override did not move the camera"
+    # the returned Camera must be the one that drew img_b, not the default
+    found = _centroids(img_b)
+    assert len(found) == len(TARGETS)
+    for p in cam_b.project(TARGETS):
+        assert np.linalg.norm(found - p, axis=1).min() < 1.5
+
+
+def test_view_matrix_round_trips_to_our_extrinsic():
+    """extrinsic_of() must invert what setup_camera was given."""
+    mesh = _marker_mesh()
+    E = _orbit(CFG, [0.9, 0.6, CFG["eye_z"] * 0.85])
+    r = o3d.visualization.rendering.OffscreenRenderer(SIZE, SIZE)
+    r.scene.add_geometry("m", mesh, vbp.MATERIAL)
+    K, _ = vbp.camera_ke(SIZE, CFG)
+    r.setup_camera(K, E, SIZE, SIZE)
+    back = vbp.extrinsic_of(r.scene.camera)
+    del r
+    assert np.allclose(back, E, atol=1e-4)
