@@ -122,14 +122,21 @@ CONFIG = dict(
     # --- back-projection ----------------------------------------------------
     snap=True,              # place landmarks that sit behind a depth cliff onto
                             # the near lip of that cliff. See snap_to_cliff().
-    snap_radius=0.10,       # JITTER RANGE: the search window, as a fraction of
-                            # ear extent. At the usual framing the ear spans
-                            # ~435 px, so this is a radius of ~43 px (an 87x87
-                            # window). This is the whole safety bound -- the
-                            # further it reaches, the more a "snap" becomes a
-                            # relocation of a landmark the model simply put in
-                            # the wrong place. See the measurements by radius in
-                            # the commit that set this.
+    snap_radius=0.08,       # JITTER RANGE: the search window, as a fraction of
+                            # ear extent -- ~35 px at the usual framing, a 71x71
+                            # window. This is the whole safety bound: the further
+                            # it reaches, the more a "snap" becomes a relocation
+                            # of a landmark the model simply put in the wrong
+                            # place. 8% is the knee. Over four heads, every one of
+                            # the 13 bad landmarks is already fixed by 8%, and
+                            # going further only moves more points that were not
+                            # flagged as wrong:
+                            #   radius   fixed   disturbed   moved >0.15
+                            #      5%      11        13           10
+                            #      8%      13        16           13
+                            #     10%      13        20           17
+                            #     15%      13        24           21
+                            #     20%      13        31           28
     snap_step=0.30,         # how big a depth step counts as a cliff, in mesh
                             # units with the ear spanning ~1. Scalp-behind-pinna
                             # measures 0.85-1.08; concha bowl structure varies by
