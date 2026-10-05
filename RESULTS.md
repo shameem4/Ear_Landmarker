@@ -438,3 +438,69 @@ The old corpus has a wider and bimodal ear-axis distribution (collectionB median
 augmentation did nothing: +-15 deg 0.03420, +-26.5 deg 0.03469, +-40 deg 0.03491.
 The per-tilt breakdown is flat at ~17% across the whole rotation range and both
 models correlate with tilt almost identically (Spearman +0.444 vs +0.454).
+
+## Pose behaviour, measured on real 3D ear geometry
+
+Perspective augmentation is a homography. It reproduces foreshortening but not
+parallax or self-occlusion, and its measured benefit plateaued at 65 deg. Two
+readings fit -- the model saturates, or the warp stops resembling a head turn.
+Rendering real ear meshes (`scripts/render3d_ears.py`, AudioEar3D) separates them.
+
+**The warp is a poor match to a real rotation at every angle**, not just past 65
+(`scripts/eval_homography_fidelity.py`, 12 ears). There is no cliff:
+
+| yaw | NCC(true 3D, homography) | silhouette IoU |
+|-----|--------------------------|----------------|
+| 10  | 0.804 | 0.850 |
+| 20  | 0.614 | 0.747 |
+| 30  | 0.466 | 0.658 |
+| 50  | 0.255 | 0.533 |
+| 65  | 0.146 | 0.440 |
+| 80  | -0.086 | 0.231 |
+
+**And it buys pitch robustness, not yaw** (`scripts/eval_pose_consistency.py`,
+28 ears, drift vs each model's own pose-zero landmarks lifted to 3D):
+
+| comparison, abs(angle)>=20 | yaw | pitch |
+|----------------------------|-----|-------|
+| v6_persp65 vs v2_heatmap | -3.2% (t=-0.99, ns) | **-18.0%** (t=-4.00) |
+| manual_occ_s42 vs v2_heatmap | **+40.2%** (t=+10.36) | -7.8% (t=-1.74, ns) |
+
+Those two agree mechanically: yaw is where the helix rim rotates across the
+concha, which a planar warp cannot represent; pitch mostly foreshortens without
+one structure hiding another, which it can. So the earlier "-36% contour error at
+50 deg yaw" says the model learned to handle the WARP -- under a real head turn
+that benefit is not measurable.
+
+The shipped model drifting 40% more under yaw is the one result arguing against
+it. Treat it as unresolved rather than as a defect: this metric scores each model
+against its own pose-zero output, so sharper landmarks are a harder reference to
+re-hit, and the ground-truth-free photo comparison found manual_occ placing
+contours better. Separating precision from fragility needs annotated ground
+truth.
+
+### Two measurement routes that failed, so nobody repeats them
+
+**Edge response on renders.** The metric behind `scripts/eval_gt_free.py` works
+on photographs, where the ear sits against a head. An isolated render against
+flat grey has an enormous silhouette gradient, so a foreshortened ear rewards any
+contour hugging its outline. It reported that rotating an ear IMPROVES quality --
+retention above 100% at nearly every angle.
+
+**Lifting AudioEar3D's annotations.** The dataset annotates a photograph and
+ships a point cloud of the same ear with no camera relating them. Silhouette
+registration reaches 0.897 IoU and still leaves 12px reprojection error, 3.7% of
+the crop diagonal, against the 2.9% NME it would judge. Fitting an outline leaves
+in-plane rotation and depth slack exactly where landmarks are most sensitive.
+Defining the landmarks on our own render instead makes the camera exact: 0.006%
+round-trip error, 600x better, no registration at all.
+
+### Can the renders be used as training data?
+
+Not as they are. They are isolated ears on flat grey, with Poisson holes and a
+single-sided surface, against real crops where the ear is embedded in hair, skin
+and varied lighting. A model would learn "grey surround = ear boundary", a
+shortcut absent from real images. Using them would mean compositing onto real
+head backgrounds first, and even then they add pose diversity for 112 subjects
+rather than new subjects. The narrow target is yaw, since pitch is already
+covered.
