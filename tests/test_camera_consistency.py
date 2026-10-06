@@ -517,19 +517,28 @@ def test_view_angles_print_whether_they_are_ints_or_floats():
 
 # --- partial re-seat ---------------------------------------------------------
 
-def test_reseat_moves_only_points_that_are_far_off():
-    """The "partial" is the point: near-surface points must be left alone."""
+def test_reseat_pulls_buried_points_forward_and_leaves_floating_ones():
+    """The direction is the whole point.
+
+    Buried = inside the head, cannot be right, pull it onto the surface. Floating
+    in front = the pixel is probably just off the ear's silhouette, and the
+    surface BEHIND it is the cheek -- moving it there is a relocation onto the
+    wrong anatomy, not a correction. Measured, every re-seat an earlier
+    bidirectional version performed was that harmful direction.
+    """
     cam = vbp.Camera(*vbp.camera_ke(SIZE, CFG), (SIZE, SIZE), SIZE)
     depth = np.full((SIZE, SIZE), 2.5, dtype=np.float32)
-    # one point on the plane, one a long way in front of it
     on = vbp.backproject(depth, np.array([[200.0, 200.0]]), cam)[0][0]
-    off = on + (cam.centre - on) * 0.25               # a quarter of the way to the camera
-    P = np.stack([on, off])
+    toward = cam.centre - on
+    floating = on + toward * 0.25                     # in front of the surface
+    buried = on - toward * 0.25                       # behind it
+    P = np.stack([on, floating, buried])
     P2, moved = vbp.reseat(P, depth, cam, ext=1.0, tol=0.15)
-    assert not moved[0] and moved[1], "re-seated the wrong point"
-    assert np.allclose(P2[0], on), "a point already on the surface was disturbed"
-    zc = (P2[1] - cam.centre) @ cam.R.T
-    assert zc[2] == pytest.approx(2.5, abs=1e-3), "the moved point is not on the surface"
+    assert not moved[0], "a point already on the surface was disturbed"
+    assert not moved[1], "a floating point was pushed back onto the surface behind"
+    assert moved[2], "a buried point was not pulled out"
+    zc = (P2[2] - cam.centre) @ cam.R.T
+    assert zc[2] == pytest.approx(2.5, abs=1e-3)
 
 
 def test_reseat_moves_along_the_viewing_axis():
@@ -537,7 +546,7 @@ def test_reseat_moves_along_the_viewing_axis():
     cam = vbp.Camera(*vbp.camera_ke(SIZE, CFG), (SIZE, SIZE), SIZE)
     depth = np.full((SIZE, SIZE), 2.5, dtype=np.float32)
     on = vbp.backproject(depth, np.array([[170.0, 230.0]]), cam)[0][0]
-    P = np.array([on + (cam.centre - on) * 0.3])
+    P = np.array([on - (cam.centre - on) * 0.3])      # buried, so it will move
     before = cam.project(P)[0]
     P2, moved = vbp.reseat(P, depth, cam, ext=1.0, tol=0.05)
     assert moved[0]
@@ -548,6 +557,6 @@ def test_reseat_tolerance_controls_how_many_move():
     cam = vbp.Camera(*vbp.camera_ke(SIZE, CFG), (SIZE, SIZE), SIZE)
     depth = np.full((SIZE, SIZE), 2.5, dtype=np.float32)
     base = vbp.backproject(depth, np.array([[200.0, 200.0]]), cam)[0][0]
-    P = np.stack([base + (cam.centre - base) * f for f in (0.02, 0.10, 0.30)])
+    P = np.stack([base - (cam.centre - base) * f for f in (0.02, 0.10, 0.30)])
     assert vbp.reseat(P, depth, cam, 1.0, 0.50)[1].sum() <= \
            vbp.reseat(P, depth, cam, 1.0, 0.05)[1].sum()

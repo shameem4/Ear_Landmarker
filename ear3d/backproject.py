@@ -251,19 +251,23 @@ def visible(depth, P, cam, tol=0.012):
 
 
 def reseat(P, depth, cam, ext, tol):
-    """Pull points that sit FAR off the drawn surface back onto it.
+    """Pull points that are BURIED behind the drawn surface forward onto it.
 
-    A triangulated landmark is a free 3D point: the rays decide where it goes and
-    nothing requires it to lie on the ear. Measured over four heads, the median
-    lands on the surface (+0.33% of ear extent, 47% inside / 53% outside, so no
-    systematic push) but the p90 is 22% -- one landmark in ten floats well clear
-    of the ear or sits buried in the head, and those cluster on the helix rim.
+    ONE DIRECTION ONLY, and the asymmetry is the whole point. A point behind the
+    surface is inside the head and cannot be right, so moving it forward onto the
+    first surface along its ray is a correction. A point FLOATING IN FRONT is a
+    different situation: near the ear's silhouette it means the pixel is just off
+    the edge, and the first surface behind it is the cheek, most of an ear-depth
+    further back. Pushing it there is not a correction, it is a relocation onto
+    the wrong anatomy.
 
-    PARTIAL on purpose. Re-seating everything fixes the surface (p90 19.4% ->
-    0.10%) and costs 45% of triangulation's reprojection gain, because it also
-    moves points that were only a per-cent or two out -- inside the noise of the
-    surface itself. Only points beyond `tol` are moved; the rest keep the depth
-    the rays gave them.
+    An earlier version moved both, which is how it was found. Over three heads
+    every single re-seat it performed was the harmful direction -- 8 points moved,
+    all floating, none buried -- and the outer helix's depth span went from 0.297
+    to 0.890 with the worst landmark at -0.763 instead of -0.140. Restricted to
+    buried points it fires on nothing at all on this data, because triangulated
+    points here only ever float. Kept because the correction is right where it
+    applies, and silent when it does not.
 
     The move is along the viewing axis: same pixel, the depth the renderer drew
     there. Returns (points, moved mask).
@@ -276,7 +280,8 @@ def reseat(P, depth, cam, ext, tol):
     drawn = depth[y, x]
     own = (P @ cam.R.T + cam.t)[:, 2]
     inside = (uv[:, 0] >= 0) & (uv[:, 0] < W) & (uv[:, 1] >= 0) & (uv[:, 1] < H)
-    far = inside & np.isfinite(drawn) & (np.abs(drawn - own) > tol * ext)
+    # drawn - own < 0 means the surface is NEARER than the point: it is buried.
+    far = inside & np.isfinite(drawn) & ((drawn - own) < -tol * ext)
     if far.any():
         Q, hit = backproject(depth, uv[far], cam)
         idx = np.flatnonzero(far)
