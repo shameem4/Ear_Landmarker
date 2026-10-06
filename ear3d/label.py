@@ -123,14 +123,14 @@ def multiview(mesh, cfg, pipe):
             # A view where the detector finds nothing contributes no measurement.
             # Reported rather than silently dropped: if most views fail, the
             # agreement figure is averaging two opinions, not seven.
-            print(f"  view ({yaw:+d},{pitch:+d}): no ear detected")
+            print(f"  view ({yaw:+.0f},{pitch:+.0f}): no ear detected")
             out.append(np.full((55, 3), np.nan))
             ok.append(np.zeros(55, bool))
             continue
         best = max(res, key=lambda d: float(d["confidence"]))
         lm = np.asarray(best["landmarks"], float)
         P, hit, _ = backproject_snapped(depth, lm, cam, cfg)
-        print(f"  view ({yaw:+d},{pitch:+d}): det {float(best['confidence']):.2f}, "
+        print(f"  view ({yaw:+.0f},{pitch:+.0f}): det {float(best['confidence']):.2f}, "
               f"{int(hit.sum())}/55")
         out.append(P)
         ok.append(hit & np.isfinite(P).all(axis=1))
@@ -201,12 +201,13 @@ def triangulate_landmarks(cfg, mesh, pipe, angles=None, verbose=True):
         res = pipe(img, timestamp=0.0)
         if not res:
             if verbose:
-                print(f"  view ({yaw:+d},{pitch:+d}): no ear detected")
+                print(f"  view ({yaw:+.0f},{pitch:+.0f}): no ear detected")
             continue
         best = max(res, key=lambda d: float(d["confidence"]))
         uv[i] = np.asarray(best["landmarks"], float)
         if verbose:
-            print(f"  view ({yaw:+d},{pitch:+d}): det {float(best['confidence']):.2f}")
+            print(f"  view ({yaw:+.0f},{pitch:+.0f}): det "
+                  f"{float(best['confidence']):.2f}")
 
     # The inlier threshold is a fraction of ear extent, which is ~1 by
     # construction in the pinna frame but measured here rather than assumed.

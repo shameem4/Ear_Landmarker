@@ -601,7 +601,7 @@ def main():
         spread, centre, nview = agreement(Pv, okv)
         report_agreement(spread, nview, ear_extent=ext)
         print(f"\near extent {ext:.3f}; {len(angles)} views: "
-              + ", ".join(f"({y:+d},{p:+d})" for y, p in angles))
+              + ", ".join(f"({y:+.0f},{p:+.0f})" for y, p in angles))
         bad = np.isfinite(spread) & (spread > 0.05 * ext)
         print(f"{int(bad.sum())} of {int(np.isfinite(spread).sum())} landmarks "
               f"disagree by more than 5% of ear extent")
@@ -628,7 +628,7 @@ def main():
         spread, centre, nview = agreement(Pv, okv)
         report_agreement(spread, nview, ear_extent=ext)
         print(f"\near extent {ext:.3f}; {len(angles)} views: "
-              + ", ".join(f"({y:+d},{p:+d})" for y, p in angles))
+              + ", ".join(f"({y:+.0f},{p:+.0f})" for y, p in angles))
         fin = np.isfinite(spread)
         print(f"{int((fin & (spread > 0.05 * ext)).sum())} of {int(fin.sum())} "
               f"landmarks disagree by more than 5% of ear extent")

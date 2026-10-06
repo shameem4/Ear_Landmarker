@@ -498,3 +498,18 @@ def test_cone_angles_are_spread_and_prefix_stable():
     for (y, p) in a50:
         assert np.hypot(y, p) <= 31.0, "a view escaped the cone"
     assert len({(round(y, 3), round(p, 3)) for y, p in a50}) == 50, "duplicate views"
+
+
+def test_view_angles_print_whether_they_are_ints_or_floats():
+    """cone_angles yields floats; the hand-written defaults are ints.
+
+    A "+d" format accepts the second and raises ValueError on the first, so
+    --tri-views crashed while the default angle list worked. Formatting is not
+    usually worth a test; a crash reachable only through one flag is.
+    """
+    import ear3d.label as lab
+    import ear3d.config as conf
+    src = (Path(lab.__file__).read_text() + Path(conf.__file__).read_text())
+    assert ":+d" not in src, "an angle is formatted in a way floats cannot satisfy"
+    for yaw, pitch in list(vbp.cone_angles(5, 30.0)) + list(CFG["tri_angles"]):
+        assert f"({yaw:+.0f},{pitch:+.0f})"
