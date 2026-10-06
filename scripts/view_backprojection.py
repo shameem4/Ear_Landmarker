@@ -807,8 +807,12 @@ def main():
             Pr, moved_r = reseat(f["P"].copy(), depth_f, cam_f, ext, tol)
             print(f"  {f['short']} + re-seat: {int(moved_r.sum())} landmarks sat "
                   f"more than {100*tol:.0f}% of ear extent off the surface")
+            # Say so when it moved nothing: a menu entry that is byte-identical
+            # to another one invites reading a difference into it that is not
+            # there. At this tolerance on this head, it is a no-op.
             seats.append({"label": f["label"].replace(extras, "")
-                          + f", re-seated >{100*tol:.0f}%" + extras,
+                          + f", re-seated >{100*tol:.0f}%"
+                          + ("" if moved_r.any() else " (moved nothing)") + extras,
                           "short": f"{f['short']}+seat", "P": Pr,
                           "hit": f["hit"], "snapped": None,
                           "angles": list(cfg["tri_angles"]),

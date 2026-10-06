@@ -118,25 +118,41 @@ DEFAULTS = dict(
                             # face-on lift -- too few rays across a narrow
                             # baseline. It passes face-on at 8 and keeps improving
                             # with diminishing returns, 34% better at 190.
-    tri_angles=tuple(cone_angles(12, 20.0)),
-                            # 12 views, comfortably past the 8-view break-even
-                            # where triangulation starts beating the single
-                            # face-on lift. --tri-views N overrides it.
-    tri_cone=20.0,          # HALF-ANGLE OF THE VIEW CONE, and it has an optimum.
-                            # Reprojection into a FIXED held-out set, so only the
-                            # fit changes (24 views, 3 heads; face-on is 7.24 px
-                            # throughout, as it must be):
-                            #   cone    triangulated   gain over face-on
-                            #    10d        5.00            +31.0%
-                            #    15d        4.58            +36.7%
-                            #    20d        4.58            +36.8%
-                            #    25d        4.72            +34.8%
-                            #    30d        5.21            +28.1%
-                            #    40d        6.13            +15.3%
-                            # Narrower than 15 and there is too little baseline to
-                            # pin depth; wider than 25 and the detector's 2D output
-                            # degrades faster than the geometry improves. 30 gives
-                            # up a third of the available gain, 40 gives up half.
+    tri_angles=tuple(cone_angles(24, 45.0)),
+                            # 24 views, not 12. The view COUNT is what carries
+                            # the placement: at a fixed cone, going 12 -> 24 buys
+                            # about as much as widening 20 -> 45 does, and at 55
+                            # deg with only 12 views the inner helix sinks into
+                            # the head again. --tri-views N overrides it.
+    tri_cone=45.0,          # HALF-ANGLE OF THE VIEW CONE.
+                            # 20 deg here until it was judged by the wrong thing.
+                            # Reprojection into a fixed held-out set prefers 20
+                            # (4.58 px, +36.8% over face-on; 40 deg gives up half
+                            # that gain) -- but reprojection rewards the lateral
+                            # agreement the fit already optimises and is BLIND TO
+                            # DEPTH, which is the error you can see.
+                            #
+                            # Measured instead by distance from the surface along
+                            # the view ray, which is what the eye objects to
+                            # (median, as % of ear extent):
+                            #   cone/views   20d/12  20d/24  40d/24  45d/24  55d/12
+                            #   off-surface   3.95    3.71    3.26    3.48    3.38
+                            # and visibly: at 20d/12 the inner helix is buried
+                            # inside the head and the outer helix floats off the
+                            # rim; at 45d/24 all 55 land on the ear.
+                            #
+                            # Why a narrow cone cannot work: the detector asserts
+                            # a RAY, and over a cone of half-angle t a lateral
+                            # error of e px becomes a depth error of about
+                            # e/tan(t) -- 2.7x at 20 deg, against an ear only ~90
+                            # px thick. The detector's own cross-view
+                            # disagreement is median 6.7 px (p90 19.5) on a
+                            # ~430 px ear, so 20 deg cannot place depth at all.
+                            # Widening does not pay what the geometry promises,
+                            # because that disagreement itself grows with angle
+                            # (5.7 px at 6 deg off-axis, 14.1 px at 20), which is
+                            # why the table above improves so much less than
+                            # 2.7x. More views is the part that pays.
     tri_thresh=0.03,        # RANSAC inlier distance, as a fraction of ear extent.
                             # It was multiplied by a hardcoded 1.0 rather than the
                             # measured extent until this was fixed, so it did not
