@@ -855,6 +855,7 @@ def landmark_whole_frame(mesh, cfg, pipe):
 
 # MediaPipe FaceMesh canonical indices.
 TRAGION_R, TRAGION_L, FOREHEAD, CHIN = 234, 454, 10, 152
+NOSE_TIP, NASION = 1, 168
 
 
 def head_pose(mesh, cfg):
@@ -867,8 +868,10 @@ def head_pose(mesh, cfg):
     confidences and no way to tell which side is which. MediaPipe finds a face on
     exactly ONE of those six views -- on every head tried -- so the frontal
     direction is unambiguous, and the face landmarks then give a real anatomical
-    frame rather than whichever axis the dataset stored the head on. The ear-to-ear
-    axis comes from the two tragion landmarks, which sit AT the ears.
+    frame rather than whichever axis the dataset stored the head on. The ear
+    direction is the sagittal-plane normal -- 90 degrees from the nose -- built
+    from forehead, chin, nasion and nose tip. The tragion landmarks are used only
+    to pick which side is which and to centre the view, never for the direction.
 
     IT DOES NOT REMOVE PASS 2, AND IT IS NOT MEASURABLY MORE ACCURATE. Head to
     head over four heads, pass-2 confidence against the detector sweep: 0.931 vs
@@ -914,15 +917,40 @@ def head_pose(mesh, cfg):
             h, w = img.shape[:2]
             uv = np.array([[p.x * w, p.y * h] for p in res.face_landmarks[0]])
             P, hit = backproject(depth, uv, cam)
-            if not hit[[TRAGION_R, TRAGION_L, FOREHEAD, CHIN]].all():
+            if not hit[[TRAGION_R, TRAGION_L, FOREHEAD, CHIN,
+                        NOSE_TIP, NASION]].all():
                 continue
             # The landmarks come back in THIS frame's coordinates; everything
             # downstream works in the mesh's own, so convert before using them.
             # Skipping this put the ear view 62-70 deg off instead of 10-24.
             P = (P @ R) + C0
-            lat = P[TRAGION_L] - P[TRAGION_R]
-            lat /= np.linalg.norm(lat)
+            # THE EAR DIRECTION IS 90 DEG FROM THE NOSE: the normal of the
+            # sagittal plane, from the head's own up and forward axes.
+            #
+            # The obvious alternative is the tragion-to-tragion line, and over 12
+            # ears it is no better -- mean 25.1 deg from the pinna plane against
+            # 25.7 here, median 26.9 against 24.2. What decides it is that the
+            # tragion landmarks are the weak ones: the reference implementation in
+            # ../landmarking_stuff/landmarker marks exactly these indices "most
+            # likely not possible" and does not use them. Forehead, chin, nasion
+            # and nose tip are points FaceMesh is actually good at, so the same
+            # answer rests on firmer ground.
+            #
+            # A third option, the head's local surface normal at the tragion, is
+            # better typically (mean 16.4, median 14.4) but has a worse tail
+            # (48.2) and failed outright on 1 of 12. Not taken.
             vert = P[FOREHEAD] - P[CHIN]
+            vert /= np.linalg.norm(vert)
+            fwd = P[NOSE_TIP] - P[NASION]
+            fwd -= vert * (fwd @ vert)
+            if np.linalg.norm(fwd) < 1e-6:
+                continue
+            fwd /= np.linalg.norm(fwd)
+            lat = np.cross(vert, fwd)
+            lat /= np.linalg.norm(lat)
+            # Orient toward the subject's left so "ear 0" keeps its meaning.
+            if lat @ (P[TRAGION_L] - P[TRAGION_R]) < 0:
+                lat = -lat
             vert -= lat * (vert @ lat)
             vert /= np.linalg.norm(vert)
             print(f"mediapipe: face on axis {axis}{'+' if sgn > 0 else '-'}, "
