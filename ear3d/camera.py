@@ -140,17 +140,23 @@ def orbit_extrinsic(yaw, pitch, cfg):
     return E
 
 
-def cone_angles(n, max_deg=30.0):
+def cone_angles(n, max_deg=20.0):
     """`n` view directions spread evenly over a cone about face-on.
 
     A Fibonacci spiral on the spherical cap, so the directions are near-uniform at
     any n and adding views never reshuffles the ones already there. Returns
     (yaw, pitch) degrees.
 
-    The cap is centred on face-on and bounded by `max_deg` because beyond roughly
-    30-40 degrees the ear starts occluding itself: a view that cannot see a
-    landmark contributes no ray for it, and one that half-sees it contributes a
-    bad one.
+    The cap is centred on face-on and bounded by `max_deg`, whose default is the
+    measured optimum: triangulation beats a single face-on lift by 36.8% at 20
+    degrees, 28.1% at 30 and only 15.3% at 40. Narrower leaves too little baseline
+    to pin depth, wider degrades the detector's 2D output faster than it improves
+    the geometry. See tri_cone in ear3d/config.py.
+
+    NOTE this is an angular RADIUS, not a yaw/pitch box. A 3x3 grid at +/-45 deg
+    in each axis has corners 60 degrees off-axis, not 45 -- which is why an
+    earlier grid experiment at "45" collapsed to 5.7 of 9 views detected while a
+    true 40 degree cone keeps all 24.
     """
     if n <= 1:
         return [(0.0, 0.0)]

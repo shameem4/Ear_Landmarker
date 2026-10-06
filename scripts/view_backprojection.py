@@ -539,7 +539,7 @@ def main():
     cfg["chain"] = cfg["chain"] and not a.no_chain
     cfg["triangulate"] = cfg["triangulate"] or a.triangulate or a.tri_views is not None
     if a.tri_views:
-        cfg["tri_angles"] = cone_angles(a.tri_views, 30.0)
+        cfg["tri_angles"] = cone_angles(a.tri_views, cfg["tri_cone"])
     if a.tri_method:
         cfg["tri_method"] = a.tri_method
     if a.snap_radius is not None:

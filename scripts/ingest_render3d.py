@@ -126,7 +126,7 @@ def main() -> None:
         # place in the project where the labels are the product, and every pose
         # rendered from an ear inherits whatever this produces.
         cfg["triangulate"] = True
-        cfg["tri_angles"] = cone_angles(args.tri_views, 30.0)
+        cfg["tri_angles"] = cone_angles(args.tri_views, cfg["tri_cone"])
     det = EarDetector(BLAZEEAR_DIR / DETECTOR_WEIGHTS, "cpu", 0.5)
     # smooth=False: the tracker is for video; on a still it would smooth a
     # one-frame track against wall-clock time and shift the landmarks.

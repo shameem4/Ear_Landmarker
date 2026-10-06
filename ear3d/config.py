@@ -98,9 +98,23 @@ DEFAULTS = dict(
                             # face-on lift -- too few rays across a narrow
                             # baseline. It passes face-on at 8 and keeps improving
                             # with diminishing returns, 34% better at 190.
-    tri_angles=((0, 0), (-25, 0), (25, 0), (-12, -12), (12, 12), (0, -20), (0, 20)),
-                            # 7 by default, which is past the break-even. Use
-                            # cone_angles(N, 30) for more.
+    tri_angles=((0, 0), (-18, 0), (18, 0), (-10, -10), (10, 10), (0, -15), (0, 15)),
+                            # 7 views inside the 20 deg optimum below.
+    tri_cone=20.0,          # HALF-ANGLE OF THE VIEW CONE, and it has an optimum.
+                            # Reprojection into a FIXED held-out set, so only the
+                            # fit changes (24 views, 3 heads; face-on is 7.24 px
+                            # throughout, as it must be):
+                            #   cone    triangulated   gain over face-on
+                            #    10d        5.00            +31.0%
+                            #    15d        4.58            +36.7%
+                            #    20d        4.58            +36.8%
+                            #    25d        4.72            +34.8%
+                            #    30d        5.21            +28.1%
+                            #    40d        6.13            +15.3%
+                            # Narrower than 15 and there is too little baseline to
+                            # pin depth; wider than 25 and the detector's 2D output
+                            # degrades faster than the geometry improves. 30 gives
+                            # up a third of the available gain, 40 gives up half.
     tri_thresh=0.03,        # RANSAC inlier distance, as a fraction of ear extent
     tri_method="lsq",       # "lsq" over all rays, or "ransac".
                             #
