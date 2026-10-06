@@ -213,8 +213,13 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
     def on_layout(ctx):
         rect = win.content_rect
         widget.frame = rect
+        # Give the panel the width the text actually wants. Capping it (it used
+        # to be 420px) made the long lines wrap, and the wrapped text then
+        # overflowed the height measured for the unwrapped version, which is
+        # what put a scrollbar in the readout.
         pref = panel.calc_preferred_size(ctx, gui.Widget.Constraints())
-        panel.frame = gui.Rect(rect.x, rect.y, min(rect.width, 420), pref.height)
+        panel.frame = gui.Rect(rect.x, rect.y, min(rect.width, pref.width),
+                               min(rect.height, pref.height))
     win.set_on_layout(on_layout)
 
     # How the landmarks on screen were produced. Shown because it is not fixed:
@@ -223,7 +228,8 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
     variants = list(variants or [])
     if not variants:
         variants = [{"label": "single face-on lift (depth buffer)",
-                     "P": P3, "hit": hit, "snapped": None}]
+                     "short": "face-on", "P": P3, "hit": hit, "snapped": None,
+                     "angles": None, "method": None, "reseat": False}]
     start = max(0, min(start, len(variants) - 1))
     state = {"drawn": [], "text": None, "busy": False,
              "snapped": variants[start].get("snapped"), "idx": start,
@@ -248,83 +254,196 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
 
     draw_landmarks(variants[start]["P"], variants[start]["hit"])
 
-    def finish(colour, raw_depth):
-        """Landmark the captured frame and redraw. Runs on the main thread."""
+    bbox = mesh.get_axis_aligned_bounding_box()
+    centroid = np.asarray(mesh.vertices).mean(0)
+
+    def absorb(colour, raw_depth):
+        """Take one captured view into the job. Runs on the main thread."""
+        job = state["job"]
         img = np.asarray(colour)[:, :, :3].copy()
         cam = Camera.from_gui(widget.scene.camera, img.shape[:2])
-        depth = gui_depth_to_view(np.asarray(raw_depth), widget.scene.camera)
-        yaw, pitch, off = pose_angles(extrinsic_of(widget.scene.camera))
         res = pipe(img, timestamp=0.0)
-        if not res:
-            state["note"] = f"no ear found at yaw {yaw:+.0f} pitch {pitch:+.0f}"
-            cur = variants[state["idx"]]             # put the previous ones back
-            state["snapped"] = cur.get("snapped")
-            draw_landmarks(cur["P"], cur["hit"])
-            state["busy"] = False
-            print(f"  [L] {state['note']}", flush=True)
-            return
-        best = max(res, key=lambda d: float(d["confidence"]))
-        lm = np.asarray(best["landmarks"], float)
-        Q, qhit, qsnap = backproject_snapped(depth, lm, cam, cfg)
-        state["snapped"] = qsnap
-        draw_landmarks(Q, qhit)
-        # The method line belongs to the number keys. L only ever produces a
-        # single-view lift, and saying so on the note line keeps the readout
-        # honest without pretending the selected method changed.
-        state["note"] = (f"[L] single view at yaw {yaw:+.0f} pitch {pitch:+.0f}: "
-                         f"det {float(best['confidence']):.2f}, {int(qhit.sum())}/55 hit"
-                         + (f", {int(qsnap.sum())} snapped" if qsnap.any() else "")
-                         + f"  -- [{state['idx']+1}] to go back")
-        state["busy"] = False
-        print(f"  [L] {state['note']}", flush=True)
-        # Rewriting the overlay is what refreshes the 2D window: it polls this
-        # file, so the picture there always matches the pose in the 3D window.
-        if cfg["snapshot_png"]:
-            tmp = f"{cfg['snapshot_png']}.{os.getpid()}.tmp.png"
-            Image.fromarray(img).save(tmp, format="PNG")
-            os.replace(tmp, cfg["snapshot_png"])
-        if cfg["overlay_png"]:
-            write_overlay(Image.fromarray(img), lm, cfg["overlay_png"],
-                          note=f"yaw {yaw:+.0f}  pitch {pitch:+.0f}  "
-                               f"det {float(best['confidence']):.2f}",
-                          announce=False)
+        lm, conf = None, float("nan")
+        if res:
+            best = max(res, key=lambda d: float(d["confidence"]))
+            lm = np.asarray(best["landmarks"], float)
+            conf = float(best["confidence"])
+        job["uv"].append(lm if lm is not None else np.full((55, 2), np.nan))
+        job["cams"].append(cam)
+        job["det"].append(conf)
+        if job["i"] == 0:
+            # The first view IS the pose you are standing at, so it is the one
+            # the 2D window and the depth buffer come from.
+            job["img0"], job["lm0"], job["conf0"] = img, lm, conf
+            if raw_depth is not None:
+                job["depth"] = gui_depth_to_view(np.asarray(raw_depth),
+                                                 widget.scene.camera)
+        job["i"] += 1
+        job["stage"] = "fit" if job["i"] >= len(job["angles"]) else "set"
 
-    def relandmark():
-        """Capture THIS window, through the window's own renderer.
+    def grab(want_depth):
+        """Capture the window's current frame, through the window's own renderer.
 
         It must not open an OffscreenRenderer: that is a second Filament context,
         and creating one while the GUI holds the first fails at the driver
         ("failed to create dri2 screen") and takes the process down. The window's
         own scene.render_to_image / render_to_depth_image reuse the live context.
 
-        Both are asynchronous, so the colour capture chains into the depth
-        capture, and the work happens once both have arrived. The landmarks are
-        removed BEFORE capturing -- they are scene geometry, and a frame with
-        them in it would show the landmarker an ear with 55 spheres stuck to it.
+        Both call back from the RENDER thread. Touching the scene from there
+        corrupts the interpreter state outright ("gilstate_tss_set: failed to set
+        current tstate"), so each step hops back to the main thread first.
         """
-        if state["busy"]:
-            return
-        state["busy"] = True
-        for n in state["drawn"]:
-            widget.scene.remove_geometry(n)
-        state["drawn"] = []
-
-        # Both captures call back from the RENDER thread. Touching the scene
-        # from there corrupts the interpreter state outright ("gilstate_tss_set:
-        # failed to set current tstate"), so each step hops back to the main
-        # thread before doing anything.
         app = gui.Application.instance
 
-        def got_depth(colour, d):
-            app.post_to_main_thread(win, lambda: finish(colour, d))
+        def got_depth(c, d):
+            app.post_to_main_thread(win, lambda: absorb(c, d))
 
         def ask_depth(c):
             widget.scene.scene.render_to_depth_image(lambda d: got_depth(c, d))
 
         def got_colour(c):
-            app.post_to_main_thread(win, lambda: ask_depth(c))
+            if want_depth:
+                app.post_to_main_thread(win, lambda: ask_depth(c))
+            else:
+                app.post_to_main_thread(win, lambda: absorb(c, None))
 
         widget.scene.scene.render_to_image(got_colour)
+
+    def fit_job():
+        """Every view is in. Fit the selected method and draw the result."""
+        job = state.pop("job")
+        v = variants[state["idx"]]
+        E = job["home"]                             # put the camera back
+        widget.setup_camera(K, E, size, size, bbox)
+        yaw, pitch = job["base"]
+        n_det = int(np.isfinite(job["det"]).sum())
+
+        def give_up(why):
+            """Keep what was on screen. Drawing nothing, or a cloud of identical
+            points, is not a result -- and a degenerate line set is rejected by
+            the renderer outright ("Caught an unknown exception"), which used to
+            take the process down from inside the tick callback."""
+            state["note"] = f"{why} at yaw {yaw:+.0f} pitch {pitch:+.0f}"
+            cur = variants[state["idx"]]             # put the previous ones back
+            state["snapped"] = cur.get("snapped")
+            draw_landmarks(cur["P"], cur["hit"])
+            state["busy"] = False
+            print(f"  [L] {state['note']}", flush=True)
+
+        if job["lm0"] is None and v.get("angles") is None:
+            give_up("no ear found")
+            return
+
+        if v.get("angles") is None:
+            Q, qhit, qsnap = backproject_snapped(job["depth"], job["lm0"],
+                                                 job["cams"][0], cfg)
+            state["snapped"] = qsnap
+            detail = (f"det {job['conf0']:.2f}, {int(qhit.sum())}/55 hit"
+                      + (f", {int(qsnap.sum())} snapped" if qsnap.any() else ""))
+        else:
+            # The same fit the number keys offer, on rays captured here rather
+            # than at pose zero: the cone is re-centred on where you stand, so
+            # it answers "what does this method make of the ear from here?"
+            Q, n_in, n_view = fit_rays(np.array(job["uv"]), job["cams"],
+                                       v["method"], cfg["tri_thresh"])
+            qhit = np.isfinite(Q).all(axis=1)
+            if v.get("reseat") and job["depth"] is not None and qhit.any():
+                ext = float(np.ptp(Q[qhit], axis=0).max())
+                Q, moved = reseat(np.where(qhit[:, None], Q, centroid),
+                                  job["depth"], job["cams"][0], ext,
+                                  cfg["reseat_tol"])
+            if qhit.sum() < 2:
+                give_up(f"nothing to triangulate ({n_det}/"
+                        f"{len(job['angles'])} views detected)")
+                return
+            Q = np.where(qhit[:, None], Q, centroid)
+            state["snapped"] = None
+            detail = (f"{n_det}/{len(job['angles'])} views detected, "
+                      f"{int(qhit.sum())}/55 fitted")
+
+        draw_landmarks(Q, qhit)
+        # The method line belongs to the number keys, and L now runs whichever
+        # one is selected, so it has nothing left to say about method. The note
+        # line stays empty on success: the landmarks are the answer.
+        state["note"] = ""
+        state["busy"] = False
+        print(f"  [L] {v['label']} at yaw {yaw:+.0f} pitch {pitch:+.0f}: "
+              f"{detail}", flush=True)
+        # Rewriting the overlay is what refreshes the 2D window: it polls this
+        # file, so the picture there always matches the pose in the 3D window.
+        if job["lm0"] is None:
+            return
+        if cfg["snapshot_png"]:
+            tmp = f"{cfg['snapshot_png']}.{os.getpid()}.tmp.png"
+            Image.fromarray(job["img0"]).save(tmp, format="PNG")
+            os.replace(tmp, cfg["snapshot_png"])
+        if cfg["overlay_png"]:
+            write_overlay(Image.fromarray(job["img0"]), job["lm0"],
+                          cfg["overlay_png"],
+                          note=f"yaw {yaw:+.0f}  pitch {pitch:+.0f}  "
+                               f"det {job['conf0']:.2f}", announce=False)
+
+    def pump():
+        """Advance the capture job one tick. Driven from the tick callback.
+
+        A tick-driven state machine rather than a chain of callbacks because the
+        camera has to MOVE between views, and a capture requested in the same
+        tick as the move can return the frame from before it. Setting the camera,
+        letting a frame go by, then shooting keeps each image honest about the
+        pose recorded with it.
+        """
+        job = state.get("job")
+        if not job:
+            return False
+        if job["stage"] == "set":
+            if job["i"] > 0:          # view 0 is where they already stand
+                yaw, pitch = job["angles"][job["i"]]
+                E = orbit_extrinsic(yaw, pitch, cfg)
+                widget.setup_camera(K, E, size, size, bbox)
+            job["stage"] = "settle"
+            return True
+        if job["stage"] == "settle":
+            job["stage"] = "shoot"
+            return True
+        if job["stage"] == "shoot":
+            job["stage"] = "capturing"
+            grab(job["i"] == 0)       # depth only from the pose they stand at
+            return True
+        if job["stage"] == "fit":
+            fit_job()
+            return True
+        return False                  # "capturing": waiting on the renderer
+
+    def relandmark():
+        """Re-run the SELECTED method from where the camera is now.
+
+        For the single-view variant that is one capture at this pose. For a
+        triangulated variant the cone is re-centred on this pose and the window
+        walks its own camera through every view, because triangulating needs
+        renders and the offscreen renderer is not available while the GUI holds
+        the context.
+
+        The landmarks come off the scene BEFORE any capture: they are geometry,
+        and a frame with them in it would show the landmarker an ear with 55
+        spheres stuck to it.
+        """
+        if state["busy"]:
+            return
+        v = variants[state["idx"]]
+        yaw, pitch, _ = pose_angles(extrinsic_of(widget.scene.camera))
+        offsets = v.get("angles") or [(0.0, 0.0)]
+        state["busy"] = True
+        state["job"] = {"angles": [(yaw + dy, pitch + dp) for dy, dp in offsets],
+                        "i": 0, "stage": "set", "uv": [], "cams": [], "det": [],
+                        "depth": None, "img0": None, "lm0": None,
+                        "conf0": float("nan"), "base": (yaw, pitch),
+                        "home": extrinsic_of(widget.scene.camera)}
+        for n in state["drawn"]:
+            widget.scene.remove_geometry(n)
+        state["drawn"] = []
+        state["note"] = (f"[L] {v['label']}: capturing "
+                         f"{len(state['job']['angles'])} view(s)...")
+        print(f"  {state['note']}", flush=True)
 
     def select(i):
         """Show variant i. No rendering: the points are already computed."""
@@ -373,14 +492,20 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
             state["hook"](dict(relandmark=relandmark, select=select, state=state,
                                variants=variants, win=win, widget=widget,
                                app=gui.Application.instance))
+        busy = pump()
         yaw, pitch, off = pose_angles(extrinsic_of(widget.scene.camera))
         text = (f"yaw {yaw:+6.1f}\u00b0   pitch {pitch:+6.1f}\u00b0   "
-                f"off-axis {off:5.1f}\u00b0\n{state['method']}\n{state['note']}\n"
-                f"{menu}\n[L] re-landmark from this view")
+                f"off-axis {off:5.1f}\u00b0\n{state['method']}\n"
+                + (f"{state['note']}\n" if state["note"] else "")
+                + f"{menu}\n[L] re-landmark from this view, same method")
         if text == state["text"]:
-            return False
+            return busy
         state["text"] = text
         info.text = text
+        # The panel is only measured during layout, so a readout that gains or
+        # loses a line must ask for one. Without this the frame keeps the height
+        # measured for the old text and the surplus goes behind a scrollbar.
+        win.set_needs_layout()
         return True
     win.set_on_tick_event(tick)
 
@@ -645,9 +770,12 @@ def main():
     # (collect_rays), so what differs between them is only the fit -- and the
     # renders are what cost, so five methods are barely dearer than one.
     extras = ("  +cliff snap" if cfg["snap"] else "") + ("  +chain" if cfg["chain"] else "")
+    # "angles" is what L re-runs: None means a single view, a list of yaw/pitch
+    # offsets means a cone, re-centred on wherever the camera is at the time.
     variants = [{"label": "single face-on lift (depth buffer)" + extras,
                  "short": "face-on", "P": P3.copy(), "hit": hit.copy(),
-                 "snapped": None}]
+                 "snapped": None, "angles": None, "method": None,
+                 "reseat": False}]
     sel = 0
     if cfg["triangulate"]:
         nv = len(cfg["tri_angles"])
@@ -666,7 +794,9 @@ def main():
                   f"moved from the face-on lift by median {np.median(moved):.3f}, "
                   f"max {moved.max():.3f} (ear spans ~1)")
             fits.append({"label": f"triangulated from {nv} views ({m})" + extras,
-                         "short": m, "P": Pm, "hit": hm, "snapped": None})
+                         "short": m, "P": Pm, "hit": hm, "snapped": None,
+                         "angles": list(cfg["tri_angles"]), "method": m,
+                         "reseat": False})
         # The re-seated pair goes after both plain fits, so 2/3 compare the fits
         # and 4/5 are the same two with the depth buffer given the last word on
         # how far away each point is. Only points well off the surface move.
@@ -680,7 +810,9 @@ def main():
             seats.append({"label": f["label"].replace(extras, "")
                           + f", re-seated >{100*tol:.0f}%" + extras,
                           "short": f"{f['short']}+seat", "P": Pr,
-                          "hit": f["hit"], "snapped": None})
+                          "hit": f["hit"], "snapped": None,
+                          "angles": list(cfg["tri_angles"]),
+                          "method": f["method"], "reseat": True})
         variants += fits + seats
         # Open on whatever the flags asked for, so running with no arguments
         # still shows the default flow -- the keys only add ways to compare.

@@ -490,6 +490,18 @@ def test_parallel_rays_are_refused_rather_than_solved():
     assert vbp.lsq_point(o, d) is None
 
 
+def test_pose_angles_inverts_orbit_extrinsic():
+    """L builds its cone as "where I stand" + offsets, then renders each view
+    with orbit_extrinsic. pose_angles supplies the first term, so if the two were
+    not exact inverses the cone would be centred somewhere other than the pose
+    the user is actually looking from, silently."""
+    cfg = dict(vbp.DEFAULTS)
+    for yaw in (-40.0, -17.0, 0.0, 11.0, 33.0):
+        for pitch in (-30.0, -7.0, 0.0, 14.0, 25.0):
+            y, p, _ = vbp.pose_angles(vbp.orbit_extrinsic(yaw, pitch, cfg))
+            assert abs(y - yaw) < 1e-9 and abs(p - pitch) < 1e-9, (yaw, pitch)
+
+
 def test_fit_rays_recovers_the_point_both_methods_agree_on():
     """The seam the number keys rest on: one set of rays, several fits.
 
