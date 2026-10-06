@@ -51,8 +51,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from ear3d.backproject import visible                              # noqa: E402
 from ear3d.config import DEFAULTS, EAR3D_DIR                       # noqa: E402
+from ear3d.camera import cone_angles                               # noqa: E402
 from ear3d.frames import find_ears, head_pose, load_head           # noqa: E402
-from ear3d.label import label_two_pass                             # noqa: E402
+from ear3d.label import label_two_pass, triangulate_landmarks      # noqa: E402
 from ear3d.render import render                                    # noqa: E402
 from eval_test import best_ckpt                                    # noqa: E402
 from skin import LABEL_TONE, apply_skin                            # noqa: E402
@@ -110,10 +111,22 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--quality", type=int, default=95)
     p.add_argument("--min-conf", type=float, default=0.25)
+    p.add_argument("--tri-views", type=int, default=0,
+                   help="build each label by intersecting rays from this many "
+                        "views instead of lifting the face-on render alone")
     args = p.parse_args()
 
     from inference import BLAZEEAR_DIR, DETECTOR_WEIGHTS, EarDetector, EarLandmarkerPipeline
     cfg = dict(DEFAULTS, run=args.label_run)
+    if args.tri_views:
+        # Triangulated labels, not a single-view lift. Measured by leave-one-view-
+        # out reprojection over 8 heads: 8.9 px for the face-on lift against 6.7
+        # px for the ray intersection, ear ~430 px. It costs a render and a
+        # pipeline call per view PER EAR, so it is opt-in -- but this is the one
+        # place in the project where the labels are the product, and every pose
+        # rendered from an ear inherits whatever this produces.
+        cfg["triangulate"] = True
+        cfg["tri_angles"] = cone_angles(args.tri_views, 30.0)
     det = EarDetector(BLAZEEAR_DIR / DETECTOR_WEIGHTS, "cpu", 0.5)
     # smooth=False: the tracker is for video; on a still it would smooth a
     # one-frame track against wall-clock time and shift the landmarks.
@@ -158,6 +171,13 @@ def main() -> None:
                 n_rejected += 1
                 print(f"    rejected {os.path.basename(hp)}: {why}", flush=True)
                 continue
+
+            if cfg.get("triangulate"):
+                Ptri, n_in, n_view = triangulate_landmarks(cfg, base, pipe,
+                                                           verbose=False)
+                ok = np.isfinite(Ptri).all(axis=1) & (n_view >= 2)
+                P3 = np.where(ok[:, None], Ptri, P3)
+                hit = hit | ok
 
             # QUALITY GATE. Every pose inherits this one labelling, so a bad
             # face-on result poisons the whole ear.

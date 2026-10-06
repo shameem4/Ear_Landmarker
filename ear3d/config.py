@@ -84,18 +84,45 @@ DEFAULTS = dict(
     # --- triangulation (--triangulate) --------------------------------------
     triangulate=False,      # build each landmark by intersecting the rays from
                             # several views instead of lifting one view through
-                            # its depth buffer. Measured by leave-one-view-out
-                            # reprojection over 8 heads: 8.9 px for the single
-                            # face-on lift, 6.7 px for this. Off by default
-                            # because it costs a render and a pipeline call per
-                            # view, which the viewer pays at startup.
+                            # its depth buffer. Off by default only because it
+                            # costs a render and a pipeline call per view.
+                            #
+                            # VIEWS ARE SYNTHETIC, SO THEY ARE CHEAP, AND MORE OF
+                            # THEM HELP. Reprojection into a FIXED held-out set of
+                            # 8 views, so only the fit changes with N (px, ear
+                            # ~430 px, 4 heads):
+                            #     views      4     8    15    30    60   100   190
+                            #     ray fit 18.69 12.72 11.34 10.68  9.97  9.52  8.89
+                            #     face-on 13.46 (constant, by construction)
+                            # Below ~8 views the fit is WORSE than the single
+                            # face-on lift -- too few rays across a narrow
+                            # baseline. It passes face-on at 8 and keeps improving
+                            # with diminishing returns, 34% better at 190.
     tri_angles=((0, 0), (-25, 0), (25, 0), (-12, -12), (12, 12), (0, -20), (0, 20)),
+                            # 7 by default, which is past the break-even. Use
+                            # cone_angles(N, 30) for more.
     tri_thresh=0.03,        # RANSAC inlier distance, as a fraction of ear extent
-    tri_method="lsq",       # "lsq" over all rays, or "ransac". LSQ wins at this
-                            # view count (6.7 px against 7.1): across a baseline
-                            # this narrow, two-ray minimal sets are noisy and
-                            # dropping a ray costs more than the outlier it
-                            # removes. RANSAC is right as the baseline widens.
+    tri_method="lsq",       # "lsq" over all rays, or "ransac".
+                            #
+                            # RANSAC NEVER WINS HERE, and it was expected to. It
+                            # ties least squares at every view count from 4 to 190
+                            # (within 0.1 px) and at both a 30 and a 60 degree
+                            # cone. Widening the cone was the test of the obvious
+                            # explanation -- that a narrow cone has no outliers to
+                            # reject -- and it fails: at 60 deg the inlier
+                            # fraction drops from 91% to 69% on pp12, so RANSAC is
+                            # rejecting plenty, and still does not win.
+                            #
+                            # The likeliest reason is that these are not gross
+                            # outliers. A landmark at an extreme angle drifts
+                            # consistently rather than landing somewhere random, so
+                            # the rays are BIASED, not wild. A vote cannot fix a
+                            # bias: the rays it keeps are biased too, and it has
+                            # thrown away information. Untested.
+                            #
+                            # Keep the cone near 30 deg regardless. At 60 deg every
+                            # method is 3x worse and detection falls to 53-62 of 70
+                            # views, because the ear starts occluding itself.
 
     # --- multi-view agreement (--multiview) ---------------------------------
     mv_angles=((0, 0), (-25, 0), (25, 0), (-12, -12), (12, 12), (0, -20), (0, 20)),
