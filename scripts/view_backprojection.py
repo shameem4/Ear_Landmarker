@@ -512,8 +512,8 @@ def main():
     p.add_argument("--no-mediapipe", action="store_true", help="use the ear-detector sweep")
     p.add_argument("--no-snap", action="store_true", help="show the raw back-projection")
     p.add_argument("--no-chain", action="store_true", help="skip the link-spacing pass")
-    p.add_argument("--triangulate", action="store_true",
-                   help="intersect rays from many views instead of lifting one")
+    p.add_argument("--no-triangulate", action="store_true",
+                   help="lift the single face-on view instead of intersecting rays")
     p.add_argument("--tri-views", type=int, default=None,
                    help="how many views to triangulate from (spread over a cone)")
     p.add_argument("--tri-method", choices=["lsq", "ransac"], default=None)
@@ -544,7 +544,8 @@ def main():
     cfg["use_mediapipe"] = cfg["use_mediapipe"] and not a.no_mediapipe
     cfg["snap"] = cfg["snap"] and not a.no_snap
     cfg["chain"] = cfg["chain"] and not a.no_chain
-    cfg["triangulate"] = cfg["triangulate"] or a.triangulate or a.tri_views is not None
+    cfg["triangulate"] = ((cfg["triangulate"] or a.tri_views is not None)
+                          and not a.no_triangulate)
     if a.tri_views:
         cfg["tri_angles"] = cone_angles(a.tri_views, cfg["tri_cone"])
     if a.tri_method:
