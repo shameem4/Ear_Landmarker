@@ -437,3 +437,23 @@ def test_agreement_needs_at_least_two_views():
     spread, _, nview = vbp.agreement(P, ok)
     assert np.isnan(spread).all(), "one view cannot disagree with itself"
     assert (nview == 1).all()
+
+
+def test_orbit_at_zero_is_exactly_the_face_on_camera():
+    """An orbit to (0, 0) must BE the canonical view, not a rolled copy of it.
+
+    It was not: taking right = cross(up, z) negates x and y against the OpenCV
+    convention camera_ke uses, which is a 180 degree roll. Every orbit render came
+    out upside down, the detector still found ears in them at reduced confidence,
+    and nothing failed -- so this is pinned rather than trusted.
+    """
+    _, E0 = vbp.camera_ke(SIZE, CFG)
+    assert np.allclose(vbp.orbit_extrinsic(0, 0, CFG), E0, atol=1e-9)
+
+
+def test_orbit_keeps_the_horizon_level():
+    """No roll at any orbit: the camera's x axis stays perpendicular to world up."""
+    for yaw in (-40, -15, 0, 15, 40):
+        for pitch in (-20, 0, 20):
+            R = vbp.orbit_extrinsic(yaw, pitch, CFG)[:3, :3]
+            assert abs(R[0] @ np.array([0.0, 1.0, 0.0])) < 1e-9, f"roll at {yaw},{pitch}"

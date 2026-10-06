@@ -19,5 +19,7 @@ from .label import (agreement, label_two_pass, landmark_whole_frame,
                     multiview, report_agreement)
 from .render import (LINE_MATERIAL, MATERIAL, gui_depth_to_view, light_scene,
                      render)
+from .triangulate import (lsq_point, ransac_point, ray_distance,
+                          triangulate)
 from .scheme import (CHIN, FOREHEAD, NASION, NOSE_TIP, STRIPS, STRIP_COLOURS,
                      STRIP_NAMES, TRAGION_L, TRAGION_R)

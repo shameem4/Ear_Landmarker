@@ -111,15 +111,30 @@ class Camera:
 
 
 def orbit_extrinsic(yaw, pitch, cfg):
-    """Extrinsic for a camera orbited to (yaw, pitch) about the ear, looking at it."""
-    y, p = np.radians(yaw), np.radians(pitch)
+    """Extrinsic for a camera orbited to (yaw, pitch) about the ear, looking at it.
+
+    The basis MUST match camera_ke's default at (0, 0), or every orbit render is a
+    rolled version of the face-on view. It did not: taking right = cross(up, z)
+    negates both x and y against the OpenCV convention camera_ke uses, which is a
+    180 degree roll -- the renders came out upside down. The detector still found
+    ears in them, at reduced confidence, so nothing failed loudly.
+
+    OpenCV convention: z forward into the scene, x right, y DOWN. Right is then
+    cross(z, up), not cross(up, z).
+    """
+    y_, p_ = np.radians(yaw), np.radians(pitch)
     d = cfg["eye_z"]
-    C = np.array([d * np.sin(y) * np.cos(p), d * np.sin(p), d * np.cos(y) * np.cos(p)])
-    z = -C / np.linalg.norm(C)
-    x = np.cross([0.0, 1.0, 0.0], z)
-    x /= np.linalg.norm(x)
-    yv = np.cross(z, x)
-    R = np.stack([x, yv, z])
+    C = np.array([d * np.sin(y_) * np.cos(p_), d * np.sin(p_), d * np.cos(y_) * np.cos(p_)])
+    z = -C / np.linalg.norm(C)                       # forward, into the scene
+    up = np.array([0.0, 1.0, 0.0])
+    x = np.cross(z, up)
+    nx = np.linalg.norm(x)
+    if nx < 1e-9:                                    # looking straight up or down
+        x = np.array([1.0, 0.0, 0.0])
+    else:
+        x = x / nx
+    y = np.cross(z, x)
+    R = np.stack([x, y, z])
     E = np.eye(4)
     E[:3, :3], E[:3, 3] = R, -R @ C
     return E
