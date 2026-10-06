@@ -208,23 +208,13 @@ def report_agreement(spread, nview, ear_extent=1.0):
         f"{k}({100*spread[k]/ear_extent:.0f}%)" for k in worst))
 
 
-def triangulate_landmarks(cfg, mesh, pipe, angles=None, verbose=True):
-    """Landmark from several views and intersect the rays. Returns (P, n_in, n_view).
+def collect_rays(cfg, mesh, pipe, angles=None, verbose=True):
+    """Render each view once and landmark it. Returns (uv [V,55,2], cams).
 
-    The alternative to lifting one view through its depth buffer. A 2D detection
-    asserts a RAY; what that ray later hits is a separate question, and it is the
-    hitting that puts a landmark on the scalp when the detection falls just
-    outside the pinna. Intersecting rays from several views never consults a
-    depth value, so that failure cannot occur.
-
-    Measured by leave-one-view-out reprojection over 8 heads at 7 views, against
-    the single face-on lift: 8.9 px face-on, 6.7 px least squares over all rays,
-    7.1 px RANSAC, with the ear about 430 px across. Better on 7 of 8 heads.
-
-    Costs one render and one pipeline call per view, so it is off by default in
-    the viewer and worth it anywhere the labels matter more than the latency.
+    Separated from the fitting so several fits can share one set of renders --
+    the renders are what cost, and lsq, ransac and a re-seat all want the same
+    rays. NaN where a view produced no detection.
     """
-    from .triangulate import lsq_point, ransac_point
     angles = angles or cfg["tri_angles"]
     uv = np.full((len(angles), 55, 2), np.nan)
     cams = []
@@ -241,18 +231,20 @@ def triangulate_landmarks(cfg, mesh, pipe, angles=None, verbose=True):
         if verbose:
             print(f"  view ({yaw:+.0f},{pitch:+.0f}): det "
                   f"{float(best['confidence']):.2f}")
+    return uv, cams
 
-    # Always fit by least squares first. It is the answer when tri_method is
-    # "lsq", and when it is "ransac" it still supplies the ear extent the inlier
-    # threshold is a fraction of -- which was previously hardcoded to 1.0, so
-    # tri_thresh did not mean what the config said it meant.
-    P = np.full((55, 3), np.nan)
-    n_in = np.zeros(55, int)
-    n_view = np.zeros(55, int)
+
+def fit_rays(uv, cams, method="lsq", thresh=0.03):
+    """Fit 3D points from already-collected rays. Returns (P, n_in, n_view)."""
+    from .triangulate import lsq_point, ransac_point
+    V, K, _ = np.asarray(uv).shape
+    P = np.full((K, 3), np.nan)
+    n_in = np.zeros(K, int)
+    n_view = np.zeros(K, int)
     rays = {}
-    for k in range(55):
+    for k in range(K):
         o, d = [], []
-        for i in range(len(angles)):
+        for i in range(V):
             if np.isfinite(uv[i, k]).all():
                 a, b = cams[i].rays(uv[i, k][None, :])
                 o.append(a[0]); d.append(b[0])
@@ -260,12 +252,44 @@ def triangulate_landmarks(cfg, mesh, pipe, angles=None, verbose=True):
         if len(o) < 2:
             continue
         rays[k] = (np.array(o), np.array(d))
-        q = lsq_point(rays[k][0], rays[k][1])
+        q = lsq_point(*rays[k])
         if q is not None:
             P[k] = q
             n_in[k] = len(o)
-    if cfg.get("tri_method", "lsq") != "ransac":
+    if method != "ransac":
         return P, n_in, n_view
+    ok = np.isfinite(P).all(axis=1)
+    if ok.sum() < 5:
+        return P, n_in, n_view
+    ext = float(np.ptp(P[ok], axis=0).max())
+    for k, (o, d) in rays.items():
+        q, inl = ransac_point(o, d, thresh * ext, iters=160,
+                              rng=np.random.default_rng(k))
+        if q is not None:
+            P[k] = q
+            n_in[k] = int(inl.sum()) if inl is not None else 0
+    return P, n_in, n_view
+
+
+def triangulate_landmarks(cfg, mesh, pipe, angles=None, verbose=True):
+    """Landmark from several views and intersect the rays. Returns (P, n_in, n_view).
+
+    The alternative to lifting one view through its depth buffer. A 2D detection
+    asserts a RAY; what that ray later hits is a separate question, and it is the
+    hitting that puts a landmark on the scalp when the detection falls just
+    outside the pinna. Intersecting rays from several views never consults a
+    depth value, so that failure cannot occur.
+
+    Measured by leave-one-view-out reprojection over 8 heads at 7 views, against
+    the single face-on lift: 8.9 px face-on, 6.7 px least squares over all rays,
+    7.1 px RANSAC, with the ear about 430 px across. Better on 7 of 8 heads.
+
+    Costs one render and one pipeline call per view, so it is off by default in
+    the viewer and worth it anywhere the labels matter more than the latency.
+    """
+    uv, cams = collect_rays(cfg, mesh, pipe, angles=angles, verbose=verbose)
+    return fit_rays(uv, cams, cfg.get("tri_method", "lsq"),
+                    cfg.get("tri_thresh", 0.03))
 
     ok = np.isfinite(P).all(axis=1)
     if ok.sum() < 5:

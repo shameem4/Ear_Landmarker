@@ -92,8 +92,9 @@ from ear3d.draw import (ray_lines, save_agreement_render,        # noqa: E402,F4
                         spheres, strip_lines, write_overlay)
 from ear3d.frames import (find_ears, frame_from, head_pose,      # noqa: E402,F401
                           in_frame, load_head, plane_normal)
-from ear3d.label import (agreement, label_two_pass, multiview,   # noqa: E402,F401
-                         report_agreement, triangulate_landmarks)
+from ear3d.label import (agreement, collect_rays, fit_rays,   # noqa: E402,F401
+                         label_two_pass, multiview, report_agreement,
+                         triangulate_landmarks)
 from ear3d.render import (LINE_MATERIAL, MATERIAL,               # noqa: E402,F401
                           gui_depth_to_view, light_scene, render)
 from ear3d.scheme import STRIPS, STRIP_COLOURS, STRIP_NAMES      # noqa: E402,F401
@@ -158,7 +159,8 @@ EAR3D_DIR = Path(os.environ.get("EAR3D_DIR", ROOT.parent / "clean_3d_data"))
 
 
 def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
-         title="back-projected ear landmarks", on_tick=None):
+         title="back-projected ear landmarks", on_tick=None,
+         variants=None, start=0):
     """Interactive window -- SAME renderer and SAME camera as the snapshot.
 
     Built from gui.Window rather than O3DVisualizer because that class exposes
@@ -171,13 +173,22 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
       back-projection actually works at. The mesh is fixed in its pinna frame, so
       camera yaw/pitch IS the pose; face-on reads 0/0 by construction.
 
+      1..9 switch between the lifting methods in `variants`, which are all
+      computed up front by main(). They have to be: each triangulated method
+      needs a dozen offscreen renders, and an OffscreenRenderer cannot be opened
+      while this window holds the Filament context. So the keys are a pure
+      switch between answers already in hand -- instant, and comparable, because
+      every method saw exactly the same renders and the same detections.
+
       L re-landmarks from where you are standing. The 3D landmarks are removed,
       the mesh alone is re-rendered through the window's CURRENT camera, the
       pipeline runs on that image, and the result is back-projected through the
       depth buffer of that same render. So it answers "what would the model make
       of the ear from here?" rather than re-showing the face-on answer. The
       landmarks it draws are a fresh measurement at this pose, not the pose-zero
-      ones rotated.
+      ones rotated. L does not change the selected method -- a single view is all
+      it can ever be -- so it reports itself on the note line and leaves the
+      method line to the number keys. Press the selected number to get back.
     """
     gui = o3d.visualization.gui
     rendering = o3d.visualization.rendering
@@ -206,22 +217,18 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
         panel.frame = gui.Rect(rect.x, rect.y, min(rect.width, 420), pref.height)
     win.set_on_layout(on_layout)
 
-    # How the landmarks on screen were produced. It is not always the same thing:
-    # the opening set may be triangulated, while L re-labels from a single view,
-    # and telling them apart matters when judging what is drawn.
-    if cfg["triangulate"]:
-        method = (f"triangulated from {len(cfg['tri_angles'])} views "
-                  f"({cfg['tri_method']})")
-        if cfg["reseat"]:
-            method += f", re-seated >{100*cfg['reseat_tol']:.0f}%"
-    else:
-        method = "single face-on lift (depth buffer)"
-    if cfg["snap"]:
-        method += "  +cliff snap"
-    if cfg["chain"]:
-        method += "  +chain"
-    state = {"drawn": [], "text": None, "busy": False, "snapped": None,
-             "method": method, "note": "face-on, as labelled"}
+    # How the landmarks on screen were produced. Shown because it is not fixed:
+    # the number keys swap between methods, and judging what is drawn needs to
+    # know which one made it.
+    variants = list(variants or [])
+    if not variants:
+        variants = [{"label": "single face-on lift (depth buffer)",
+                     "P": P3, "hit": hit, "snapped": None}]
+    start = max(0, min(start, len(variants) - 1))
+    state = {"drawn": [], "text": None, "busy": False,
+             "snapped": variants[start].get("snapped"), "idx": start,
+             "method": variants[start]["label"], "note": "as computed"}
+    menu = "   ".join(f"[{i+1}]{v['short']}" for i, v in enumerate(variants))
 
     def draw_landmarks(P3, hit):
         for n in state["drawn"]:
@@ -239,7 +246,7 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
         widget.scene.add_geometry("lmlines", strip_lines(P3), LINE_MATERIAL)
         state["drawn"] = ["lm", "lmlines"]
 
-    draw_landmarks(P3, hit)
+    draw_landmarks(variants[start]["P"], variants[start]["hit"])
 
     def finish(colour, raw_depth):
         """Landmark the captured frame and redraw. Runs on the main thread."""
@@ -250,7 +257,9 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
         res = pipe(img, timestamp=0.0)
         if not res:
             state["note"] = f"no ear found at yaw {yaw:+.0f} pitch {pitch:+.0f}"
-            draw_landmarks(P3, hit)                 # put the previous ones back
+            cur = variants[state["idx"]]             # put the previous ones back
+            state["snapped"] = cur.get("snapped")
+            draw_landmarks(cur["P"], cur["hit"])
             state["busy"] = False
             print(f"  [L] {state['note']}", flush=True)
             return
@@ -259,12 +268,13 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
         Q, qhit, qsnap = backproject_snapped(depth, lm, cam, cfg)
         state["snapped"] = qsnap
         draw_landmarks(Q, qhit)
-        state["method"] = ("single view at this pose (depth buffer)"
-                           + ("  +cliff snap" if cfg["snap"] else "")
-                           + ("  +chain" if cfg["chain"] else ""))
-        state["note"] = (f"re-landmarked at yaw {yaw:+.0f} pitch {pitch:+.0f}: "
+        # The method line belongs to the number keys. L only ever produces a
+        # single-view lift, and saying so on the note line keeps the readout
+        # honest without pretending the selected method changed.
+        state["note"] = (f"[L] single view at yaw {yaw:+.0f} pitch {pitch:+.0f}: "
                          f"det {float(best['confidence']):.2f}, {int(qhit.sum())}/55 hit"
-                         + (f", {int(qsnap.sum())} snapped" if qsnap.any() else ""))
+                         + (f", {int(qsnap.sum())} snapped" if qsnap.any() else "")
+                         + f"  -- [{state['idx']+1}] to go back")
         state["busy"] = False
         print(f"  [L] {state['note']}", flush=True)
         # Rewriting the overlay is what refreshes the 2D window: it polls this
@@ -316,13 +326,37 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
 
         widget.scene.scene.render_to_image(got_colour)
 
+    def select(i):
+        """Show variant i. No rendering: the points are already computed."""
+        if state["busy"]:
+            return
+        if not 0 <= i < len(variants):
+            state["note"] = (f"[{i+1}] no such method -- "
+                             f"{len(variants)} available")
+            print(f"  {state['note']}", flush=True)
+            return
+        v = variants[i]
+        state["idx"] = i
+        state["snapped"] = v.get("snapped")
+        draw_landmarks(v["P"], v["hit"])
+        state["method"] = v["label"]
+        state["note"] = f"[{i+1}] {v['label']}"
+        print(f"  {state['note']}", flush=True)
+
     def on_key(e):
         # gui.Window.set_on_key wants a BOOL -- True to stop dispatching. It is
         # gui.Widget.set_on_key_event that takes an EventCallbackResult, and
         # returning one here is not a type error at registration: it crashes
         # inside app.run() the first time any key is pressed.
-        if e.type == gui.KeyEvent.Type.DOWN and e.key == gui.KeyName.L:
+        if e.type != gui.KeyEvent.Type.DOWN:
+            return False
+        if e.key == gui.KeyName.L:
             relandmark()
+            return True
+        # The digit KeyNames ARE their ASCII codes (gui.KeyName.ONE == 49), so
+        # this covers 1..9 without naming each one.
+        if ord("1") <= int(e.key) <= ord("9"):
+            select(int(e.key) - ord("1"))
             return True
         return False
     win.set_on_key(on_key)
@@ -336,12 +370,13 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
 
     def tick():
         if "hook" in state:
-            state["hook"](dict(relandmark=relandmark, state=state, win=win,
-                               widget=widget, app=gui.Application.instance))
+            state["hook"](dict(relandmark=relandmark, select=select, state=state,
+                               variants=variants, win=win, widget=widget,
+                               app=gui.Application.instance))
         yaw, pitch, off = pose_angles(extrinsic_of(widget.scene.camera))
         text = (f"yaw {yaw:+6.1f}\u00b0   pitch {pitch:+6.1f}\u00b0   "
                 f"off-axis {off:5.1f}\u00b0\n{state['method']}\n{state['note']}\n"
-                f"[L] re-landmark from this view")
+                f"{menu}\n[L] re-landmark from this view")
         if text == state["text"]:
             return False
         state["text"] = text
@@ -605,32 +640,55 @@ def main():
     # arrays stay finite; its sphere is drawn black so it reads as "no result".
     P3 = np.where(np.isfinite(P3), P3, V.mean(0))
 
+    # One entry per lifting method, all computed here, switched by the number
+    # keys in the window. They share ONE set of renders and detections
+    # (collect_rays), so what differs between them is only the fit -- and the
+    # renders are what cost, so five methods are barely dearer than one.
+    extras = ("  +cliff snap" if cfg["snap"] else "") + ("  +chain" if cfg["chain"] else "")
+    variants = [{"label": "single face-on lift (depth buffer)" + extras,
+                 "short": "face-on", "P": P3.copy(), "hit": hit.copy(),
+                 "snapped": None}]
+    sel = 0
     if cfg["triangulate"]:
-        # Replace the single-view lift with a ray intersection over many views.
-        # The 3D window then shows triangulated landmarks; the 2D overlay still
-        # shows the face-on detection, which is what the landmarker actually said.
-        print(f"triangulating from {len(cfg['tri_angles'])} views "
-              f"({cfg['tri_method']})")
-        Ptri, n_in, n_view = triangulate_landmarks(cfg, g, pipe)
-        ok = np.isfinite(Ptri).all(axis=1)
-        moved = np.linalg.norm(Ptri[ok] - P3[ok], axis=1)
-        print(f"  {int(ok.sum())}/55 triangulated, mean {n_view[ok].mean():.1f} views "
-              f"and {n_in[ok].mean():.1f} inliers each")
-        print(f"  moved from the face-on lift by median {np.median(moved):.3f}, "
-              f"max {moved.max():.3f} (ear spans ~1)")
-        P3 = np.where(ok[:, None], Ptri, P3)
-        hit = hit | ok
-        if cfg["reseat"]:
-            # Triangulation decides WHERE ON THE EAR; the depth buffer is still
-            # authoritative for how far, once the lateral position is right. Only
-            # points well off the surface are moved -- the rest are within the
-            # noise of the surface itself and moving them only costs accuracy.
-            img_f, depth_f, cam_f = render(g, cfg)
-            ext = float(np.ptp(P3[hit], axis=0).max())
-            P3, moved_r = reseat(P3, depth_f, cam_f, ext, cfg["reseat_tol"])
-            if moved_r.any():
-                print(f"  re-seated {int(moved_r.sum())} landmarks that sat more than "
-                      f"{100*cfg['reseat_tol']:.0f}% of ear extent off the surface")
+        nv = len(cfg["tri_angles"])
+        print(f"triangulating from {nv} views (all methods, one set of renders)")
+        uv, cams = collect_rays(cfg, g, pipe)
+        img_f, depth_f, cam_f = render(g, cfg)
+        fits = []
+        for m in ("lsq", "ransac"):
+            Pm, n_in, n_view = fit_rays(uv, cams, m, cfg["tri_thresh"])
+            ok = np.isfinite(Pm).all(axis=1)
+            Pm = np.where(ok[:, None], Pm, P3)
+            hm = hit | ok
+            moved = np.linalg.norm(Pm[ok] - P3[ok], axis=1)
+            print(f"  {m}: {int(ok.sum())}/55 triangulated, mean "
+                  f"{n_view[ok].mean():.1f} views and {n_in[ok].mean():.1f} inliers; "
+                  f"moved from the face-on lift by median {np.median(moved):.3f}, "
+                  f"max {moved.max():.3f} (ear spans ~1)")
+            fits.append({"label": f"triangulated from {nv} views ({m})" + extras,
+                         "short": m, "P": Pm, "hit": hm, "snapped": None})
+        # The re-seated pair goes after both plain fits, so 2/3 compare the fits
+        # and 4/5 are the same two with the depth buffer given the last word on
+        # how far away each point is. Only points well off the surface move.
+        tol = cfg["reseat_tol"]
+        seats = []
+        for f in fits:
+            ext = float(np.ptp(f["P"][f["hit"]], axis=0).max())
+            Pr, moved_r = reseat(f["P"].copy(), depth_f, cam_f, ext, tol)
+            print(f"  {f['short']} + re-seat: {int(moved_r.sum())} landmarks sat "
+                  f"more than {100*tol:.0f}% of ear extent off the surface")
+            seats.append({"label": f["label"].replace(extras, "")
+                          + f", re-seated >{100*tol:.0f}%" + extras,
+                          "short": f"{f['short']}+seat", "P": Pr,
+                          "hit": f["hit"], "snapped": None})
+        variants += fits + seats
+        # Open on whatever the flags asked for, so running with no arguments
+        # still shows the default flow -- the keys only add ways to compare.
+        sel = (1 if cfg["tri_method"] == "lsq" else 2) + (2 if cfg["reseat"] else 0)
+        P3, hit = variants[sel]["P"], variants[sel]["hit"]
+    print("methods: " + "   ".join(
+        f"[{i+1}]{' <' if i == sel else ' '} {v['label']}"
+        for i, v in enumerate(variants)))
 
     # Depth spread is the tell for a scalp-pinned point: it sits behind the rest.
     # Printed AFTER triangulation and re-seating, so it describes the landmarks
@@ -706,7 +764,7 @@ def main():
         return
     print("\norbit to about 60 deg to check depth; press L to re-landmark from "
           "wherever you are. Close the window to exit.")
-    show(g, P3, hit, cfg, pipe)
+    show(g, P3, hit, cfg, pipe, variants=variants, start=sel)
 
 
 if __name__ == "__main__":

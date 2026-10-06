@@ -17,7 +17,8 @@ from .draw import (ray_lines, save_agreement_render, spheres, strip_lines,
 from .frames import (find_ears, frame_from, head_pose, in_frame, load_head,
                      plane_normal)
 from .label import (agreement, label_two_pass, landmark_whole_frame,
-                    multiview, report_agreement, triangulate_landmarks)
+                    multiview, report_agreement, triangulate_landmarks,
+                    collect_rays, fit_rays)
 from .render import (LINE_MATERIAL, MATERIAL, gui_depth_to_view, light_scene,
                      render)
 from .triangulate import (lsq_point, ransac_point, ray_distance,

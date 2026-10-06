@@ -490,6 +490,49 @@ def test_parallel_rays_are_refused_rather_than_solved():
     assert vbp.lsq_point(o, d) is None
 
 
+def test_fit_rays_recovers_the_point_both_methods_agree_on():
+    """The seam the number keys rest on: one set of rays, several fits.
+
+    collect_rays renders and detects once; fit_rays must then be able to answer
+    for any method off that same evidence. If the two fits disagreed on clean
+    rays, comparing methods in the window would be comparing noise.
+    """
+    from ear3d.label import fit_rays
+
+    class Ray:                      # the only thing fit_rays wants of a Camera
+        def __init__(self, o):
+            self.o = np.asarray(o, float)
+
+        def rays(self, uv):
+            d = self.target - self.o
+            return self.o[None, :], (d / np.linalg.norm(d))[None, :]
+
+    P = np.array([0.3, -0.2, 0.5])
+    cams = [Ray([0, 0, 3.0]), Ray([3.0, 0, 0]), Ray([0, 2.5, 0.5])]
+    for c in cams:
+        c.target = P
+    uv = np.zeros((3, 1, 2))
+    for method in ("lsq", "ransac"):
+        Q, n_in, n_view = fit_rays(uv, cams, method, thresh=0.03)
+        assert n_view[0] == 3
+        assert np.allclose(Q[0], P, atol=1e-6), method
+
+
+def test_fit_rays_leaves_a_landmark_no_view_saw_as_nan():
+    """Fewer than two rays is not a fit. It must stay missing, not be invented."""
+    from ear3d.label import fit_rays
+
+    class Ray:
+        def rays(self, uv):
+            return np.zeros((1, 3)), np.array([[0.0, 0.0, -1.0]])
+
+    uv = np.full((3, 2, 2), np.nan)
+    uv[0, 0] = [10.0, 10.0]                      # one view, one landmark
+    Q, n_in, n_view = fit_rays(uv, [Ray(), Ray(), Ray()], "lsq", 0.03)
+    assert n_view.tolist() == [1, 0]
+    assert not np.isfinite(Q).any(), "a point was invented from one ray"
+
+
 def test_cone_angles_are_spread_and_prefix_stable():
     """Adding views must not reshuffle the ones already chosen."""
     a20 = vbp.cone_angles(20, 30.0)
