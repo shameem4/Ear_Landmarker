@@ -12,6 +12,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from .camera import cone_angles
+
 ROOT = Path(__file__).resolve().parents[1]
 
 # Third-party research data; not in any repo. Override with EAR3D_DIR.
@@ -82,10 +84,12 @@ DEFAULTS = dict(
                             # cannot separate these radii on placement; nothing
                             # here can yet.
     # --- triangulation (--triangulate) --------------------------------------
-    triangulate=False,      # build each landmark by intersecting the rays from
+    triangulate=True,       # build each landmark by intersecting the rays from
                             # several views instead of lifting one view through
                             # its depth buffer. Off by default only because it
-                            # costs a render and a pipeline call per view.
+                            # costs a render and a pipeline call per view --
+                            # about 12 seconds at the default 12 views, which the
+                            # viewer pays once at startup.
                             #
                             # VIEWS ARE SYNTHETIC, SO THEY ARE CHEAP, AND MORE OF
                             # THEM HELP. Reprojection into a FIXED held-out set of
@@ -98,8 +102,10 @@ DEFAULTS = dict(
                             # face-on lift -- too few rays across a narrow
                             # baseline. It passes face-on at 8 and keeps improving
                             # with diminishing returns, 34% better at 190.
-    tri_angles=((0, 0), (-18, 0), (18, 0), (-10, -10), (10, 10), (0, -15), (0, 15)),
-                            # 7 views inside the 20 deg optimum below.
+    tri_angles=tuple(cone_angles(12, 20.0)),
+                            # 12 views, comfortably past the 8-view break-even
+                            # where triangulation starts beating the single
+                            # face-on lift. --tri-views N overrides it.
     tri_cone=20.0,          # HALF-ANGLE OF THE VIEW CONE, and it has an optimum.
                             # Reprojection into a FIXED held-out set, so only the
                             # fit changes (24 views, 3 heads; face-on is 7.24 px
@@ -139,7 +145,7 @@ DEFAULTS = dict(
                             # views, because the ear starts occluding itself.
 
     # --- partial re-seat (--reseat) -----------------------------------------
-    reseat=False,           # pull triangulated points that sit far off the drawn
+    reseat=True,            # pull triangulated points that sit far off the drawn
                             # surface back onto it, along the viewing axis.
                             #
                             # A triangulated landmark is a free 3D point -- the
@@ -162,8 +168,12 @@ DEFAULTS = dict(
                             # measures genuinely disagree: reprojection cannot see
                             # the surface prior, and the surface prior cannot see
                             # which pixel a label has to land in. Pick by use --
-                            # training labels for rendered poses want reprojection
-                            # (leave it off); 3D anatomy wants the surface.
+                            # On by default in the VIEWER, where what is being
+                            # looked at is 3D geometry and a landmark buried in
+                            # the skull is simply wrong. ingest overrides both the
+                            # switch and the tolerance, because its visibility
+                            # mask drops anything off the surface -- see the note
+                            # in its main().
     reseat_tol=0.15,        # move a point only if it is this far off, as a
                             # fraction of ear extent. "Only where large."
 

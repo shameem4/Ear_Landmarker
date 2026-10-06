@@ -512,13 +512,13 @@ def main():
     p.add_argument("--no-mediapipe", action="store_true", help="use the ear-detector sweep")
     p.add_argument("--no-snap", action="store_true", help="show the raw back-projection")
     p.add_argument("--no-chain", action="store_true", help="skip the link-spacing pass")
-    p.add_argument("--triangulate", action="store_true",
-                   help="intersect rays from many views instead of lifting one")
+    p.add_argument("--no-triangulate", action="store_true",
+                   help="lift the single face-on view instead of intersecting rays")
     p.add_argument("--tri-views", type=int, default=None,
                    help="how many views to triangulate from (spread over a cone)")
     p.add_argument("--tri-method", choices=["lsq", "ransac"], default=None)
-    p.add_argument("--reseat", action="store_true",
-                   help="pull triangulated points far off the surface back onto it")
+    p.add_argument("--no-reseat", action="store_true",
+                   help="leave triangulated points where the rays put them")
     p.add_argument("--reseat-tol", type=float, default=None,
                    help="how far off counts as far, as a fraction of ear extent")
     p.add_argument("--multiview", action="store_true",
@@ -542,12 +542,13 @@ def main():
     cfg["use_mediapipe"] = cfg["use_mediapipe"] and not a.no_mediapipe
     cfg["snap"] = cfg["snap"] and not a.no_snap
     cfg["chain"] = cfg["chain"] and not a.no_chain
-    cfg["triangulate"] = cfg["triangulate"] or a.triangulate or a.tri_views is not None
+    cfg["triangulate"] = (cfg["triangulate"] or a.tri_views is not None) \
+        and not a.no_triangulate
     if a.tri_views:
         cfg["tri_angles"] = cone_angles(a.tri_views, cfg["tri_cone"])
     if a.tri_method:
         cfg["tri_method"] = a.tri_method
-    cfg["reseat"] = cfg["reseat"] or a.reseat or a.reseat_tol is not None
+    cfg["reseat"] = (cfg["reseat"] or a.reseat_tol is not None) and not a.no_reseat
     if a.reseat_tol is not None:
         cfg["reseat_tol"] = a.reseat_tol
     if cfg["reseat"] and not cfg["triangulate"]:
@@ -584,13 +585,6 @@ def main():
     # arrays stay finite; its sphere is drawn black so it reads as "no result".
     P3 = np.where(np.isfinite(P3), P3, V.mean(0))
 
-    # Depth spread is the tell for a scalp-pinned point: it sits behind the rest.
-    print(f"landmark depth z: {P3[:,2].min():+.3f} to {P3[:,2].max():+.3f} "
-          f"(ear spans about 1.0 by construction)")
-    for i, (a_, b_) in enumerate(STRIPS):
-        print(f"  {STRIP_NAMES[i]:<14s} z {P3[a_:b_,2].min():+.3f} .. "
-              f"{P3[a_:b_,2].max():+.3f}   misses {int((~hit[a_:b_]).sum())}")
-
     if cfg["triangulate"]:
         # Replace the single-view lift with a ray intersection over many views.
         # The 3D window then shows triangulated landmarks; the 2D overlay still
@@ -617,6 +611,15 @@ def main():
             if moved_r.any():
                 print(f"  re-seated {int(moved_r.sum())} landmarks that sat more than "
                       f"{100*cfg['reseat_tol']:.0f}% of ear extent off the surface")
+
+    # Depth spread is the tell for a scalp-pinned point: it sits behind the rest.
+    # Printed AFTER triangulation and re-seating, so it describes the landmarks
+    # actually returned rather than an intermediate the next stage replaces.
+    print(f"landmark depth z: {P3[:,2].min():+.3f} to {P3[:,2].max():+.3f} "
+          f"(ear spans about 1.0 by construction)")
+    for i, (a_, b_) in enumerate(STRIPS):
+        print(f"  {STRIP_NAMES[i]:<14s} z {P3[a_:b_,2].min():+.3f} .. "
+              f"{P3[a_:b_,2].max():+.3f}   misses {int((~hit[a_:b_]).sum())}")
 
     if a.multiview:
         # Each view is an independent measurement of the same anatomy. Colour by
