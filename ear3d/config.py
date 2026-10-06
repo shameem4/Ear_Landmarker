@@ -88,13 +88,25 @@ DEFAULTS = dict(
                             # and spread stops measuring placement and starts
                             # measuring visibility.
 
-    chain=True,             # second pass: fix landmarks that break link spacing
-    chain_tol=1.0,          # flag when a point's two links deviate from the strip
-                            # median by this much in total, as a fraction of the
-                            # median. A clean point scores ~0.2; the displaced
-                            # ones measured here score 1.5-1.7. Natural spread
-                            # reaches p90 1.09-1.61 per link, so this sits above
-                            # anatomy and below the real failures.
+    # CHAIN PASS OFF. It works -- it cuts link-length CV by a further 20%, from
+    # 0.220 to 0.176 -- but link CV is its own objective, so that only says the
+    # optimiser runs. Against multi-view agreement, which it does not optimise,
+    # it buys nothing: median 3.96% -> 3.89%, >5% count 68 -> 65 of 220 (inside
+    # noise), and p90 gets WORSE, 7.33% -> 8.54%. Per head it is inconsistent --
+    # pp10 improves 33 -> 16 while pp12 19 -> 25, pp11 7 -> 13 and pp16 9 -> 11
+    # all worsen; one win carries the average.
+    #
+    # The cliff snap, by contrast, earns its place on that same independent
+    # metric: >5% count 90 -> 68 and p90 8.68% -> 7.33%, better on 3 of 4 heads.
+    #
+    # Left in and reachable with chain=True. n=4 heads, and agreement is
+    # precision not accuracy, so this is no evidence of benefit rather than
+    # proof of harm -- but nothing measurable says the moves it makes are right.
+    chain=False,            # second pass: fix landmarks that break link spacing
+    chain_tol=1.0,          # only reached when chain=True. Flag a point whose two
+                            # links deviate from the strip median by this much in
+                            # total, as a fraction of that median. A clean point
+                            # scores ~0.2; displaced ones measured 1.5-1.7.
     chain_radius=0.08,      # search window for the replacement, as a fraction of
                             # ear extent -- same safety bound as the cliff snap.
     chain_passes=4,         # one point re-placed per pass, worst first, so a
