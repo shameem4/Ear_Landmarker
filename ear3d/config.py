@@ -81,6 +81,22 @@ DEFAULTS = dict(
                             # the wrong anatomy at roughly the right depth. It
                             # cannot separate these radii on placement; nothing
                             # here can yet.
+    # --- triangulation (--triangulate) --------------------------------------
+    triangulate=False,      # build each landmark by intersecting the rays from
+                            # several views instead of lifting one view through
+                            # its depth buffer. Measured by leave-one-view-out
+                            # reprojection over 8 heads: 8.9 px for the single
+                            # face-on lift, 6.7 px for this. Off by default
+                            # because it costs a render and a pipeline call per
+                            # view, which the viewer pays at startup.
+    tri_angles=((0, 0), (-25, 0), (25, 0), (-12, -12), (12, 12), (0, -20), (0, 20)),
+    tri_thresh=0.03,        # RANSAC inlier distance, as a fraction of ear extent
+    tri_method="lsq",       # "lsq" over all rays, or "ransac". LSQ wins at this
+                            # view count (6.7 px against 7.1): across a baseline
+                            # this narrow, two-ray minimal sets are noisy and
+                            # dropping a ray costs more than the outlier it
+                            # removes. RANSAC is right as the baseline widens.
+
     # --- multi-view agreement (--multiview) ---------------------------------
     mv_angles=((0, 0), (-25, 0), (25, 0), (-12, -12), (12, 12), (0, -20), (0, 20)),
                             # yaw/pitch to re-landmark from. Kept inside +/-25

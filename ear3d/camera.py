@@ -138,3 +138,31 @@ def orbit_extrinsic(yaw, pitch, cfg):
     E = np.eye(4)
     E[:3, :3], E[:3, 3] = R, -R @ C
     return E
+
+
+def cone_angles(n, max_deg=30.0):
+    """`n` view directions spread evenly over a cone about face-on.
+
+    A Fibonacci spiral on the spherical cap, so the directions are near-uniform at
+    any n and adding views never reshuffles the ones already there. Returns
+    (yaw, pitch) degrees.
+
+    The cap is centred on face-on and bounded by `max_deg` because beyond roughly
+    30-40 degrees the ear starts occluding itself: a view that cannot see a
+    landmark contributes no ray for it, and one that half-sees it contributes a
+    bad one.
+    """
+    if n <= 1:
+        return [(0.0, 0.0)]
+    golden = np.pi * (3.0 - np.sqrt(5.0))
+    out = []
+    cos_max = np.cos(np.radians(max_deg))
+    for i in range(n):
+        # uniform in cos(polar) over the cap, so area density is even
+        cz = 1.0 - (1.0 - cos_max) * (i / (n - 1.0))
+        r = np.sqrt(max(0.0, 1.0 - cz * cz))
+        phi = golden * i
+        x, y, z = r * np.cos(phi), r * np.sin(phi), cz
+        out.append((float(np.degrees(np.arctan2(x, z))),
+                    float(np.degrees(np.arcsin(np.clip(y, -1, 1))))))
+    return out

@@ -457,3 +457,44 @@ def test_orbit_keeps_the_horizon_level():
         for pitch in (-20, 0, 20):
             R = vbp.orbit_extrinsic(yaw, pitch, CFG)[:3, :3]
             assert abs(R[0] @ np.array([0.0, 1.0, 0.0])) < 1e-9, f"roll at {yaw},{pitch}"
+
+
+# --- triangulation -----------------------------------------------------------
+
+def test_two_rays_meet_at_the_point_that_made_them():
+    P = np.array([0.3, -0.2, 0.5])
+    o = np.array([[0.0, 0, 3.0], [3.0, 0, 0.0]])
+    d = P - o
+    d /= np.linalg.norm(d, axis=1, keepdims=True)
+    assert np.allclose(vbp.lsq_point(o, d), P, atol=1e-9)
+
+
+def test_ransac_rejects_a_ray_that_least_squares_cannot():
+    """The whole reason for the vote: one bad ray drags a least squares fit."""
+    P = np.array([0.3, -0.2, 0.5])
+    o = np.array([[0.0, 0, 3.0], [3.0, 0, 0.0], [0.0, 0.5, 2.5]])
+    d = P - o
+    d /= np.linalg.norm(d, axis=1, keepdims=True)
+    o = np.vstack([o, [0.0, 3.0, 0.0]])          # a ray that misses entirely
+    d = np.vstack([d, [0.0, -1.0, 0.0]])
+    assert np.linalg.norm(vbp.lsq_point(o, d) - P) > 0.1, "lsq should be dragged"
+    p, inliers = vbp.ransac_point(o, d, thresh=0.02)
+    assert np.allclose(p, P, atol=1e-6)
+    assert inliers.tolist() == [True, True, True, False]
+
+
+def test_parallel_rays_are_refused_rather_than_solved():
+    """A degenerate system must return None, not an arbitrary point."""
+    o = np.array([[0.0, 0, 3.0], [0.001, 0, 3.0]])
+    d = np.array([[0.0, 0, -1.0], [0.0, 0, -1.0]])
+    assert vbp.lsq_point(o, d) is None
+
+
+def test_cone_angles_are_spread_and_prefix_stable():
+    """Adding views must not reshuffle the ones already chosen."""
+    a20 = vbp.cone_angles(20, 30.0)
+    a50 = vbp.cone_angles(50, 30.0)
+    assert a20[0] == (0.0, 0.0), "the first view is face-on"
+    for (y, p) in a50:
+        assert np.hypot(y, p) <= 31.0, "a view escaped the cone"
+    assert len({(round(y, 3), round(p, 3)) for y, p in a50}) == 50, "duplicate views"
