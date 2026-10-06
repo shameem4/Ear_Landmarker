@@ -224,7 +224,7 @@ def triangulate_landmarks(cfg, mesh, pipe, angles=None, verbose=True):
     Costs one render and one pipeline call per view, so it is off by default in
     the viewer and worth it anywhere the labels matter more than the latency.
     """
-    from .triangulate import lsq_point, triangulate
+    from .triangulate import lsq_point, ransac_point
     angles = angles or cfg["tri_angles"]
     uv = np.full((len(angles), 55, 2), np.nan)
     cams = []
@@ -242,32 +242,40 @@ def triangulate_landmarks(cfg, mesh, pipe, angles=None, verbose=True):
             print(f"  view ({yaw:+.0f},{pitch:+.0f}): det "
                   f"{float(best['confidence']):.2f}")
 
-    # The inlier threshold is a fraction of ear extent, which is ~1 by
-    # construction in the pinna frame but measured here rather than assumed.
-    seen = np.isfinite(uv).all(axis=2).any(axis=0)
-    ext = 1.0
-    P_face, _, _ = None, None, None
-    if cfg.get("tri_method", "lsq") == "ransac":
-        P, n_in, n_view = triangulate(uv, cams, cfg["tri_thresh"] * ext)
-    else:
-        # Plain least squares over every ray. At this view count it beats the
-        # RANSAC vote -- 6.7 px against 7.1 -- because two-ray minimal sets are
-        # noisy across a baseline this narrow. RANSAC is the better choice as the
-        # baseline widens; the published result that uses it has ~100 views.
-        P = np.full((55, 3), np.nan)
-        n_in = np.zeros(55, int)
-        n_view = np.zeros(55, int)
-        for k in range(55):
-            o, d = [], []
-            for i in range(len(angles)):
-                if np.isfinite(uv[i, k]).all():
-                    a, b = cams[i].rays(uv[i, k][None, :])
-                    o.append(a[0]); d.append(b[0])
-            n_view[k] = len(o)
-            if len(o) < 2:
-                continue
-            p = lsq_point(np.array(o), np.array(d))
-            if p is not None:
-                P[k] = p
-                n_in[k] = len(o)
+    # Always fit by least squares first. It is the answer when tri_method is
+    # "lsq", and when it is "ransac" it still supplies the ear extent the inlier
+    # threshold is a fraction of -- which was previously hardcoded to 1.0, so
+    # tri_thresh did not mean what the config said it meant.
+    P = np.full((55, 3), np.nan)
+    n_in = np.zeros(55, int)
+    n_view = np.zeros(55, int)
+    rays = {}
+    for k in range(55):
+        o, d = [], []
+        for i in range(len(angles)):
+            if np.isfinite(uv[i, k]).all():
+                a, b = cams[i].rays(uv[i, k][None, :])
+                o.append(a[0]); d.append(b[0])
+        n_view[k] = len(o)
+        if len(o) < 2:
+            continue
+        rays[k] = (np.array(o), np.array(d))
+        q = lsq_point(rays[k][0], rays[k][1])
+        if q is not None:
+            P[k] = q
+            n_in[k] = len(o)
+    if cfg.get("tri_method", "lsq") != "ransac":
+        return P, n_in, n_view
+
+    ok = np.isfinite(P).all(axis=1)
+    if ok.sum() < 5:
+        return P, n_in, n_view
+    ext = float(np.ptp(P[ok], axis=0).max())
+    thresh = cfg["tri_thresh"] * ext
+    for k, (o, d) in rays.items():
+        q, inl = ransac_point(o, d, thresh, iters=160,
+                              rng=np.random.default_rng(k))
+        if q is not None:
+            P[k] = q
+            n_in[k] = int(inl.sum()) if inl is not None else 0
     return P, n_in, n_view

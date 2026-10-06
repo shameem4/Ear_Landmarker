@@ -137,28 +137,33 @@ DEFAULTS = dict(
                             # pin depth; wider than 25 and the detector's 2D output
                             # degrades faster than the geometry improves. 30 gives
                             # up a third of the available gain, 40 gives up half.
-    tri_thresh=0.03,        # RANSAC inlier distance, as a fraction of ear extent
+    tri_thresh=0.03,        # RANSAC inlier distance, as a fraction of ear extent.
+                            # It was multiplied by a hardcoded 1.0 rather than the
+                            # measured extent until this was fixed, so it did not
+                            # mean what it said.
     tri_method="lsq",       # "lsq" over all rays, or "ransac".
                             #
-                            # RANSAC NEVER WINS HERE, and it was expected to. It
-                            # ties least squares at every view count from 4 to 190
-                            # (within 0.1 px) and at both a 30 and a 60 degree
-                            # cone. Widening the cone was the test of the obvious
-                            # explanation -- that a narrow cone has no outliers to
-                            # reject -- and it fails: at 60 deg the inlier
-                            # fraction drops from 91% to 69% on pp12, so RANSAC is
-                            # rejecting plenty, and still does not win.
+                            # RANSAC STILL DOES NOT WIN, re-measured after the
+                            # threshold above was fixed (12 views, 3 heads):
+                            #   method          reproj px   helix z span   inliers
+                            #   lsq                4.62        0.297         12.0
+                            #   ransac t=0.03      4.66        0.344         11.6
+                            #   ransac t=0.01      5.38        0.399          7.6
+                            #   ransac t=0.06      4.61        0.297         12.0
+                            # Every actual rejection hurts, on reprojection and on
+                            # depth span alike, and RANSAC matches least squares
+                            # exactly at the threshold where it keeps all 12 rays
+                            # -- which is the threshold where it is least squares.
                             #
-                            # The likeliest reason is that these are not gross
-                            # outliers. A landmark at an extreme angle drifts
-                            # consistently rather than landing somewhere random, so
-                            # the rays are BIASED, not wild. A vote cannot fix a
-                            # bias: the rays it keeps are biased too, and it has
-                            # thrown away information. Untested.
-                            #
-                            # Keep the cone near 30 deg regardless. At 60 deg every
-                            # method is 3x worse and detection falls to 53-62 of 70
-                            # views, because the ear starts occluding itself.
+                            # There is nothing here to reject: ray residuals have
+                            # a p99/median of 5.7, where a contaminated set would
+                            # be over 10 and plain Gaussian noise about 3. The
+                            # published method that relies on RANSAC renders ~100
+                            # views across the whole head, including ones where a
+                            # landmark is invisible and the detector guesses. This
+                            # pipeline never builds that failure: the cone is
+                            # bounded where everything stays visible, and a view
+                            # with no detection is dropped rather than guessed.
 
     # --- partial re-seat (--reseat) -----------------------------------------
     reseat=False,           # pull triangulated points that sit far off the drawn
