@@ -10,11 +10,26 @@ same wrong spot from every angle has zero deviation. It cannot say a position is
 correct, only that the views concur -- which is still the only placement-adjacent
 signal available here without human annotation.
 
-A CONFOUND TO READ WITH: deviation is lowest at yaw 0, and 0 is the centre of the
-sampled range, so it is also the view closest to the mean viewpoint. Part of that
-dip is geometry of the sampling, not merit of the view. The asymmetry and the
-per-landmark structure do not have that problem, which is why they are the more
-interesting part of the output.
+WHAT IT SHOWS, on 6 heads (deviation as % of ear extent):
+
+    yaw         -40   -30   -20   -10     0   +10   +20   +30   +40
+    outer_helix  8.7   6.7   4.2   2.8   2.4   2.5   2.7   4.2   5.7
+    inner_helix  5.4   3.5   2.4   2.0   2.1   2.5   1.8   3.2   4.0
+    concha       3.3   2.7   2.7   2.7   2.6   2.3   2.1   3.5   5.0
+
+The cost is flat across a wide middle band, roughly -10 to +20, and rises steeply
+outside it. Three of the four strips bottom out at +20 rather than 0, and the
+curve is ASYMMETRIC: -40 is far worse than +40 on the outer helix. That handedness
+has now appeared three times -- here, in the detector failing at -25 but not +25,
+and in the right ear scoring better than the left on every head. Unexplained.
+
+A CONFOUND TO READ WITH: 0 is the centre of the sampled range, so it is also the
+view closest to the mean viewpoint, and some of any dip there is sampling geometry
+rather than merit.
+
+THESE NUMBERS POSTDATE the camera-roll fix in aab7e38. Before it every orbited
+render was upside down; deviations were roughly double and the curve minimised
+sharply at 0. Any multi-view figure predating that commit is void.
 
 Writes a three-panel figure: every landmark against every view, the same by
 strip, and the yaw each landmark is most stable at, drawn on the ear.

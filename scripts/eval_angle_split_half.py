@@ -5,11 +5,21 @@ stable, and the map of those yaws looks structured -- the helix rim favouring on
 direction, inner points the other. This asks whether that structure survives
 being chosen on one set of heads and applied to another.
 
-It does not. Choosing each landmark's angle on half the heads and testing on the
-held-out half is WORSE than simply using face-on everywhere, on 67 of 70 splits.
-The oracle -- choosing on the test heads themselves -- does beat face-on, so the
-headroom is real; what is not real is any ability to find it per landmark from a
-handful of subjects. The apparent spatial structure is mostly selection noise.
+Marginally, and not enough to act on. Over 70 splits of 8 heads:
+
+    face-on always                            3.15%   (sd 0.38)
+    best angle per landmark, chosen on TRAIN  3.06%   (sd 0.27)
+    oracle, chosen on the TEST heads          1.94%
+
+Selection wins by 0.09 points, about 3% relative, on 47 of 70 splits. The oracle
+is far better than either, so most of what a per-landmark angle could buy is not
+reachable by choosing it from four subjects.
+
+AN EARLIER VERSION OF THIS FILE CLAIMED THE OPPOSITE -- that selection was clearly
+worse, on 67 of 70 splits. That was measured through the 180 degree camera roll
+fixed in aab7e38, which rendered every orbited view upside down. On the corrected
+camera every figure roughly halves and the sign flips. Treat any multi-view number
+predating that fix as void.
 
 The evaluation uses a LEAVE-ONE-OUT consensus: a view is scored against the
 median of the OTHER views, never one it helped define. Without that, every view
