@@ -550,6 +550,13 @@ def main():
     cfg["reseat"] = cfg["reseat"] or a.reseat or a.reseat_tol is not None
     if a.reseat_tol is not None:
         cfg["reseat_tol"] = a.reseat_tol
+    if cfg["reseat"] and not cfg["triangulate"]:
+        # Re-seating only means something for TRIANGULATED points. The face-on
+        # lift is read off the depth buffer, so it is on the surface already and
+        # re-seating it is a no-op -- asking for one without the other silently
+        # did nothing at all.
+        print("--reseat implies triangulation; enabling it")
+        cfg["triangulate"] = True
     if a.snap_radius is not None:
         cfg["snap_radius"] = a.snap_radius
     cfg["show_rays"] |= a.rays

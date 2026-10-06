@@ -49,7 +49,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from ear3d.backproject import visible                              # noqa: E402
+from ear3d.backproject import reseat, visible                       # noqa: E402
 from ear3d.config import DEFAULTS, EAR3D_DIR                       # noqa: E402
 from ear3d.camera import cone_angles                               # noqa: E402
 from ear3d.frames import find_ears, head_pose, load_head           # noqa: E402
@@ -111,6 +111,10 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--quality", type=int, default=95)
     p.add_argument("--min-conf", type=float, default=0.25)
+    p.add_argument("--reseat-tol", type=float, default=0.005,
+                   help="how far off the surface a triangulated label may sit, as "
+                        "a fraction of ear extent; small on purpose, see the note "
+                        "in main()")
     p.add_argument("--tri-views", type=int, default=0,
                    help="build each label by intersecting rays from this many "
                         "views instead of lifting the face-on render alone")
@@ -127,6 +131,20 @@ def main() -> None:
         # rendered from an ear inherits whatever this produces.
         cfg["triangulate"] = True
         cfg["tri_angles"] = cone_angles(args.tri_views, cfg["tri_cone"])
+    if cfg["triangulate"]:
+        # TRIANGULATED LABELS MUST BE SEATED ON THE SURFACE HERE, which is not a
+        # preference. The pose loop masks each landmark with visible(), a depth
+        # test with a 0.012 mesh-unit tolerance -- 0.6% of an ear spanning 1.86 --
+        # so a triangulated point scattered off the surface is judged not visible
+        # and its label is dropped. Measured on pp12: 55/55 landmarks survive from
+        # the face-on lift, 22/55 from raw triangulation, and 55/55 once seated.
+        # A partial re-seat does not help, since it moves only the worst handful.
+        #
+        # It costs some of triangulation's reprojection advantage (6.13 px against
+        # 4.23 raw) but still beats the face-on lift's 6.92, and it is the only
+        # configuration where every landmark is usable.
+        cfg["reseat"] = True
+        cfg["reseat_tol"] = args.reseat_tol
     det = EarDetector(BLAZEEAR_DIR / DETECTOR_WEIGHTS, "cpu", 0.5)
     # smooth=False: the tracker is for video; on a still it would smooth a
     # one-frame track against wall-clock time and shift the landmarks.
@@ -178,6 +196,10 @@ def main() -> None:
                 ok = np.isfinite(Ptri).all(axis=1) & (n_view >= 2)
                 P3 = np.where(ok[:, None], Ptri, P3)
                 hit = hit | ok
+                if cfg.get("reseat"):
+                    _, depth_f, cam_f = render(base, cfg)
+                    ext = float(np.ptp(P3[hit], axis=0).max())
+                    P3, _ = reseat(P3, depth_f, cam_f, ext, cfg["reseat_tol"])
 
             # QUALITY GATE. Every pose inherits this one labelling, so a bad
             # face-on result poisons the whole ear.
