@@ -14,7 +14,6 @@ field of view while the labels described the original.
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
@@ -25,13 +24,14 @@ ROOT = Path(__file__).resolve().parents[1]
 pytest.importorskip("open3d")
 import open3d as o3d  # noqa: E402
 
-_spec = importlib.util.spec_from_file_location(
-    "vbp", ROOT / "scripts" / "view_backprojection.py")
-vbp = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(vbp)
+# Tested through the PACKAGE, not the viewer: ear3d is the single source for the
+# 3D path, and the viewer is one caller of it. Importing the viewer here would
+# test a re-export and let the package drift behind it.
+sys.path.insert(0, str(ROOT))
+import ear3d as vbp  # noqa: E402
 
 SIZE = 400
-CFG = dict(vbp.CONFIG, size=SIZE)
+CFG = dict(vbp.DEFAULTS, size=SIZE)
 # Asymmetric on purpose: a symmetric set hides a mirrored or transposed camera.
 TARGETS = np.array([[0.0, 0.0, 0.0], [0.6, 0.0, 0.0], [-0.45, 0.0, 0.0],
                     [0.0, 0.55, 0.0], [0.0, -0.35, 0.0], [0.3, 0.4, 0.0],
@@ -156,17 +156,32 @@ def test_camera_rescales_when_the_render_is_not_the_requested_size():
                        full.project(TARGETS), atol=1e-6)
 
 
-def test_there_is_only_one_camera_definition():
-    """Nothing may build a camera except camera_ke()."""
-    src = (ROOT / "scripts" / "view_backprojection.py").read_text()
-    assert src.count("def camera_ke") == 1
-    # and only one geometry path: no ray-casting scene in the script
-    assert "RaycastingScene" not in src
-    # setup_camera is the renderer handshake; both call sites must pass K/E from
+def test_the_3d_path_is_not_fragmented():
+    """One definition of each piece, in ear3d, and no copies outside it."""
+    pkg = sorted((ROOT / "ear3d").glob("*.py"))
+    callers = [ROOT / "scripts" / "view_backprojection.py",
+               ROOT / "scripts" / "ingest_render3d.py"]
+
+    # exactly one definition of each, and it is in the package
+    for fn in ("camera_ke", "render", "backproject", "snap_to_cliff", "load_head",
+               "find_ears", "head_pose", "label_two_pass", "in_frame"):
+        here = sum(f.read_text().count(f"def {fn}(") for f in pkg)
+        there = sum(f.read_text().count(f"def {fn}(") for f in callers if f.exists())
+        assert here == 1, f"{fn} defined {here} times in ear3d"
+        assert there == 0, f"{fn} redefined outside ear3d -- that is the drift"
+
+    # one geometry path: the depth buffer, never a second ray-casting scene.
+    # Checked as a CALL, not a mention -- the docstrings explain why it is not
+    # used, and a bare substring test fails on its own rationale.
+    for f in pkg + [c for c in callers if c.exists()]:
+        assert "RaycastingScene(" not in f.read_text(), f"{f.name} casts rays"
+
+    # setup_camera is the renderer handshake; every call must pass K/E from
     # camera_ke, never a field-of-view/eye/up form that re-derives the camera.
-    for line in src.splitlines():
-        if "setup_camera(" in line and "def " not in line:
-            assert "K, E" in line, f"camera built some other way: {line.strip()}"
+    for f in pkg + [c for c in callers if c.exists()]:
+        for line in f.read_text().splitlines():
+            if "setup_camera(" in line and "def " not in line:
+                assert "K, E" in line, f"{f.name}: camera built another way: {line.strip()}"
 
 
 # --- the interactive window's pose readout ----------------------------------

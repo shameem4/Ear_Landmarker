@@ -39,6 +39,25 @@ quality ranking.
 
 Usage:
     python scripts/eval_pose_consistency.py --ears 28 v6_persp65 manual_occ_s42
+
+SUPERSEDED STACK -- READ BEFORE TRUSTING ANY NUMBER FROM THIS FILE.
+
+This script predates ear3d/ and still runs the old 3D path: render3d_ears'
+analytic project()/unproject_rays() with a field-of-view camera, and a
+RaycastingScene for back-projection. The current path (ear3d/, driven by
+scripts/view_backprojection.py and scripts/ingest_render3d.py) differs in ways
+that change results:
+
+  - the camera is now one explicit (K, E) handed to both the renderer and the
+    projection, instead of a FOV form paired with a separate analytic formula
+  - back-projection reads the depth buffer of the render that produced the
+    pixels, instead of casting rays into a second acceleration structure
+  - ears are found through a MediaPipe head frame, and labelled by the shipped
+    EarLandmarkerPipeline on the whole frame rather than a hand-made crop
+
+Numbers produced here were measured before the Blender camera faults, the
+renderer split and the framing fixes were found, so they are not comparable with
+anything the current path reports. Migrate it to ear3d before using it again.
 """
 
 from __future__ import annotations

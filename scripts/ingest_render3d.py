@@ -1,50 +1,28 @@
 """Render real 3D ear geometry at varied yaw as an extra training source.
 
-WHY THIS AND NOT MORE PERSPECTIVE AUGMENTATION. data/dataset.py simulates yaw
+THE 3D PATH LIVES IN ear3d/, NOT HERE. Camera, renderer, back-projection, ear
+finding, head pose, the snaps and the two-pass labelling are imported from that
+package, the same code scripts/view_backprojection.py drives interactively. This
+file used to keep its own copies of load_head, find_ears, in_frame and a private
+camera setup, and they had already drifted from the viewer's. What remains here
+is what is genuinely ingest's: cropping to a training occupancy, the pose loop,
+the quality gate and writing the dataset.
+
+WHY RENDERS AND NOT MORE PERSPECTIVE AUGMENTATION. data/dataset.py simulates yaw
 with a homography, which cannot produce parallax or self-occlusion. Measured, it
 correlates with a true rotation at only 0.47 (30 deg) to 0.15 (65 deg), and a
 model trained with +/-65 deg of it is no better under real 3D rotation than one
-trained with none (+6.2%, t=+2.53 -- slightly worse). Renders supply what the
-warp structurally cannot.
+trained with none. Renders supply what the warp structurally cannot.
 
 WHERE THE LABELS COME FROM, and why this is not self-distillation. The model is
-run face-on and its 55 points are ray-cast onto the mesh to give exact 3D
-landmarks. Rotating mesh and landmarks together then yields correct labels at
-every other pose: the geometry carries the label, not the model. The model's
-competence at its EASIEST pose is transferred to poses where it is weak.
-
-THE EAR IS DEFINED BY ITS LANDMARKS, not by a region of mesh vertices. An earlier
-version selected "ear vertices" by projecting the mesh into the detector's 2D box
-and keeping a depth window, and used that set for the plane fit, the framing and
-the ray-cast target. It was a persistent source of silent failure: a 2D box
-selects the whole column through the skull, so the window had to be tight, and on
-some subjects a wider box pulled in nearer geometry, raised the frontmost depth
-and excluded the ear altogether -- on HUTUBS pp16's second ear the 2.5x region
-came out SMALLER than the 1.0x one (8139 vertices against 12226) and 4 of 55 rays
-hit. The 55 back-projected landmarks are a better definition of the ear than any
-vertex rule: they are on it by construction.
-
-So this runs in two passes:
-  1. the detector's own view direction gives a provisional face-on frame. Frame
-     the crop from the detector's 2D box, predict, ray-cast onto the WHOLE mesh.
-  2. fit the pinna plane to those 55 points, re-render in that frame, and
-     re-predict. The second pass is the one that produces the labels.
-
-WHY THE SECOND PASS. The pinna's plane is not the head's lateral plane: over 14
-HUTUBS subjects they differ by 8.1 deg on average (sd 3.9, range 1-13), varying
-per subject. Labelling along the detector's axis-aligned direction would bake a
-subject-dependent tilt into the ground truth.
+run face-on and its 55 points are lifted to 3D through the depth buffer of that
+render. Rotating mesh and landmarks together then yields correct labels at every
+other pose: the geometry carries the label, not the model. The model's competence
+at its EASIEST pose is transferred to poses where it is weak.
 
 WHAT THIS CANNOT FIX: a systematic error the model makes face-on is baked into
 every pose. This widens pose coverage; it does not improve on the model's own
-face-on accuracy. Nor does it solve the scalp problem -- a ray passing just
-outside the pinna hits the head behind it, and nothing here measures depth
-against anything that knows where the ear ends. See scripts/view_backprojection.py.
-
-RENDERING IS OPEN3D ONLY. The Blender/Cycles path was removed: it is ~100x
-slower, and every part of the pipeline it touched -- camera basis, sensor fit,
-camera distance, light falloff -- was a separate silent way to render a different
-view than the labels described. Skin comes from scripts/skin.py instead.
+face-on accuracy.
 
 Occupancy is drawn per sample from N(0.777, 0.093), matching the real corpus. A
 constant occupancy puts 99% of the real test set outside the training range --
@@ -65,200 +43,61 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import open3d as o3d
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from render3d_ears import EAR3D_DIR, VFOV, project, render, rot          # noqa: E402
-# raycast() and visible() default to eval_pose_consistency's OWN SIZE, so every
-# call below passes this module's SIZE explicitly. They agree at 600 today, which
-# is exactly what would make a divergence silent.
-from eval_pose_consistency import crop_to_full, raycast, visible        # noqa: E402
-from eval_test import best_ckpt                                         # noqa: E402
-from inference import LandmarkPredictor                                 # noqa: E402
-from skin import LABEL_TONE, apply_skin                                  # noqa: E402
+from ear3d.backproject import visible                              # noqa: E402
+from ear3d.config import DEFAULTS, EAR3D_DIR                       # noqa: E402
+from ear3d.frames import find_ears, head_pose, load_head           # noqa: E402
+from ear3d.label import label_two_pass                             # noqa: E402
+from ear3d.render import render                                    # noqa: E402
+from eval_test import best_ckpt                                    # noqa: E402
+from skin import LABEL_TONE, apply_skin                            # noqa: E402
 
 OUT = ROOT / "data" / "render3d"
-SIZE = 600
 MEAN_OCC, SD_OCC = 0.777, 0.093
 OCC_CLIP = (0.55, 0.95)
 HUTUBS = EAR3D_DIR / "3D head meshes"
 SONICOM = EAR3D_DIR / "sonicom_raw_headtorso"
 
-def load_head(path: str):
-    """Head mesh, centred and scaled to unit radius. These are already meshes."""
-    m = o3d.io.read_triangle_mesh(str(path))
-    if len(m.vertices) == 0:
-        return None
-    V = np.asarray(m.vertices)
-    V = (V - V.mean(0)) / np.abs(V - V.mean(0)).max()
-    m.vertices = o3d.utility.Vector3dVector(V)
-    m.compute_vertex_normals()
-    return m
 
-
-def _shot(mesh, front, up, dist, centre, size):
-    r = o3d.visualization.rendering.OffscreenRenderer(size, size)
-    mat = o3d.visualization.rendering.MaterialRecord()
-    mat.shader = "defaultLit"
-    r.scene.add_geometry("m", mesh, mat)
-    r.scene.set_background([0.5, 0.5, 0.5, 1.0])
-    r.scene.scene.set_sun_light([-0.4, -0.3, -0.9], [1, 1, 1], 100000)
-    r.scene.scene.enable_sun_light(True)
-    eye = np.asarray(centre, float) + np.asarray(front, float) * dist
-    r.setup_camera(VFOV, np.asarray(centre, np.float32), eye.astype(np.float32),
-                   np.asarray(up, np.float32))
-    img = np.asarray(r.render_to_image())[:, :, :3]
-    del r
-    return img
-
-
-def find_ears(mesh, det, probe_size=400):
-    """Locate ears by sweeping the detector around the head.
-
-    Geometric rules do not transfer between datasets -- HUTUBS and SONICOM store
-    heads on different axes -- so the ear is found by what an ear detector sees.
-    It works on these renders (0.84 confidence on clay, 0.91 with skin); it fails
-    only on SONICOM's *graded* meshes, whose pinna is a featureless blob.
-    """
-    out = []
-    for axis in (0, 1, 2):
-        for sgn in (1, -1):
-            front = np.zeros(3); front[axis] = sgn
-            up = np.array([0.0, 0.0, 1.0]) if axis != 2 else np.array([0.0, 1.0, 0.0])
-            img = _shot(mesh, front, up, 2.4, np.zeros(3), probe_size)
-            b = det.detect(img)
-            if not len(b):
-                continue
-            h, w = b[0, 2] - b[0, 0], b[0, 3] - b[0, 1]
-            if (h * w) / (probe_size ** 2) > 0.25:     # a whole-head box is a false positive
-                continue
-            out.append((float(b[0, 4]), front, up, b[0, :4].copy()))
-    out.sort(key=lambda t: -t[0])
-    return out[:2]
-
-
-def frame_from(normal, up, front=None):
-    """Rotation taking `normal` onto +Z (toward the camera), keeping `up` near +Y."""
-    n = np.asarray(normal, float)
-    if front is not None and n @ np.asarray(front, float) < 0:
-        n = -n
-    z = n / max(np.linalg.norm(n), 1e-9)
-    y = np.asarray(up, float) - z * (np.asarray(up, float) @ z)
-    ny = np.linalg.norm(y)
-    if ny < 1e-6:
-        return None
-    y /= ny
-    return np.stack([np.cross(y, z), y, z])            # world -> camera frame
-
-
-def plane_normal(points):
-    """Surface normal of the best-fit plane through the landmarks."""
-    P = np.asarray(points, float)
-    _, _, vt = np.linalg.svd(P - P.mean(0), full_matrices=False)
-    return vt[2]
-
-
-def in_frame(mesh, R, C, scale):
-    """A copy of the mesh rotated into frame R about C and scaled by `scale`."""
-    g = copy.deepcopy(mesh)
-    g.vertices = o3d.utility.Vector3dVector(((np.asarray(mesh.vertices) - C) @ R.T) / scale)
-    g.compute_vertex_normals()
-    return g
-
-
-def crop_from_box(img, box, occ, out=192, size=SIZE):
-    """Crop a rendered frame so a 2D box fills `occ` of the result.
-
-    Used only for the FIRST pass, where there is nothing in 3D yet to frame on.
-    """
-    ymin, xmin, ymax, xmax = box
-    side = max(ymax - ymin, xmax - xmin) / occ
-    cx, cy = (xmin + xmax) / 2.0, (ymin + ymax) / 2.0
-    return _paste(img, cx, cy, side, out, size)
-
-
-def crop_from_points(img, pts3d, occ, out=192, size=SIZE):
-    """Crop so the projected 3D points fill `occ` of the result.
-
-    `pts3d` are the landmarks: they define the ear exactly, which is why no mesh
-    region is needed. The head is deliberately left in the render for context --
-    a floating ear teaches the model that a hard silhouette marks its boundary.
-    """
-    uv = project(np.asarray(pts3d, float), size)
-    side = max(np.ptp(uv[:, 0]), np.ptp(uv[:, 1])) / occ
-    cx = (uv[:, 0].min() + uv[:, 0].max()) / 2
-    cy = (uv[:, 1].min() + uv[:, 1].max()) / 2
-    return _paste(img, cx, cy, side, out, size)
-
-
-def _paste(img, cx, cy, side, out, size):
-    l, t, s = int(round(cx - side / 2)), int(round(cy - side / 2)), int(round(side))
-    if s < 48:
-        return None, None
-    cv = Image.new("RGB", (s, s), (128, 128, 128))     # grey-128 pad, as in training
-    src = Image.fromarray(img)
-    sx0, sy0 = max(0, l), max(0, t)
-    sx1, sy1 = min(size, l + s), min(size, t + s)
-    if sx1 <= sx0 or sy1 <= sy0:
-        return None, None
-    cv.paste(src.crop((sx0, sy0, sx1, sy1)), (sx0 - l, sy0 - t))
-    return cv.resize((out, out), Image.BILINEAR), (l, t, s, out)
+def rot(yaw_deg: float, pitch_deg: float) -> np.ndarray:
+    """Rotation about +Y (yaw) then +X (pitch). The MESH turns, not the camera,
+    so a given yaw means the same thing for every subject."""
+    ry, rx = np.radians(yaw_deg), np.radians(pitch_deg)
+    Ry = np.array([[np.cos(ry), 0, np.sin(ry)], [0, 1, 0], [-np.sin(ry), 0, np.cos(ry)]])
+    Rx = np.array([[1, 0, 0], [0, np.cos(rx), -np.sin(rx)], [0, np.sin(rx), np.cos(rx)]])
+    return Rx @ Ry
 
 
 def sample_occ(rng):
     return float(np.clip(rng.normal(MEAN_OCC, SD_OCC), *OCC_CLIP))
 
 
-def label_ear(mesh, front, up, det, pred):
-    """Two-pass face-on labelling. Returns (mesh in pinna frame, P3, hit, conf).
+def crop_to_occupancy(img, uv, occ, out=192):
+    """Crop so the projected landmarks fill `occ` of the result.
 
-    Pass 1 uses the detector's axis-aligned view just to get landmarks; pass 2
-    repeats it in the plane those landmarks define. Ray-casting is against the
-    WHOLE mesh in both -- there is no ear region, and no region to get wrong.
-
-    `mesh` must ALREADY be skinned: see the note at the call site.
+    The landmarks define the ear exactly, which is why no mesh region is needed.
+    The head is deliberately left in the render for context -- a floating ear
+    teaches the model that a hard silhouette marks its boundary.
     """
-    # --- pass 1: provisional frame from the detector's own view direction ----
-    R = frame_from(front, up, front=front)
-    if R is None:
-        return None, None, None, None, "degenerate detector frame"
-    V = np.asarray(mesh.vertices)
-    C = V.mean(0)
-    g = in_frame(mesh, R, C, 1.0)
-    img = render(g, 0, 0, size=SIZE)[:, :, :3]
-    b = det.detect(img)
-    if not len(b):
-        return None, None, None, None, "no ear in the face-on render"
-    crop, box = crop_from_box(img, b[0, :4], MEAN_OCC)
-    if crop is None:
-        return None, None, None, None, "pass-1 crop too small"
-    lm = np.asarray(pred.predict(np.asarray(crop)), float)
-    P1, hit1 = raycast(g, crop_to_full(lm, box), size=SIZE)
-    if hit1.sum() < 45:
-        return None, None, None, None, f"pass 1: only {int(hit1.sum())}/55 rays hit"
-
-    # --- pass 2: the plane those landmarks define ----------------------------
-    P1w = (P1[hit1] @ R) + C                           # back to world coordinates
-    R2 = frame_from(plane_normal(P1w), up, front=front)
-    if R2 is None:
-        return None, None, None, None, "degenerate pinna frame"
-    C2 = P1w.mean(0)
-    scale = float(np.abs((P1w - C2) @ R2.T).max())
-    if not np.isfinite(scale) or scale <= 0:
-        return None, None, None, None, "degenerate ear scale"
-    g2 = in_frame(mesh, R2, C2, scale)
-    ear2 = ((P1w - C2) @ R2.T) / scale                 # the pass-1 ear, reframed
-    img2 = render(g2, 0, 0, size=SIZE)[:, :, :3]
-    crop2, box2 = crop_from_points(img2, ear2, MEAN_OCC)
-    if crop2 is None:
-        return None, None, None, None, "pass-2 crop too small"
-    lm2, conf = pred.predict(np.asarray(crop2), with_confidence=True)
-    P3, hit = raycast(g2, crop_to_full(np.asarray(lm2, float), box2), size=SIZE)
-    return g2, P3, hit, float(np.mean(conf)), None
+    h, w = img.shape[:2]
+    side = max(np.ptp(uv[:, 0]), np.ptp(uv[:, 1])) / occ
+    cx = (uv[:, 0].min() + uv[:, 0].max()) / 2
+    cy = (uv[:, 1].min() + uv[:, 1].max()) / 2
+    l, t, s = int(round(cx - side / 2)), int(round(cy - side / 2)), int(round(side))
+    if s < 48:
+        return None, None
+    cv = Image.new("RGB", (s, s), (128, 128, 128))     # grey-128 pad, as in training
+    src = Image.fromarray(img)
+    sx0, sy0, sx1, sy1 = max(0, l), max(0, t), min(w, l + s), min(h, t + s)
+    if sx1 <= sx0 or sy1 <= sy0:
+        return None, None
+    cv.paste(src.crop((sx0, sy0, sx1, sy1)), (sx0 - l, sy0 - t))
+    return cv.resize((out, out), Image.BILINEAR), (l, t, s, out)
 
 
 def main() -> None:
@@ -273,9 +112,13 @@ def main() -> None:
     p.add_argument("--min-conf", type=float, default=0.25)
     args = p.parse_args()
 
-    from inference import BLAZEEAR_DIR, DETECTOR_WEIGHTS, EarDetector
+    from inference import BLAZEEAR_DIR, DETECTOR_WEIGHTS, EarDetector, EarLandmarkerPipeline
+    cfg = dict(DEFAULTS, run=args.label_run)
     det = EarDetector(BLAZEEAR_DIR / DETECTOR_WEIGHTS, "cpu", 0.5)
-    pred = LandmarkPredictor(best_ckpt(args.label_run), "cuda")
+    # smooth=False: the tracker is for video; on a still it would smooth a
+    # one-frame track against wall-clock time and shift the landmarks.
+    pipe = EarLandmarkerPipeline(BLAZEEAR_DIR / DETECTOR_WEIGHTS,
+                                 best_ckpt(args.label_run), device="cuda", smooth=False)
 
     heads = sorted(glob.glob(str(HUTUBS / "*.ply"))) + sorted(glob.glob(str(SONICOM / "*.stl")))
     rng = np.random.default_rng(args.seed)
@@ -289,36 +132,49 @@ def main() -> None:
         mesh = load_head(hp)
         if mesh is None:
             continue
-        # SKIN FIRST, THEN DETECT. Every detector in this script -- the probe
-        # sweep here and the pipeline inside label_ear -- reads clay far worse
-        # than skin: measured, 0.835 against 0.94 on the same ear. Detecting on
-        # clay and colouring afterwards meant every detection in the pipeline was
-        # made on the appearance the models handle worst.
+        # SKIN FIRST, THEN DETECT. Every model in this path reads clay far worse
+        # than skin -- measured, 0.835 against 0.94 on the same ear -- and clay
+        # fails outright on 3 of 4 heads. Colouring afterwards meant every
+        # detection was made on the appearance the models handle worst.
         mesh = apply_skin(mesh, seed=0, tone=LABEL_TONE)
-        for conf0, front, up, _ in find_ears(mesh, det):
+
+        # The face-on direction comes from the FaceMesh head frame when it can be
+        # had, and the detector sweep otherwise. Same choice the viewer makes.
+        pose = head_pose(mesh, cfg)
+        if pose is not None:
+            lat, vert, tr_r, tr_l = pose
+            ears = [(1.0, lat, vert, tr_l), (1.0, -lat, vert, tr_r)]
+        else:
+            ears = [(c, f, u, np.asarray(mesh.vertices).mean(0))
+                    for c, f, u, _ in find_ears(mesh, det, cfg)]
+
+        for conf0, front, up, centre in ears:
             if n_ear >= args.ears:
                 break
-            base, P3, hit, conf, why = label_ear(mesh, front, up, det, pred)
+            try:
+                base, _, _, _, P3, hit, conf = label_two_pass(
+                    mesh, front, up, cfg, pipe, centre)
+            except SystemExit as why:
+                n_rejected += 1
+                print(f"    rejected {os.path.basename(hp)}: {why}", flush=True)
+                continue
 
             # QUALITY GATE. Every pose inherits this one labelling, so a bad
-            # face-on result poisons the whole ear. The checks are on the
-            # labelling itself -- ray hits, confidence, and whether the landmarks
-            # stay in their own crop -- not on agreement with a mesh region,
-            # which is what the old scale/centre checks compared against.
-            if why is None:
-                if hit.sum() < 45:
-                    why = f"pass 2: only {int(hit.sum())}/55 rays hit"
-                elif conf < args.min_conf:
-                    why = f"confidence {conf:.2f}"
-            if why is not None:
+            # face-on result poisons the whole ear.
+            why = None
+            if hit.sum() < 45:
+                why = f"only {int(hit.sum())}/55 landmarks lifted"
+            elif conf < args.min_conf:
+                why = f"confidence {conf:.2f}"
+            if why:
                 n_rejected += 1
                 print(f"    rejected {os.path.basename(hp)}: {why}", flush=True)
                 continue
             n_ear += 1
 
             # Re-skin for the OUTPUT images with a random Fitzpatrick I-VI tone.
-            # The labelling tone above is deeper than real skin and must not end
-            # up in training data; the labels are unaffected, being 3D points on
+            # The labelling tone is deeper than real skin and must not reach
+            # training data; the labels are unaffected, being 3D points on
             # geometry that did not change.
             base = apply_skin(base, seed=int(rng.integers(1 << 30)), tone=None)
 
@@ -328,17 +184,15 @@ def main() -> None:
                     mr = copy.deepcopy(base)
                     mr.rotate(Rr, center=(0, 0, 0))
                     Pr = P3 @ Rr.T
-                    img = render(mr, 0, 0, size=SIZE)[:, :, :3]
-                    occ = sample_occ(rng)
-                    out = crop_from_points(img, Pr[hit], occ)
-                    if out[0] is None:
+                    img, depth, cam = render(mr, cfg)
+                    vis = hit & visible(depth, Pr, cam)
+                    uv = cam.project(Pr)
+                    crop, box = crop_to_occupancy(img, uv[hit], sample_occ(rng))
+                    if crop is None:
                         continue
-                    crop, box2 = out
-                    vis = hit & visible(mr, Pr, size=SIZE)
-                    uv = project(Pr, SIZE)
-                    lm = np.stack([(uv[:, 0] - box2[0]) / box2[2],
-                                   (uv[:, 1] - box2[1]) / box2[2]], axis=1)
-                    # Occluded or un-raycast points are written OUT OF FRAME, so
+                    lm = np.stack([(uv[:, 0] - box[0]) / box[2],
+                                   (uv[:, 1] - box[1]) / box[2]], axis=1)
+                    # Occluded or unlifted points are written OUT OF FRAME, so
                     # data/dataset.py's visibility mask drops them instead of
                     # supervising a position the model cannot see.
                     lm[~vis] = -1.0
@@ -350,8 +204,8 @@ def main() -> None:
                                  "source": "render3d", "original_path": os.path.basename(hp),
                                  "width": crop.width, "height": crop.height})
                     lms.append(lm.astype(np.float32))
-            print(f"  [{n_ear}/{args.ears}] {os.path.basename(hp)} "
-                  f"det={conf0:.2f} label={conf:.2f}", flush=True)
+            print(f"  [{n_ear}/{args.ears}] {os.path.basename(hp)} label={conf:.2f}",
+                  flush=True)
 
     if not rows:
         sys.exit("nothing ingested")

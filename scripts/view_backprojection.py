@@ -10,12 +10,18 @@
     5. open an interactive window -- mesh + 3D landmarks + the four linestrips --
        and write a 2D overlay PNG of the same prediction beside it
 
-SELF-CONTAINED BY DESIGN. Every geometry stage is inlined below rather than
-imported, so you can hack on any of it without perturbing ingest_render3d.py or
-the eval scripts. The project imports are the networks (EarDetector,
-LandmarkPredictor, via EarLandmarkerPipeline), the checkpoint picker, and
-scripts/skin.py -- the model and the appearance shader, neither of which is
-geometry.
+THIS FILE IS THE SINGLE SOURCE FOR THE 3D PATH. The camera, the renderer, the
+back-projection, the ear/head framing and the snaps are defined here and nowhere
+else; scripts/ingest_render3d.py imports them rather than keeping its own. It
+started out self-contained so it could be hacked on freely, and that is exactly
+how the path fragmented -- ingest grew a second copy of load_head, find_ears and
+in_frame, plus a third camera setup of its own, and the copies drifted.
+
+What it still imports is the model (EarLandmarkerPipeline and the checkpoint
+picker) and scripts/skin.py for appearance. Neither is geometry.
+
+Anything added here is inherited by ingest. Anything added THERE that belongs to
+the 3D path belongs here instead.
 The flip side: fixes made here do NOT propagate back to the pipeline, and fixes
 made there do not arrive here. If a change proves out, port it deliberately.
 
@@ -72,116 +78,35 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+# THE 3D PATH LIVES IN ear3d/, NOT HERE. Camera, renderer, back-projection, the
+# snaps, the framing and the labelling are imported so that this viewer and
+# scripts/ingest_render3d.py run the same code rather than two copies of it.
+# What remains below is the viewer itself: configuration, the interactive window
+# and the command line.
+from ear3d.backproject import backproject, backproject_snapped   # noqa: E402,F401
+from ear3d.camera import (Camera, camera_ke, extrinsic_of,       # noqa: E402,F401
+                          orbit_extrinsic, pose_angles)
+from ear3d.config import DEFAULTS, EAR3D_DIR                     # noqa: E402
+from ear3d.draw import (ray_lines, save_agreement_render,        # noqa: E402,F401
+                        spheres, strip_lines, write_overlay)
+from ear3d.frames import (find_ears, frame_from, head_pose,      # noqa: E402,F401
+                          in_frame, load_head, plane_normal)
+from ear3d.label import (agreement, label_two_pass, multiview,   # noqa: E402,F401
+                         report_agreement)
+from ear3d.render import (LINE_MATERIAL, MATERIAL,               # noqa: E402,F401
+                          gui_depth_to_view, light_scene, render)
+from ear3d.scheme import STRIPS, STRIP_COLOURS, STRIP_NAMES      # noqa: E402,F401
+
 from skin import ALL_TONES, apply_skin       # noqa: E402  (appearance, not geometry)
+
+CONFIG = dict(DEFAULTS)                      # the shared defaults; see ear3d/config.py
 
 # ---------------------------------------------------------------- CONFIG ----
 # Third-party research data; not in any repo. Override with EAR3D_DIR.
 EAR3D_DIR = Path(os.environ.get("EAR3D_DIR", ROOT.parent / "clean_3d_data"))
 
-CONFIG = dict(
-    # --- what to load -------------------------------------------------------
-    mesh=str(EAR3D_DIR / "3D head meshes" / "pp12_3DheadMesh.ply"),
-    ear=0,                  # which detected ear: 0 = highest confidence, 1 = other side
-
-    # --- model --------------------------------------------------------------
-    run="manual_occ_s42",   # checkpoint under runs/checkpoints/<run>/
-    device="cuda",
-
-    # --- head pose ----------------------------------------------------------
-    use_mediapipe=True,     # derive the face-on direction from a FaceMesh head
-                            # frame instead of the ear detector's 6-view sweep
-    face_task=os.environ.get(
-        "FACE_LANDMARKER_TASK",
-        "/mnt/14BE47C2BE479ADE/Code/landmarking_stuff/landmarker/face_landmarker.task"),
-
-    # --- appearance ---------------------------------------------------------
-    skin=True,              # colour the mesh with scripts/skin.py before rendering
-    tone=10,                # tone index; None draws a random Fitzpatrick I-VI.
-                            # 10 is deeper than real skin and is there because the
-                            # landmarker reads the ear most cleanly on it -- see
-                            # EXTRA_TONES in scripts/skin.py. Fine here, where the
-                            # point is to inspect landmarks; ingest renders its
-                            # training images with a realistic tone instead.
-    skin_seed=0,            # also drives the blotching and grain
-    ao_strength=0.75,       # how hard ambient occlusion darkens cavities
-    ao_rays=24,             # rays per vertex. The cost of apply_skin is all here.
-
-    # --- camera / framing (these mirror the training pipeline) --------------
-    size=600,               # full render resolution before cropping
-    eye_z=3.0,              # camera at (0, 0, eye_z) looking at the origin
-    vfov=50.0,              # vertical field of view, degrees
-
-    # NOTE there is no crop setting here. The WHOLE render goes to
-    # EarLandmarkerPipeline, which runs the shipped detect -> ROI -> refine ->
-    # landmark path and hands back landmarks in full-frame pixels. That path
-    # already drives the ROI toward TRAIN_OCCUPANCY (ROI_OCC_TOL/ROI_SATURATED),
-    # so framing and occupancy are ITS business, not this script's -- which also
-    # means this viewer now shows what inference actually does, rather than what
-    # a hand-rolled crop here happened to do.
-
-    # --- back-projection ----------------------------------------------------
-    snap=True,              # place landmarks that sit behind a depth cliff onto
-                            # the near lip of that cliff. See snap_to_cliff().
-    snap_radius=0.08,       # JITTER RANGE: the search window, as a fraction of
-                            # ear extent -- ~35 px at the usual framing, a 71x71
-                            # window. This is the whole safety bound: the further
-                            # it reaches, the more a "snap" becomes a relocation
-                            # of a landmark the model put in the wrong place.
-                            # 8% is the knee. Over four heads, every one of the 13
-                            # landmarks flagged bad is already fixed there, and
-                            # going further fixes none and moves steadily more
-                            # points that were never flagged:
-                            #   radius   fixed   disturbed   moved >0.15
-                            #      5%      11        13           10
-                            #      8%      13        16           13
-                            #     10%      13        20           17
-                            #     15%      13        24           21
-                            #     20%      13        31           28
-                            # Note the flag behind "fixed" only catches
-                            # z < median - 0.30, so it is blind to a landmark on
-                            # the wrong anatomy at roughly the right depth. It
-                            # cannot separate these radii on placement; nothing
-                            # here can yet.
-    # --- multi-view agreement (--multiview) ---------------------------------
-    mv_angles=((0, 0), (-25, 0), (25, 0), (-12, -12), (12, 12), (0, -20), (0, 20)),
-                            # yaw/pitch to re-landmark from. Kept inside +/-25
-                            # because beyond that the ear starts occluding itself
-                            # and spread stops measuring placement and starts
-                            # measuring visibility.
-
-    chain=True,             # second pass: fix landmarks that break link spacing
-    chain_tol=1.0,          # flag when a point's two links deviate from the strip
-                            # median by this much in total, as a fraction of the
-                            # median. A clean point scores ~0.2; the displaced
-                            # ones measured here score 1.5-1.7. Natural spread
-                            # reaches p90 1.09-1.61 per link, so this sits above
-                            # anatomy and below the real failures.
-    chain_radius=0.08,      # search window for the replacement, as a fraction of
-                            # ear extent -- same safety bound as the cliff snap.
-    chain_passes=4,         # one point re-placed per pass, worst first, so a
-                            # corrected neighbour informs the next decision.
-    snap_step=0.30,         # how big a depth step counts as a cliff, in mesh
-                            # units with the ear spanning ~1. Scalp-behind-pinna
-                            # measures 0.85-1.08; concha bowl structure varies by
-                            # ~0.3, so this sits between them. Lower (0.15) drags
-                            # concha points forward; higher (0.50) fixes nothing.
-
-    # --- display ------------------------------------------------------------
-    sphere_frac=0.022,      # landmark sphere radius, in mesh units (ear spans ~1)
-    show_2d=True,           # pop the landmark overlay in its own window
-    show_rays=False,        # draw the camera ray to each landmark
-    # these derive from third-party 3D data, so they default OUTSIDE the repo
-    snapshot_png=str(Path(tempfile.gettempdir()) / "backprojection_snapshot.png"),
-    overlay_png=str(Path(tempfile.gettempdir()) / "backprojection_overlay.png"),
-    interactive=True,
-)
 # ---------------------------------------------------------------------------
 
-# 55-point iBUG ear scheme, four ordered linestrips.
-STRIPS = [(0, 20), (20, 35), (35, 50), (50, 55)]
-STRIP_NAMES = ["outer_helix", "inner_helix", "concha_border", "superior_crus"]
-STRIP_COLOURS = [(0.95, 0.25, 0.25), (0.25, 0.65, 0.95),
-                 (0.30, 0.85, 0.35), (0.98, 0.80, 0.15)]
 
 
 # ============================================================ camera ========
@@ -201,379 +126,34 @@ STRIP_COLOURS = [(0.95, 0.25, 0.25), (0.25, 0.65, 0.95),
 # default lighting costs the pipeline badly (pass 2 failed on 3 of 6 skin tones,
 # and the pinna-plane estimate ranged over 16-76 deg against 8-35 here).
 
-MATERIAL = o3d.visualization.rendering.MaterialRecord()
-MATERIAL.shader = "defaultLit"
 
 
-def camera_ke(size, cfg, E=None):
-    """(K, E) for this project's view. The single camera definition.
-
-    `E` overrides the face-on extrinsic -- used to re-render from wherever the
-    interactive window's camera has been orbited to. K is unchanged, so the
-    intrinsics the landmarker and the back-projection see never vary with pose.
-
-    Open3D is OpenCV-style -- x right, y DOWN, z INTO the scene -- while this
-    project has y up and the camera at +Z looking back along -Z, so the extrinsic
-    flips both y and z. cx/cy are size/2 - 0.5, the pixel-centre convention
-    Open3D's own intrinsic requires.
-    """
-    f = (size / 2) / np.tan(np.radians(cfg["vfov"]) / 2)
-    K = np.array([[f, 0.0, size / 2 - 0.5],
-                  [0.0, f, size / 2 - 0.5],
-                  [0.0, 0.0, 1.0]])
-    if E is None:
-        E = np.array([[1.0, 0, 0, 0], [0, -1.0, 0, 0],
-                      [0, 0, -1.0, cfg["eye_z"]], [0, 0, 0, 1.0]])
-    return K, np.asarray(E, float)
 
 
-# Filament's view matrix is OpenGL-style (y up, -z forward); our extrinsic is
-# OpenCV-style (y down, +z forward). Verified exact: FLIP @ get_view_matrix()
-# returns the very matrix that was handed to setup_camera.
-VIEW_TO_EXTRINSIC = np.diag([1.0, -1.0, -1.0, 1.0])
 
 
-def extrinsic_of(scene_camera):
-    """The extrinsic for whatever the window's camera is looking at right now."""
-    return VIEW_TO_EXTRINSIC @ np.asarray(scene_camera.get_view_matrix(), float)
 
 
-def pose_angles(E):
-    """Yaw and pitch of this camera relative to the face-on view, in degrees.
-
-    These are the angles the back-projection is working at: the mesh is fixed in
-    its pinna frame, so orbiting the camera IS the pose. Face-on reads 0/0 by
-    construction, yaw grows as the camera swings toward +X, pitch as it rises.
-    """
-    d = E[:3, :3].T @ np.array([0.0, 0.0, 1.0])      # view direction, world frame
-    yaw = np.degrees(np.arctan2(-d[0], -d[2]))
-    pitch = np.degrees(np.arcsin(np.clip(-d[1], -1.0, 1.0)))
-    off = np.degrees(np.arccos(np.clip(-d[2], -1.0, 1.0)))
-    return yaw, pitch, off
 
 
-class Camera:
-    """Projection and back-projection for a render, from that render's own K/E."""
-
-    def __init__(self, K, E, img_hw, requested):
-        h, w = img_hw
-        # A render can come back at a size we did not ask for. K describes the
-        # requested size, so rescale it to the pixels actually produced --
-        # otherwise every projection is off by that ratio, silently.
-        sx, sy = w / requested, h / requested
-        self.fx, self.fy = K[0, 0] * sx, K[1, 1] * sy
-        self.cx, self.cy = K[0, 2] * sx, K[1, 2] * sy
-        self.scaled = (sx != 1.0 or sy != 1.0)
-        self.w, self.h = w, h
-        self.R, self.t = E[:3, :3], E[:3, 3]
-        self.centre = -self.R.T @ self.t
-
-    def project(self, P):
-        P = np.atleast_2d(np.asarray(P, float))
-        Pc = P @ self.R.T + self.t
-        z = np.maximum(Pc[:, 2], 1e-9)
-        return np.stack([self.fx * Pc[:, 0] / z + self.cx,
-                         self.fy * Pc[:, 1] / z + self.cy], axis=1)
-
-    @classmethod
-    def from_gui(cls, scene_camera, img_hw):
-        """Camera for a capture taken from inside the GUI window.
-
-        Intrinsics come from the live projection matrix rather than from
-        camera_ke, because the widget can be resized and its aspect is whatever
-        the window is. Verified against camera_ke on a square window: fx 257.34
-        against 257.3, cx/cy 119.5 against size/2 - 0.5.
-        """
-        P = np.asarray(scene_camera.get_projection_matrix(), float)
-        h, w = img_hw
-        obj = cls.__new__(cls)
-        obj.fx, obj.fy = P[0, 0] * w / 2.0, P[1, 1] * h / 2.0
-        obj.cx, obj.cy = w * (1 - P[0, 2]) / 2.0, h * (1 + P[1, 2]) / 2.0
-        obj.scaled, obj.w, obj.h = False, w, h
-        E = extrinsic_of(scene_camera)
-        obj.R, obj.t = E[:3, :3], E[:3, 3]
-        obj.centre = -obj.R.T @ obj.t
-        return obj
-
-    def rays(self, uv):
-        """Pixel -> (origin, unit direction). Exact inverse of project()."""
-        uv = np.atleast_2d(np.asarray(uv, float))
-        d = np.stack([(uv[:, 0] - self.cx) / self.fx,
-                      (uv[:, 1] - self.cy) / self.fy,
-                      np.ones(len(uv))], axis=1) @ self.R
-        d /= np.linalg.norm(d, axis=1, keepdims=True)
-        return np.tile(self.centre, (len(uv), 1)), d
 
 
-def light_scene(scene, background):
-    """The one lighting setup, shared by the snapshot and the 3D window."""
-    scene.set_background([*background, 1.0])
-    scene.scene.set_sun_light([-0.3, -0.4, -0.9], [1.0, 1.0, 1.0], 95000)
-    scene.scene.enable_sun_light(True)
 
 
-def render(mesh, cfg, size=None, background=(0.5, 0.5, 0.5), E=None):
-    """Render, and return the depth buffer and camera that produced it.
-
-    Returns (image HxWx3 uint8, depth float32 HxW, Camera). The depth is
-    view-space z, with inf where nothing was drawn. Callers back-project through
-    THIS depth and THIS camera; see backproject().
-    """
-    size = size or cfg["size"]
-    r = o3d.visualization.rendering.OffscreenRenderer(size, size)
-    r.scene.add_geometry("m", mesh, MATERIAL)
-    light_scene(r.scene, background)
-    K, E = camera_ke(size, cfg, E)
-    r.setup_camera(K, E, size, size)
-    img = np.asarray(r.render_to_image())[:, :, :3]
-    depth = np.asarray(r.render_to_depth_image(z_in_view_space=True))
-    del r
-    return img, depth, Camera(K, E, img.shape[:2], size)
 
 
-def gui_depth_to_view(depth, scene_camera):
-    """The GUI's normalised depth buffer -> view-space distance, background inf.
-
-    The window's own capture has no z_in_view_space flag, and its projection has
-    an INFINITE far plane: P[2,2] is -1 and P[2,3] is -2*near, so the buffer
-    holds d = 1 + near/z_e with z_e negative in front of the camera, and the
-    distance is near / (1 - d). Measured against a sphere whose apex is exactly
-    2.5 away: 2.5011, matching what the offscreen renderer reports in view space.
-
-    The projection form is asserted rather than assumed -- if Open3D ever ships a
-    finite far plane or reverse-Z, this must fail loudly instead of returning
-    quietly wrong depths.
-    """
-    P = np.asarray(scene_camera.get_projection_matrix(), float)
-    if not (abs(P[2, 2] + 1.0) < 1e-3 and P[2, 3] < 0):
-        raise RuntimeError(f"unexpected projection; cannot linearise depth:\n{P}")
-    near = -P[2, 3] / 2.0
-    d = np.asarray(depth, float)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        z = near / (1.0 - d)
-    return np.where(d >= 1.0, np.inf, z)
 
 
-def cliff_map(depth, step):
-    """Pixels where the surface STEPS by more than `step` within a 3x3 window.
-
-    Background (inf) is pushed to a finite far value first, so the pinna's
-    silhouette against the head behind it counts as an edge like any other
-    occlusion. A RIDGE is not a cliff: the antihelix curves, it does not break,
-    so its local max-min stays small and it never qualifies. That distinction is
-    what makes this safe where two earlier snaps were not -- both of those used
-    "nearest surface in the window", which drags concha-floor points forward onto
-    the rim, because a bowl legitimately has nearer surface beside it.
-
-    Returns (is_cliff, near_depth) where near_depth is the 3x3 minimum: the
-    foreground lip of whatever edge runs through that pixel.
-    """
-    d = np.where(np.isfinite(depth), depth, np.nan)
-    far = np.nanmax(d) + 1.0 if np.isfinite(np.nanmax(d)) else 1.0
-    d = np.where(np.isnan(d), far, d)
-    hi = ndimage.maximum_filter(d, size=3)
-    lo = ndimage.minimum_filter(d, size=3)
-    return (hi - lo) > step, lo
 
 
-def snap_to_cliff(depth, uv, radius, step):
-    """Place landmarks that sit BEHIND a depth cliff onto its near lip.
-
-    For each landmark, look within `radius` px for a depth cliff. If one is
-    there AND the landmark is currently on the far side of it, move to the
-    nearest cliff pixel and take the near-side depth. A landmark with no cliff
-    nearby, or already on the near lip, is left exactly where it is.
-
-    Returns (uv, moved_mask, shift_px, near_depth). The near depth is returned
-    rather than applied, because re-sampling the depth buffer AT a cliff pixel is
-    a coin flip between the two surfaces it separates -- which is the entire
-    failure being corrected. Measured, taking it explicitly moved this from
-    fixing 0 of 13 bad landmarks to fixing 11.
-    """
-    cliff, lo = cliff_map(depth, step)
-    H, W = depth.shape
-    out = np.asarray(uv, float).copy()
-    moved = np.zeros(len(out), bool)
-    shift = np.zeros(len(out))
-    znear = np.full(len(out), np.nan)
-    r = int(np.ceil(radius))
-    yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
-    rad = np.hypot(xx, yy)
-    for k, (u, v) in enumerate(out):
-        x0, y0 = int(round(u)), int(round(v))
-        xs, xe = max(0, x0 - r), min(W, x0 + r + 1)
-        ys, ye = max(0, y0 - r), min(H, y0 + r + 1)
-        if xe <= xs or ye <= ys:
-            continue
-        sub = cliff[ys:ye, xs:xe]
-        rr = rad[ys - (y0 - r):ye - (y0 - r), xs - (x0 - r):xe - (x0 - r)]
-        cand = sub & (rr <= radius)
-        if not cand.any():
-            continue
-        dd = np.where(cand, rr, np.inf)
-        iy, ix = np.unravel_index(np.argmin(dd), dd.shape)
-        gy, gx = ys + iy, xs + ix
-        d_here = depth[min(max(y0, 0), H - 1), min(max(x0, 0), W - 1)]
-        # Only move a point that is actually BEHIND the cliff. One already on the
-        # near lip belongs there; moving it anyway was the whole source of
-        # collateral damage in the previous version (15-17 good points per head
-        # displaced, against 3 with this gate).
-        if not np.isfinite(d_here) or (d_here - lo[gy, gx]) < 0.5 * step:
-            continue
-        out[k] = [gx, gy]
-        moved[k] = True
-        shift[k] = dd[iy, ix]
-        znear[k] = lo[gy, gx]
-    return out, moved, shift, znear
 
 
-def snap_chain(P, uv, depth, cam, cfg):
-    """Second pass: re-place landmarks that break their chain's link spacing.
-
-    The 55 points are four ordered linestrips, and within a strip consecutive
-    links are roughly equal. Measured over four heads, link/median runs from p10
-    0.84 to p90 1.09-1.61 by strip, and only 4 of 204 links exceed 2x. So this
-    corrects OUTLIERS; it does not enforce uniformity. That distinction matters:
-    concha_border naturally spreads to 1.6x, and flattening it would fight real
-    anatomy rather than fix anything. superior_crus is the tight one (p90 1.09).
-
-    A displaced landmark shows up in one of two ways, and testing for only the
-    first finds nothing: BOTH links long when it is pushed off the chain, or one
-    long and one SHORT when it has slid toward a neighbour. The second is the
-    common one here -- pp12's concha border reads 2.0 then 0.3 across one point.
-    So the score is total deviation of both links from the strip median, which
-    catches either, rather than a test on the shorter link, which caught neither.
-
-    The replacement is searched on the surface itself: candidates are pixels in a
-    window around the landmark, back-projected through the depth buffer, scored by
-    how close they bring both links to the strip median. So the result is a point
-    the camera actually saw, not an interpolated midpoint hanging off the mesh --
-    which is what the old vertex-based version produced.
-    """
-    P = np.asarray(P, float).copy()
-    uv = np.asarray(uv, float)
-    moved = np.zeros(len(P), bool)
-    H, W = depth.shape
-    r = int(np.ceil(cfg["chain_radius"] * max(np.ptp(uv[:, 0]), np.ptp(uv[:, 1]))))
-    tol = cfg["chain_tol"]
-    for _ in range(cfg["chain_passes"]):
-        worst, worst_score = None, tol
-        for a, b in STRIPS:
-            d = np.linalg.norm(np.diff(P[a:b], axis=0), axis=1)
-            if len(d) < 3:
-                continue
-            med = np.median(d)
-            for k in range(a, b):
-                i = k - a
-                links = [d[j] for j in (i - 1, i) if 0 <= j < len(d)]
-                if len(links) < 2:
-                    continue                      # strip ends have one link only
-                score = sum(abs(x - med) for x in links) / max(med, 1e-9)
-                if score > worst_score and not moved[k]:
-                    worst, worst_score = (k, a, b, med), score
-        if worst is None:
-            break
-        k, a, b, med = worst
-        x0, y0 = int(round(uv[k, 0])), int(round(uv[k, 1]))
-        xs, xe = max(0, x0 - r), min(W, x0 + r + 1)
-        ys, ye = max(0, y0 - r), min(H, y0 + r + 1)
-        yy, xx = np.mgrid[ys:ye, xs:xe]
-        zz = depth[ys:ye, xs:xe]
-        ok = np.isfinite(zz)
-        if ok.sum() < 10:
-            break
-        u, vv, z = xx[ok].ravel(), yy[ok].ravel(), zz[ok].ravel()
-        Pc = np.stack([(u - cam.cx) / cam.fx * z, (vv - cam.cy) / cam.fy * z, z], axis=1)
-        cand = (Pc - cam.t) @ cam.R
-        cost = np.zeros(len(cand))
-        for j in (k - 1, k + 1):
-            if a <= j < b:
-                cost += np.abs(np.linalg.norm(cand - P[j], axis=1) - med)
-        P[k] = cand[np.argmin(cost)]
-        moved[k] = True
-    return P, moved
 
 
-def backproject_snapped(depth, uv, cam, cfg):
-    """backproject(), then the cliff snap if it is enabled. Returns (P, hit, moved)."""
-    P, hit = backproject(depth, uv, cam)
-    if not cfg.get("snap"):
-        return P, hit, np.zeros(len(P), bool)
-    uv = np.asarray(uv, float)
-    ext = max(np.ptp(uv[:, 0]), np.ptp(uv[:, 1]))
-    uv2, moved, _, znear = snap_to_cliff(depth, uv, cfg["snap_radius"] * ext,
-                                         cfg["snap_step"])
-    use = moved & np.isfinite(znear)
-    if use.any():
-        u, v, z = uv2[use, 0], uv2[use, 1], znear[use]
-        Pc = np.stack([(u - cam.cx) / cam.fx * z, (v - cam.cy) / cam.fy * z, z], axis=1)
-        P[use] = (Pc - cam.t) @ cam.R
-        hit = hit | use
-    if cfg.get("chain"):
-        P, cmoved = snap_chain(P, uv2, depth, cam, cfg)
-        moved = moved | cmoved
-    return P, hit, moved
 
 
-def backproject(depth, uv, cam, max_jump=0.02):
-    """2D -> 3D from the DEPTH BUFFER of the same render. Returns (P, hit).
-
-    WHY NOT RAY-CAST. Ray-casting means building a second acceleration structure
-    over the mesh and intersecting it, which is a second geometry path: it agrees
-    with the picture because it is the same mesh seen through the same camera, but
-    nothing makes it agree. The depth buffer IS the rasterisation that produced
-    the pixels, so the surface found here is by construction the surface the
-    landmarker was looking at. It is also free, where the ray-cast was not.
-
-    Precision: the buffer is float32 view-space z, so unlike the 8-bit depth
-    round-trip the reference implementation uses to enable inpainting, nothing is
-    quantised. Background reads as inf and is reported as a miss rather than
-    filled in -- an inpainted depth would invent geometry and hand back a
-    plausible, wrong 3D point with nothing marking it.
-
-    `max_jump` guards the one real hazard of sampling a depth buffer at
-    sub-pixel positions: bilinear interpolation ACROSS A SILHOUETTE blends a near
-    surface with a far one and returns a depth that lies in empty space between
-    them. Where the four neighbours disagree by more than this fraction, the
-    nearest sample is taken instead of a blend.
-    """
-    depth = np.asarray(depth, float)
-    h, w = depth.shape
-    uv = np.atleast_2d(np.asarray(uv, float))
-    x0 = np.clip(np.floor(uv[:, 0]).astype(int), 0, w - 2)
-    y0 = np.clip(np.floor(uv[:, 1]).astype(int), 0, h - 2)
-    fx, fy = uv[:, 0] - x0, uv[:, 1] - y0
-    q = np.stack([depth[y0, x0], depth[y0, x0 + 1],
-                  depth[y0 + 1, x0], depth[y0 + 1, x0 + 1]], axis=1)
-    wts = np.stack([(1 - fx) * (1 - fy), fx * (1 - fy),
-                    (1 - fx) * fy, fx * fy], axis=1)
-    good = np.isfinite(q)
-    hit = good.any(axis=1)
-    z = np.full(len(uv), np.nan)
-    qf = np.where(good, q, np.nan)
-    near = np.nanmin(np.where(good, q, np.inf), axis=1, initial=np.inf)
-    far = np.nanmax(np.where(good, q, -np.inf), axis=1, initial=-np.inf)
-    blend = hit & good.all(axis=1) & ((far - near) <= max_jump * np.maximum(near, 1e-9))
-    with np.errstate(invalid="ignore"):
-        z[blend] = (q[blend] * wts[blend]).sum(axis=1)
-    # Anything not safely blendable takes its nearest-neighbour sample: the
-    # closest of the four that actually has geometry.
-    rest = hit & ~blend
-    if rest.any():
-        pick = np.nanargmin(np.where(good[rest], np.abs(qf[rest] - near[rest, None]),
-                                     np.nan), axis=1)
-        z[rest] = q[rest, pick]
-    P = np.full((len(uv), 3), np.nan)
-    Pc = np.stack([(uv[hit, 0] - cam.cx) / cam.fx * z[hit],
-                   (uv[hit, 1] - cam.cy) / cam.fy * z[hit],
-                   z[hit]], axis=1)
-    P[hit] = (Pc - cam.t) @ cam.R        # camera -> world; R is orthonormal
-    return P, hit
 
 
-LINE_MATERIAL = o3d.visualization.rendering.MaterialRecord()
-LINE_MATERIAL.shader = "unlitLine"
-LINE_MATERIAL.line_width = 2.0
 
 
 def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
@@ -756,42 +336,6 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
 
 # ============================================================ ear finding ===
 
-def load_head(path):
-    """Head mesh, centred and scaled to unit radius."""
-    m = o3d.io.read_triangle_mesh(str(path))
-    if len(m.vertices) == 0:
-        return None
-    V = np.asarray(m.vertices)
-    V = (V - V.mean(0)) / np.abs(V - V.mean(0)).max()
-    m.vertices = o3d.utility.Vector3dVector(V)
-    m.compute_vertex_normals()
-    return m
-
-
-def find_ears(mesh, det, cfg, probe_size=400, dist=2.4):
-    """Locate ears by sweeping the detector around the head.
-
-    Geometric rules do not transfer between datasets -- HUTUBS and SONICOM store
-    heads on different axes -- so the ear is found by what an ear detector sees.
-    """
-    out = []
-    for axis in (0, 1, 2):
-        for sgn in (1, -1):
-            front = np.zeros(3); front[axis] = sgn
-            up = np.array([0.0, 0.0, 1.0]) if axis != 2 else np.array([0.0, 1.0, 0.0])
-            R = frame_from(front, up, front=front)
-            if R is None:
-                continue
-            g = in_frame(mesh, R, np.asarray(mesh.vertices).mean(0), 1.0)
-            b = det.detect(render(g, cfg, size=probe_size)[0])
-            if not len(b):
-                continue
-            h, w = b[0, 2] - b[0, 0], b[0, 3] - b[0, 1]
-            if (h * w) / (probe_size ** 2) > 0.25:   # a whole-head box is a false positive
-                continue
-            out.append((float(b[0, 4]), front, up, b[0, :4].copy()))
-    out.sort(key=lambda t: -t[0])
-    return out[:2]
 
 
 
@@ -799,211 +343,28 @@ def find_ears(mesh, det, cfg, probe_size=400, dist=2.4):
 
 
 
-def frame_from(normal, up, front=None):
-    """Rotation taking `normal` onto +Z (toward the camera), keeping `up` near +Y."""
-    n = np.asarray(normal, float)
-    if front is not None and n @ np.asarray(front, float) < 0:
-        n = -n
-    z = n / max(np.linalg.norm(n), 1e-9)
-    y = np.asarray(up, float) - z * (np.asarray(up, float) @ z)
-    ny = np.linalg.norm(y)
-    if ny < 1e-6:
-        return None
-    y /= ny
-    return np.stack([np.cross(y, z), y, z])            # world -> camera frame
 
 
-def plane_normal(points):
-    """Surface normal of the best-fit plane through the landmarks."""
-    P = np.asarray(points, float)
-    _, _, vt = np.linalg.svd(P - P.mean(0), full_matrices=False)
-    return vt[2]
 
 
-def in_frame(mesh, R, C, scale):
-    """A copy of the mesh rotated into frame R about C and scaled by `scale`."""
-    g = copy.deepcopy(mesh)
-    g.vertices = o3d.utility.Vector3dVector(
-        ((np.asarray(mesh.vertices) - C) @ R.T) / scale)
-    g.compute_vertex_normals()
-    return g
 
 
-def landmark_whole_frame(mesh, cfg, pipe):
-    """Render the whole head and landmark it with the SHIPPED pipeline.
-
-    No crop is made here. EarLandmarkerPipeline detects the ear, builds and
-    refines its own ROI, runs the landmarker and maps the 55 points back into
-    full-frame pixels -- exactly the space the returned Camera works in, so the
-    result feeds the ray-cast directly with no mapping of ours in between.
-
-    Returns (image, depth, Camera, landmarks_px, confidence); landmarks None if no ear.
-    """
-    img, depth, cam = render(mesh, cfg)
-    res = pipe(img, timestamp=0.0)
-    if not res:
-        return img, depth, cam, None, 0.0
-    # Several ears can be detected on a head render; take the most confident.
-    best = max(res, key=lambda d: float(d["confidence"]))
-    # NOTE this is the DETECTOR's box confidence, which is what the pipeline
-    # returns. It is not the landmarker's per-point confidence and must not be
-    # compared against it -- the pipeline does not expose that, because it owns
-    # the crop. Reach into pipe.landmarker.predict(..., with_confidence=True) if
-    # you need the per-point values back.
-    return img, depth, cam, np.asarray(best["landmarks"], float), float(best["confidence"])
 
 
-# MediaPipe FaceMesh canonical indices.
-TRAGION_R, TRAGION_L, FOREHEAD, CHIN = 234, 454, 10, 152
-NOSE_TIP, NASION = 1, 168
 
 
-def head_pose(mesh, cfg):
-    """Head frame from MediaPipe FaceMesh, in the mesh's own coordinates.
 
-    Returns (lateral, vertical, tragion_R, tragion_L) or None.
 
-    WHY THIS BEATS SWEEPING THE EAR DETECTOR. The sweep renders six axis-aligned
-    views and keeps the two best ear boxes, which on a head gives two nearly equal
-    confidences and no way to tell which side is which. MediaPipe finds a face on
-    exactly ONE of those six views -- on every head tried -- so the frontal
-    direction is unambiguous, and the face landmarks then give a real anatomical
-    frame rather than whichever axis the dataset stored the head on. The ear
-    direction is the sagittal-plane normal -- 90 degrees from the nose -- built
-    from forehead, chin, nasion and nose tip. The tragion landmarks are used only
-    to pick which side is which and to centre the view, never for the direction.
-
-    IT DOES NOT REMOVE PASS 2, AND IT IS NOT MEASURABLY MORE ACCURATE. Head to
-    head over four heads, pass-2 confidence against the detector sweep: 0.931 vs
-    0.955, 0.942 vs 0.927, fails vs 0.881, 0.980 vs 0.981. The remaining offset
-    from the pinna plane is the same either way (8-35 deg here, 16-37 for the
-    sweep). What it buys is that the SIDE is known -- the sweep returns two ear
-    boxes at near-equal confidence with no way to tell left from right, so "ear 0"
-    is arbitrary and changes between heads. The pinna's own tilt is per-subject
-    anatomy that no face-derived frame can supply, which is why pass 2 stays.
-
-    Measured per side (pass-2 confidence / degrees off the pinna plane), the RIGHT
-    ear is consistently better: pp16 fails/0.839@12, pp12 0.931@33/0.990@28,
-    pp11 0.942@35/0.986@13, pp10 0.980@19/0.982@8. Left and right ears are mirror
-    images, so this is most likely an asymmetry in the landmarker rather than in
-    this frame -- it is not explained, and worth a look before trusting left-ear
-    labels as much as right.
-    """
-    task = cfg.get("face_task")
-    if not task or not Path(task).exists():
-        print(f"mediapipe: no face_landmarker.task at {task} -- using the ear sweep")
-        return None
-    import mediapipe as mp
-    from mediapipe.tasks import python as mpp
-    from mediapipe.tasks.python import vision
-    fl = vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
-        base_options=mpp.BaseOptions(model_asset_path=str(task)), num_faces=1))
-    C0 = np.asarray(mesh.vertices).mean(0)
-    for axis in (0, 1, 2):
-        for sgn in (1, -1):
-            front = np.zeros(3); front[axis] = sgn
-            up = np.array([0.0, 0.0, 1.0]) if axis != 2 else np.array([0.0, 1.0, 0.0])
-            R = frame_from(front, up, front=front)
-            if R is None:
-                continue
-            g = in_frame(mesh, R, C0, 1.0)
-            img, depth, cam = render(g, cfg)
-            res = fl.detect(mp.Image(image_format=mp.ImageFormat.SRGB,
-                                     data=np.ascontiguousarray(img)))
-            if not res.face_landmarks:
-                continue
-            # MediaPipe normalises to the IMAGE it was handed, so scale by that
-            # image's own shape, never by the size we requested.
-            h, w = img.shape[:2]
-            uv = np.array([[p.x * w, p.y * h] for p in res.face_landmarks[0]])
-            P, hit = backproject(depth, uv, cam)
-            if not hit[[TRAGION_R, TRAGION_L, FOREHEAD, CHIN,
-                        NOSE_TIP, NASION]].all():
-                continue
-            # The landmarks come back in THIS frame's coordinates; everything
-            # downstream works in the mesh's own, so convert before using them.
-            # Skipping this put the ear view 62-70 deg off instead of 10-24.
-            P = (P @ R) + C0
-            # THE EAR DIRECTION IS 90 DEG FROM THE NOSE: the normal of the
-            # sagittal plane, from the head's own up and forward axes.
-            #
-            # The obvious alternative is the tragion-to-tragion line, and over 12
-            # ears it is no better -- mean 25.1 deg from the pinna plane against
-            # 25.7 here, median 26.9 against 24.2. What decides it is that the
-            # tragion landmarks are the weak ones: the reference implementation in
-            # ../landmarking_stuff/landmarker marks exactly these indices "most
-            # likely not possible" and does not use them. Forehead, chin, nasion
-            # and nose tip are points FaceMesh is actually good at, so the same
-            # answer rests on firmer ground.
-            #
-            # A third option, the head's local surface normal at the tragion, is
-            # better typically (mean 16.4, median 14.4) but has a worse tail
-            # (48.2) and failed outright on 1 of 12. Not taken.
-            vert = P[FOREHEAD] - P[CHIN]
-            vert /= np.linalg.norm(vert)
-            fwd = P[NOSE_TIP] - P[NASION]
-            fwd -= vert * (fwd @ vert)
-            if np.linalg.norm(fwd) < 1e-6:
-                continue
-            fwd /= np.linalg.norm(fwd)
-            lat = np.cross(vert, fwd)
-            lat /= np.linalg.norm(lat)
-            # Orient toward the subject's left so "ear 0" keeps its meaning.
-            if lat @ (P[TRAGION_L] - P[TRAGION_R]) < 0:
-                lat = -lat
-            vert -= lat * (vert @ lat)
-            vert /= np.linalg.norm(vert)
-            print(f"mediapipe: face on axis {axis}{'+' if sgn > 0 else '-'}, "
-                  f"tragion separation {np.linalg.norm(P[TRAGION_L] - P[TRAGION_R]):.3f}")
-            return lat, vert, P[TRAGION_R], P[TRAGION_L]
-    print("mediapipe: no face found on any of the six views -- using the ear sweep")
-    return None
 
 
 # ============================================================ display ======
 
-def spheres(points, radius, colours):
-    out = o3d.geometry.TriangleMesh()
-    for p, c in zip(points, colours):
-        if not np.all(np.isfinite(p)):
-            continue
-        s = o3d.geometry.TriangleMesh.create_sphere(radius=radius, resolution=8)
-        s.translate(p)
-        s.paint_uniform_color(c)
-        out += s
-    out.compute_vertex_normals()
-    return out
 
 
-def strip_lines(points):
-    pts, idx, col = [], [], []
-    for i, (a, b) in enumerate(STRIPS):
-        for k in range(a, b - 1):
-            if np.all(np.isfinite(points[k])) and np.all(np.isfinite(points[k + 1])):
-                idx.append([len(pts), len(pts) + 1])
-                pts += [points[k], points[k + 1]]
-                col.append(STRIP_COLOURS[i])
-    return _lineset(pts, idx, col)
 
 
-def ray_lines(points, cam):
-    """Camera ray to each landmark: shows where the back-projection came from."""
-    o, d = cam.rays(cam.project(points))
-    pts, idx = [], []
-    for i, p in enumerate(points):
-        if not np.all(np.isfinite(p)):
-            continue
-        idx.append([len(pts), len(pts) + 1])
-        pts += [o[i] + d[i] * 0.5, p]
-    return _lineset(pts, idx, [(0.55, 0.55, 0.55)] * len(idx))
 
 
-def _lineset(pts, idx, col):
-    ls = o3d.geometry.LineSet()
-    ls.points = o3d.utility.Vector3dVector(np.array(pts) if pts else np.zeros((0, 3)))
-    ls.lines = o3d.utility.Vector2iVector(np.array(idx) if idx else np.zeros((0, 2), int))
-    ls.colors = o3d.utility.Vector3dVector(np.array(col) if col else np.zeros((0, 3)))
-    return ls
 
 
 _VIEW_2D = r"""
@@ -1071,143 +432,17 @@ def show_image_window(path):
         return None
 
 
-def save_agreement_render(mesh, P, colours, cfg, path, size=620):
-    """Render the cross-view median landmarks, coloured by how much views disagree."""
-    r = o3d.visualization.rendering.OffscreenRenderer(size, size)
-    for i, geom in enumerate([mesh, spheres(P, cfg["sphere_frac"] * 1.3, colours),
-                              strip_lines(P)]):
-        r.scene.add_geometry(f"g{i}", geom, MATERIAL)
-    light_scene(r.scene, (0.5, 0.5, 0.5))
-    K, E = camera_ke(size, cfg)
-    r.setup_camera(K, E, size, size)
-    img = np.asarray(r.render_to_image())[:, :, :3]
-    del r
-    Image.fromarray(img).save(path)
-    print(f"wrote {path}  (green = views agree, red = they do not)")
-
-
-def write_overlay(frame, lm, path, note=None, announce=True):
-    """The 2D prediction on the frame it came from, in the same strip colours.
-
-    `note` is stamped into the corner -- the pose it was measured at. Placement
-    changes with angle, so an overlay without its angle is an unlabelled sample.
-
-    Written atomically: the 2D viewer polls this file, and os.replace means it
-    can only ever see a complete image.
-    """
-    img = frame.convert("RGB").resize((512, 512), Image.BILINEAR)
-    s = 512 / frame.width           # the WHOLE frame, not a crop
-    d = ImageDraw.Draw(img)
-    for i, (a, b) in enumerate(STRIPS):
-        c = tuple(int(255 * v) for v in STRIP_COLOURS[i])
-        d.line([tuple(p) for p in (lm[a:b] * s)], fill=c, width=2)
-        for x, y in lm[a:b] * s:
-            d.ellipse([x - 3, y - 3, x + 3, y + 3], fill=c, outline=(0, 0, 0))
-    if note:
-        d.rectangle([0, 0, 8 + 6 * len(note), 18], fill=(0, 0, 0))
-        d.text((5, 4), note, fill=(255, 255, 255))
-    tmp = f"{path}.{os.getpid()}.tmp.png"
-    img.save(tmp, format="PNG")
-    os.replace(tmp, path)
-    if announce:
-        print(f"wrote {path}")
 
 
 
-def orbit_extrinsic(yaw, pitch, cfg):
-    """Extrinsic for a camera orbited to (yaw, pitch) about the ear, looking at it."""
-    y, p = np.radians(yaw), np.radians(pitch)
-    d = cfg["eye_z"]
-    C = np.array([d * np.sin(y) * np.cos(p), d * np.sin(p), d * np.cos(y) * np.cos(p)])
-    z = -C / np.linalg.norm(C)
-    x = np.cross([0.0, 1.0, 0.0], z)
-    x /= np.linalg.norm(x)
-    yv = np.cross(z, x)
-    R = np.stack([x, yv, z])
-    E = np.eye(4)
-    E[:3, :3], E[:3, 3] = R, -R @ C
-    return E
 
 
-def multiview(mesh, cfg, pipe):
-    """Landmark the ear from several viewpoints and back-project each.
-
-    Returns (P [V, 55, 3], ok [V, 55], angles). Every view is landmarked
-    independently and back-projected through ITS OWN depth buffer, so the points
-    from different views are separate measurements of the same anatomy, in the
-    mesh's own frame.
-
-    WHAT THIS IS FOR. Nothing else here measures whether a landmark is in the
-    right PLACE. The depth-outlier flag catches only grossly deep points, and
-    detector confidence has been shown to stay flat while landmarks drift. But a
-    correctly placed landmark should land in the same spot whichever direction it
-    was seen from, while one that slid onto the scalp depends on the ray that
-    produced it and moves with the view.
-
-    WHAT IT CANNOT DO: this is precision, not accuracy. A model that puts a point
-    in the same wrong place from every angle scores perfectly. It needs human
-    annotation to become a measure of correctness -- what it gives for free is a
-    way to find the points worth annotating.
-    """
-    out, ok = [], []
-    for yaw, pitch in cfg["mv_angles"]:
-        E = orbit_extrinsic(yaw, pitch, cfg)
-        img, depth, cam = render(mesh, cfg, E=E)
-        res = pipe(img, timestamp=0.0)
-        if not res:
-            # A view where the detector finds nothing contributes no measurement.
-            # Reported rather than silently dropped: if most views fail, the
-            # agreement figure is averaging two opinions, not seven.
-            print(f"  view ({yaw:+d},{pitch:+d}): no ear detected")
-            out.append(np.full((55, 3), np.nan))
-            ok.append(np.zeros(55, bool))
-            continue
-        best = max(res, key=lambda d: float(d["confidence"]))
-        lm = np.asarray(best["landmarks"], float)
-        P, hit, _ = backproject_snapped(depth, lm, cam, cfg)
-        print(f"  view ({yaw:+d},{pitch:+d}): det {float(best['confidence']):.2f}, "
-              f"{int(hit.sum())}/55")
-        out.append(P)
-        ok.append(hit & np.isfinite(P).all(axis=1))
-    return np.stack(out), np.stack(ok), list(cfg["mv_angles"])
 
 
-def agreement(P, ok):
-    """Per-landmark spread across views: median distance to that point's median.
-
-    Median rather than mean throughout, so one bad view does not set the score
-    for a landmark the other views agree on.
-    """
-    spread = np.full(P.shape[1], np.nan)
-    centre = np.full((P.shape[1], 3), np.nan)
-    nview = ok.sum(axis=0)
-    for k in range(P.shape[1]):
-        pts = P[ok[:, k], k]
-        if len(pts) < 2:
-            continue
-        c = np.median(pts, axis=0)
-        centre[k] = c
-        spread[k] = np.median(np.linalg.norm(pts - c, axis=1))
-    return spread, centre, nview
 
 
-def report_agreement(spread, nview, ear_extent=1.0):
-    """Print per-strip and worst-landmark agreement."""
-    print(f"\nmulti-view agreement (spread as % of ear extent; "
-          f"lower = the views concur)")
-    print(f"{'strip':>15s}{'median':>9s}{'p90':>8s}{'worst':>8s}{'views':>8s}")
-    for i, (a, b) in enumerate(STRIPS):
-        sp = spread[a:b]
-        fin = np.isfinite(sp)
-        if not fin.any():
-            continue
-        print(f"{STRIP_NAMES[i]:>15s}{100*np.median(sp[fin])/ear_extent:>8.1f}%"
-              f"{100*np.percentile(sp[fin], 90)/ear_extent:>7.1f}%"
-              f"{100*np.nanmax(sp)/ear_extent:>7.1f}%{np.mean(nview[a:b]):>8.1f}")
-    order = np.argsort(-np.nan_to_num(spread, nan=-1))
-    worst = [k for k in order if np.isfinite(spread[k])][:8]
-    print("worst landmarks: " + ", ".join(
-        f"{k}({100*spread[k]/ear_extent:.0f}%)" for k in worst))
+
+
 
 
 # ============================================================ pipeline =====
@@ -1265,60 +500,6 @@ def load_subject(cfg):
     return mesh, front, up, np.asarray(mesh.vertices).mean(0)
 
 
-def label_two_pass(mesh, front, up, cfg, pipe, centre=None):
-    """Face-on landmarks in 3D.
-
-    Returns (mesh in the pinna frame, image, Camera, landmarks, P3, hit, conf).
-
-    PASS 1 uses the detector's axis-aligned view direction purely to get a usable
-    face-on render, and back-projects its landmarks.
-    PASS 2 fits a plane to those 55 points and repeats in that frame. Both passes
-    ray-cast against the WHOLE mesh.
-
-    Why the second pass: the pinna's plane is not the head's lateral plane. Over
-    14 HUTUBS subjects they differ by 8.1 deg on average (sd 3.9, range 1-13),
-    varying per subject, so labelling along the detector's axis would bake a
-    subject-dependent tilt into pose zero.
-    """
-    R = frame_from(front, up, front=front)
-    if R is None:
-        sys.exit("degenerate detector frame")
-    V = np.asarray(mesh.vertices)
-    # Centre on the tragion when MediaPipe gave one: the head centroid puts the
-    # ear near the frame edge, where the ROI has least room to grow.
-    C1 = V.mean(0) if centre is None else np.asarray(centre, float)
-    g = in_frame(mesh, R, C1, 1.0)
-    img, depth1, cam1, lm, conf = landmark_whole_frame(g, cfg, pipe)
-    if lm is None:
-        sys.exit("pass 1: the pipeline found no ear in the face-on render.\n"
-                 "  With the MediaPipe frame the SIDE is chosen deterministically, so a\n"
-                 "  head whose other ear is easier will still fail here. Try --ear 1,\n"
-                 "  or --no-mediapipe to let the detector sweep pick whichever it likes.")
-    P1, hit1, _ = backproject_snapped(depth1, lm, cam1, cfg)
-    print(f"pass 1: detector conf {conf:.3f}, {int(hit1.sum())}/55 rays hit")
-    if hit1.sum() < 10:
-        sys.exit("pass 1: too few rays hit to fit a pinna plane")
-
-    P1w = (P1[hit1] @ R) + C1                      # back to world coordinates
-    R2 = frame_from(plane_normal(P1w), up, front=front)
-    if R2 is None:
-        sys.exit("degenerate pinna frame")
-    C2 = P1w.mean(0)
-    scale = float(np.abs((P1w - C2) @ R2.T).max())
-    if not np.isfinite(scale) or scale <= 0:
-        sys.exit("degenerate ear scale")
-    tilt = np.degrees(np.arccos(np.clip(abs(R[2] @ R2[2]), -1, 1)))
-    print(f"pinna plane is {tilt:.1f} deg off the detector's view direction")
-
-    g2 = in_frame(mesh, R2, C2, scale)
-    img2, depth2, cam2, lm2, conf2 = landmark_whole_frame(g2, cfg, pipe)
-    if lm2 is None:
-        sys.exit("pass 2: the pipeline found no ear in the pinna-frame render")
-    P3, hit, snapped = backproject_snapped(depth2, lm2, cam2, cfg)
-    if snapped.any():
-        print(f"snap: {int(snapped.sum())} landmarks moved onto a depth cliff")
-    print(f"pass 2: detector conf {conf2:.3f}, {int(hit.sum())}/55 rays hit")
-    return g2, img2, cam2, lm2, P3, hit, conf2
 
 
 def main():
