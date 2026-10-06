@@ -513,3 +513,41 @@ def test_view_angles_print_whether_they_are_ints_or_floats():
     assert ":+d" not in src, "an angle is formatted in a way floats cannot satisfy"
     for yaw, pitch in list(vbp.cone_angles(5, 30.0)) + list(CFG["tri_angles"]):
         assert f"({yaw:+.0f},{pitch:+.0f})"
+
+
+# --- partial re-seat ---------------------------------------------------------
+
+def test_reseat_moves_only_points_that_are_far_off():
+    """The "partial" is the point: near-surface points must be left alone."""
+    cam = vbp.Camera(*vbp.camera_ke(SIZE, CFG), (SIZE, SIZE), SIZE)
+    depth = np.full((SIZE, SIZE), 2.5, dtype=np.float32)
+    # one point on the plane, one a long way in front of it
+    on = vbp.backproject(depth, np.array([[200.0, 200.0]]), cam)[0][0]
+    off = on + (cam.centre - on) * 0.25               # a quarter of the way to the camera
+    P = np.stack([on, off])
+    P2, moved = vbp.reseat(P, depth, cam, ext=1.0, tol=0.15)
+    assert not moved[0] and moved[1], "re-seated the wrong point"
+    assert np.allclose(P2[0], on), "a point already on the surface was disturbed"
+    zc = (P2[1] - cam.centre) @ cam.R.T
+    assert zc[2] == pytest.approx(2.5, abs=1e-3), "the moved point is not on the surface"
+
+
+def test_reseat_moves_along_the_viewing_axis():
+    """It corrects depth, not lateral position: the pixel must not change."""
+    cam = vbp.Camera(*vbp.camera_ke(SIZE, CFG), (SIZE, SIZE), SIZE)
+    depth = np.full((SIZE, SIZE), 2.5, dtype=np.float32)
+    on = vbp.backproject(depth, np.array([[170.0, 230.0]]), cam)[0][0]
+    P = np.array([on + (cam.centre - on) * 0.3])
+    before = cam.project(P)[0]
+    P2, moved = vbp.reseat(P, depth, cam, ext=1.0, tol=0.05)
+    assert moved[0]
+    assert np.allclose(cam.project(P2)[0], before, atol=1.0)
+
+
+def test_reseat_tolerance_controls_how_many_move():
+    cam = vbp.Camera(*vbp.camera_ke(SIZE, CFG), (SIZE, SIZE), SIZE)
+    depth = np.full((SIZE, SIZE), 2.5, dtype=np.float32)
+    base = vbp.backproject(depth, np.array([[200.0, 200.0]]), cam)[0][0]
+    P = np.stack([base + (cam.centre - base) * f for f in (0.02, 0.10, 0.30)])
+    assert vbp.reseat(P, depth, cam, 1.0, 0.50)[1].sum() <= \
+           vbp.reseat(P, depth, cam, 1.0, 0.05)[1].sum()

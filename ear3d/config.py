@@ -138,6 +138,35 @@ DEFAULTS = dict(
                             # method is 3x worse and detection falls to 53-62 of 70
                             # views, because the ear starts occluding itself.
 
+    # --- partial re-seat (--reseat) -----------------------------------------
+    reseat=False,           # pull triangulated points that sit far off the drawn
+                            # surface back onto it, along the viewing axis.
+                            #
+                            # A triangulated landmark is a free 3D point -- the
+                            # rays place it and nothing requires it to lie on the
+                            # ear. Measured over four heads the median lands on
+                            # the surface (+0.33% of ear extent, 47% inside /
+                            # 53% outside, so no systematic push) but the p90 is
+                            # 22%, and those outliers cluster on the helix rim.
+                            #
+                            # THERE IS NO FREE LUNCH, which is why this is off:
+                            #   tol    reproj px   off-surf p90   points moved
+                            #   none      4.23        22.06%          0
+                            #   0.20      5.32        10.53%          4.8
+                            #   0.12      5.97         7.24%         10.0
+                            #   0.08      6.21         6.40%         13.5
+                            #   0.05      6.52         3.91%         21.5
+                            #   0.03      6.76         2.35%         32.0
+                            # Every threshold costs reprojection, monotonically,
+                            # and even moving 5 points of 55 costs 26%. The two
+                            # measures genuinely disagree: reprojection cannot see
+                            # the surface prior, and the surface prior cannot see
+                            # which pixel a label has to land in. Pick by use --
+                            # training labels for rendered poses want reprojection
+                            # (leave it off); 3D anatomy wants the surface.
+    reseat_tol=0.15,        # move a point only if it is this far off, as a
+                            # fraction of ear extent. "Only where large."
+
     # --- multi-view agreement (--multiview) ---------------------------------
     mv_angles=((0, 0), (-25, 0), (25, 0), (-12, -12), (12, 12), (0, -20), (0, 20)),
                             # yaw/pitch to re-landmark from. Kept inside +/-25

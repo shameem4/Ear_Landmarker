@@ -248,3 +248,39 @@ def visible(depth, P, cam, tol=0.012):
     own = (P @ cam.R.T + cam.t)[:, 2]
     inside = ((uv[:, 0] >= 0) & (uv[:, 0] < W) & (uv[:, 1] >= 0) & (uv[:, 1] < H))
     return inside & np.isfinite(drawn) & (own - drawn < tol)
+
+
+def reseat(P, depth, cam, ext, tol):
+    """Pull points that sit FAR off the drawn surface back onto it.
+
+    A triangulated landmark is a free 3D point: the rays decide where it goes and
+    nothing requires it to lie on the ear. Measured over four heads, the median
+    lands on the surface (+0.33% of ear extent, 47% inside / 53% outside, so no
+    systematic push) but the p90 is 22% -- one landmark in ten floats well clear
+    of the ear or sits buried in the head, and those cluster on the helix rim.
+
+    PARTIAL on purpose. Re-seating everything fixes the surface (p90 19.4% ->
+    0.10%) and costs 45% of triangulation's reprojection gain, because it also
+    moves points that were only a per-cent or two out -- inside the noise of the
+    surface itself. Only points beyond `tol` are moved; the rest keep the depth
+    the rays gave them.
+
+    The move is along the viewing axis: same pixel, the depth the renderer drew
+    there. Returns (points, moved mask).
+    """
+    P = np.asarray(P, float).copy()
+    uv = cam.project(P)
+    H, W = depth.shape
+    x = np.clip(np.round(uv[:, 0]).astype(int), 0, W - 1)
+    y = np.clip(np.round(uv[:, 1]).astype(int), 0, H - 1)
+    drawn = depth[y, x]
+    own = (P @ cam.R.T + cam.t)[:, 2]
+    inside = (uv[:, 0] >= 0) & (uv[:, 0] < W) & (uv[:, 1] >= 0) & (uv[:, 1] < H)
+    far = inside & np.isfinite(drawn) & (np.abs(drawn - own) > tol * ext)
+    if far.any():
+        Q, hit = backproject(depth, uv[far], cam)
+        idx = np.flatnonzero(far)
+        good = hit & np.isfinite(Q).all(axis=1)
+        P[idx[good]] = Q[good]
+        far[idx[~good]] = False
+    return P, far

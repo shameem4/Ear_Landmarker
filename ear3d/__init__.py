@@ -10,7 +10,8 @@ from .camera import (Camera, VIEW_TO_EXTRINSIC, camera_ke, cone_angles,
                      extrinsic_of, orbit_extrinsic, pose_angles)
 from .config import DEFAULTS, EAR3D_DIR, ROOT
 from .backproject import (backproject, backproject_snapped, cliff_map,
-                          snap_chain, snap_to_cliff, visible)
+                          snap_chain, snap_to_cliff, reseat,
+                          visible)
 from .draw import (ray_lines, save_agreement_render, spheres, strip_lines,
                    write_overlay)
 from .frames import (find_ears, frame_from, head_pose, in_frame, load_head,

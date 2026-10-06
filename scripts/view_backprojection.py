@@ -83,7 +83,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 # scripts/ingest_render3d.py run the same code rather than two copies of it.
 # What remains below is the viewer itself: configuration, the interactive window
 # and the command line.
-from ear3d.backproject import backproject, backproject_snapped   # noqa: E402,F401
+from ear3d.backproject import (backproject, backproject_snapped,  # noqa: E402,F401
+                               reseat)
 from ear3d.camera import (Camera, camera_ke, cone_angles,        # noqa: E402,F401
                           extrinsic_of, orbit_extrinsic, pose_angles)
 from ear3d.config import DEFAULTS, EAR3D_DIR                     # noqa: E402
@@ -516,6 +517,10 @@ def main():
     p.add_argument("--tri-views", type=int, default=None,
                    help="how many views to triangulate from (spread over a cone)")
     p.add_argument("--tri-method", choices=["lsq", "ransac"], default=None)
+    p.add_argument("--reseat", action="store_true",
+                   help="pull triangulated points far off the surface back onto it")
+    p.add_argument("--reseat-tol", type=float, default=None,
+                   help="how far off counts as far, as a fraction of ear extent")
     p.add_argument("--multiview", action="store_true",
                    help="re-landmark from several views and report per-landmark agreement")
     p.add_argument("--snap-radius", type=float, default=None, help="jitter range, 0-1 of ear extent")
@@ -542,6 +547,9 @@ def main():
         cfg["tri_angles"] = cone_angles(a.tri_views, cfg["tri_cone"])
     if a.tri_method:
         cfg["tri_method"] = a.tri_method
+    cfg["reseat"] = cfg["reseat"] or a.reseat or a.reseat_tol is not None
+    if a.reseat_tol is not None:
+        cfg["reseat_tol"] = a.reseat_tol
     if a.snap_radius is not None:
         cfg["snap_radius"] = a.snap_radius
     cfg["show_rays"] |= a.rays
@@ -591,6 +599,17 @@ def main():
               f"max {moved.max():.3f} (ear spans ~1)")
         P3 = np.where(ok[:, None], Ptri, P3)
         hit = hit | ok
+        if cfg["reseat"]:
+            # Triangulation decides WHERE ON THE EAR; the depth buffer is still
+            # authoritative for how far, once the lateral position is right. Only
+            # points well off the surface are moved -- the rest are within the
+            # noise of the surface itself and moving them only costs accuracy.
+            img_f, depth_f, cam_f = render(g, cfg)
+            ext = float(np.ptp(P3[hit], axis=0).max())
+            P3, moved_r = reseat(P3, depth_f, cam_f, ext, cfg["reseat_tol"])
+            if moved_r.any():
+                print(f"  re-seated {int(moved_r.sum())} landmarks that sat more than "
+                      f"{100*cfg['reseat_tol']:.0f}% of ear extent off the surface")
 
     if a.multiview:
         # Each view is an independent measurement of the same anatomy. Colour by
