@@ -84,12 +84,26 @@ DEFAULTS = dict(
                             # cannot separate these radii on placement; nothing
                             # here can yet.
     # --- triangulation (--triangulate) --------------------------------------
-    triangulate=True,       # build each landmark by intersecting the rays from
+    triangulate=False,      # build each landmark by intersecting the rays from
                             # several views instead of lifting one view through
                             # its depth buffer. Off by default only because it
                             # costs a render and a pipeline call per view --
-                            # about 12 seconds at the default 12 views, which the
-                            # viewer pays once at startup.
+                            # about 12 seconds at the default 12 views.
+                            #
+                            # OFF BY DEFAULT, AND IT WAS TRIED THE OTHER WAY. On
+                            # held-out reprojection triangulation wins clearly
+                            # (4.23 px against the single lift's 6.92), but turned
+                            # on by default the result is visibly worse on the
+                            # rendered ear: outer_helix landmarks fly out onto the
+                            # cheek. The depth summary says the same thing --
+                            # outer_helix spans z -0.916 to +0.194 triangulated
+                            # against -0.235 to +0.152 from the single lift.
+                            #
+                            # Reprojection cannot see that failure. If the model
+                            # puts a landmark in the wrong place in 2D, every view
+                            # agrees -- one model produces them all -- so the rays
+                            # agree, the fit is confident, and it reprojects well
+                            # into held-out views that share the same error.
                             #
                             # VIEWS ARE SYNTHETIC, SO THEY ARE CHEAP, AND MORE OF
                             # THEM HELP. Reprojection into a FIXED held-out set of
@@ -145,7 +159,7 @@ DEFAULTS = dict(
                             # views, because the ear starts occluding itself.
 
     # --- partial re-seat (--reseat) -----------------------------------------
-    reseat=True,            # pull triangulated points that sit far off the drawn
+    reseat=False,           # pull triangulated points that sit far off the drawn
                             # surface back onto it, along the viewing axis.
                             #
                             # A triangulated landmark is a free 3D point -- the
