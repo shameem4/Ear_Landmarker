@@ -206,8 +206,22 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
         panel.frame = gui.Rect(rect.x, rect.y, min(rect.width, 420), pref.height)
     win.set_on_layout(on_layout)
 
+    # How the landmarks on screen were produced. It is not always the same thing:
+    # the opening set may be triangulated, while L re-labels from a single view,
+    # and telling them apart matters when judging what is drawn.
+    if cfg["triangulate"]:
+        method = (f"triangulated from {len(cfg['tri_angles'])} views "
+                  f"({cfg['tri_method']})")
+        if cfg["reseat"]:
+            method += f", re-seated >{100*cfg['reseat_tol']:.0f}%"
+    else:
+        method = "single face-on lift (depth buffer)"
+    if cfg["snap"]:
+        method += "  +cliff snap"
+    if cfg["chain"]:
+        method += "  +chain"
     state = {"drawn": [], "text": None, "busy": False, "snapped": None,
-             "note": "face-on, as labelled"}
+             "method": method, "note": "face-on, as labelled"}
 
     def draw_landmarks(P3, hit):
         for n in state["drawn"]:
@@ -245,6 +259,9 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
         Q, qhit, qsnap = backproject_snapped(depth, lm, cam, cfg)
         state["snapped"] = qsnap
         draw_landmarks(Q, qhit)
+        state["method"] = ("single view at this pose (depth buffer)"
+                           + ("  +cliff snap" if cfg["snap"] else "")
+                           + ("  +chain" if cfg["chain"] else ""))
         state["note"] = (f"re-landmarked at yaw {yaw:+.0f} pitch {pitch:+.0f}: "
                          f"det {float(best['confidence']):.2f}, {int(qhit.sum())}/55 hit"
                          + (f", {int(qsnap.sum())} snapped" if qsnap.any() else ""))
@@ -323,7 +340,7 @@ def show(mesh, P3, hit, cfg, pipe, size=900, background=(0.5, 0.5, 0.5),
                                widget=widget, app=gui.Application.instance))
         yaw, pitch, off = pose_angles(extrinsic_of(widget.scene.camera))
         text = (f"yaw {yaw:+6.1f}\u00b0   pitch {pitch:+6.1f}\u00b0   "
-                f"off-axis {off:5.1f}\u00b0\n{state['note']}\n"
+                f"off-axis {off:5.1f}\u00b0\n{state['method']}\n{state['note']}\n"
                 f"[L] re-landmark from this view")
         if text == state["text"]:
             return False
