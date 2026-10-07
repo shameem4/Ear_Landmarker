@@ -76,6 +76,22 @@ def edges_of(F):
     return np.unique(e, axis=0)
 
 
+def boundary_vertices(F):
+    """Vertices on an open edge of the mesh.
+
+    They are why an unanchored fit SHRINKS. A border vertex has no true
+    correspondence -- the template's edge is a cut through the anatomy, not a
+    feature of it -- so pulling it to its nearest scan point always drags it
+    inward, the rim creeps in, and the fit ends up lying perfectly on the
+    surface while covering only the middle of the ear. The surface gap reports
+    that as excellent, which is why it has to be excluded rather than measured.
+    """
+    e = np.vstack([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]])
+    e.sort(axis=1)
+    uniq, cnt = np.unique(e, axis=0, return_counts=True)
+    return np.unique(uniq[cnt == 1])
+
+
 def vertex_normals(V, F):
     """Area-weighted vertex normals."""
     tn = np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]])
@@ -154,7 +170,7 @@ def _design(V):
 
 def nicp(Vt, Ft, Vs, Fs, anchors=None, schedule=DEFAULT_SCHEDULE,
          gamma=1.0, beta=10.0, max_iter=12, tol=1e-3,
-         max_dist=None, min_cos=0.5, verbose=True):
+         max_dist=None, min_cos=0.5, free_border=True, verbose=True):
     """Fit template (Vt, Ft) onto scan (Vs, Fs). Returns the deformed vertices.
 
     `anchors` is (template_vertex_indices, target_xyz) -- the handful of point
@@ -168,9 +184,25 @@ def nicp(Vt, Ft, Vs, Fs, anchors=None, schedule=DEFAULT_SCHEDULE,
     `max_dist`. Without that, vertices at the ear's rim grab the skin behind it
     and drag the helix flat -- the single most common way this fails.
     """
+    # WORK IN A NORMALISED FRAME. The design row is [v, 1], so the constant
+    # competes with the coordinates: at |v| ~ 0.1 it dominates and at |v| ~ 50 it
+    # is noise. gamma, which balances the translation column of each affine
+    # against its linear part, therefore means something different at every
+    # scale -- and the same mesh in metres and in millimetres fits differently.
+    # It cost a corpus run: ears in normalised head units came out mangled while
+    # the identical pipeline on millimetre meshes was fine.
     Vt = np.asarray(Vt, float)
+    _c = Vt.mean(0)
+    _k = float(np.ptp(Vt, axis=0).max())
+    if not np.isfinite(_k) or _k <= 0:
+        raise RuntimeError("template has no extent")
+    Vt = (Vt - _c) / _k
+    Vs = (np.asarray(Vs, float) - _c) / _k
+    if max_dist is not None:
+        max_dist = max_dist / _k
     E = edges_of(Ft)
     n, m = len(Vt), len(E)
+    border = boundary_vertices(Ft) if free_border else np.array([], int)
     Ns = vertex_normals(Vs, Fs)
     tree = cKDTree(Vs)
     if max_dist is None:
@@ -196,7 +228,7 @@ def nicp(Vt, Ft, Vs, Fs, anchors=None, schedule=DEFAULT_SCHEDULE,
     if anchors is not None:
         li, la = anchors
         li = np.asarray(li, int)
-        la = np.asarray(la, float)
+        la = (np.asarray(la, float) - _c) / _k
         DL = D[li]
 
     V = Vt.copy()
@@ -209,6 +241,7 @@ def nicp(Vt, Ft, Vs, Fs, anchors=None, schedule=DEFAULT_SCHEDULE,
             Nv = vertex_normals(V, Ft)
             w = ((d < max_dist)
                  & (np.einsum("ij,ij->i", Nv, Ns[idx]) > min_cos)).astype(float)
+            w[border] = 0.0          # the border is carried by stiffness alone
             if w.sum() < 4:
                 raise RuntimeError("every correspondence was rejected; the "
                                    "template is probably not aligned to the scan")
@@ -231,8 +264,8 @@ def nicp(Vt, Ft, Vs, Fs, anchors=None, schedule=DEFAULT_SCHEDULE,
         if verbose:
             print(f"  stage {stage + 1}/{len(schedule)} alpha {alpha:6.2f}: "
                   f"{it + 1} iters, {int(w.sum())}/{n} matched, "
-                  f"median gap {np.median(d[w > 0]):.4f}")
-    return V
+                  f"median gap {_k * np.median(d[w > 0]):.4f}")
+    return V * _k + _c
 
 
 def project_to_surface(V, Vs, Fs, max_move=None):
