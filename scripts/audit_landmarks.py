@@ -32,7 +32,7 @@ import numpy as np
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from ear3d.scheme import STRIPS, STRIP_NAMES        # noqa: E402
+from ear3d.scheme import STRIPS, STRIP_NAMES, group_of  # noqa: E402
 from ear3d.wrap import load_mesh                    # noqa: E402
 
 
@@ -65,6 +65,13 @@ def main():
     p.add_argument("--project", required=True)
     p.add_argument("--mesh", required=True)
     p.add_argument("--corpus", default="data/preprocessed/landmarks.npy")
+    p.add_argument("--manifest", default=None,
+                   help="the corpus manifest, so rows can be restricted by "
+                        "source. Pass the same --sources the marks were made "
+                        "with: a ruler and the thing it measures should come "
+                        "from one corpus, and the subsets disagree enough to "
+                        "flag different points")
+    p.add_argument("--sources", nargs="*", default=None)
     p.add_argument("--band", type=float, default=5.0,
                    help="percentile band from the corpus, each side")
     p.add_argument("--save", default=None, help="write the points as .npy")
@@ -83,6 +90,16 @@ def main():
 
 
     L = np.load(a.corpus).reshape(-1, len(P), 2)
+    if a.sources:
+        import collections
+        import csv
+        rows = list(csv.DictReader(open(a.manifest)))
+        if len(rows) != len(L):
+            sys.exit(f"manifest has {len(rows)} rows, corpus has {len(L)}")
+        src = np.array([r["source"] for r in rows])
+        keep = np.isin(src, a.sources)
+        print(f"  corpus restricted to {dict(collections.Counter(src[keep]))}")
+        L = L[keep]
     A2 = np.array([arc_fraction(e) for e in L if np.isfinite(e).all()])
     A3 = arc_fraction(P)
 
@@ -107,7 +124,7 @@ def main():
         col = T2[:, j][np.isfinite(T2[:, j])]
         if T3[j] > np.percentile(col, 99):
             bad_order.append(j)
-            print(f"  point {j}: turns {T3[j]:.0f} deg, corpus 99th percentile "
+            print(f"  point {j} ({group_of(j)}): turns {T3[j]:.0f} deg, corpus 99th percentile "
                   f"{np.percentile(col, 99):.0f} -- out of sequence?")
 
     # Chain LENGTH, which catches an endpoint placed too far out. The position
@@ -137,7 +154,7 @@ def main():
             med = float(np.median(A2[:, j]))
             if not (q1 <= A3[j] <= q3):
                 flagged.append((j, A3[j], med))
-                print(f"  point {j:2d} ({STRIP_NAMES[i]}): at {A3[j]:.3f}, "
+                print(f"  point {j:2d} ({group_of(j)}): at {A3[j]:.3f}, "
                       f"corpus {med:.3f} [{q1:.3f}, {q3:.3f}] -> move it "
                       f"{'back' if A3[j] > med else 'forward'}")
     n = sum(b - a_ - 2 for a_, b in STRIPS)
