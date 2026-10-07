@@ -107,6 +107,9 @@ def main():
                         "template already in the CUT FRAME -- the original "
                         "ear_L_template.obj has its axes the other way round "
                         "and would start 90 degrees out.")
+    p.add_argument("--done", nargs="*", default=[],
+                   help="ears already wrapped by hand; they are dropped from the "
+                        "project so it only ever contains work left to do")
     p.add_argument("--name", default="retry")
     p.add_argument("--target-size", type=float, default=80.0,
                    help="each frame is scaled to this max extent, in whatever "
@@ -119,6 +122,9 @@ def main():
 
     bad = flag_failures(a.wrapped, a.lr_pct, a.mean_pct) if a.wrapped else {}
     print(f"{len(bad)} fits flagged by measurement")
+    for d in a.done:
+        if bad.pop(d, None) is not None:
+            print(f"  {d}: already wrapped by hand, dropped")
 
     # resolve each flagged name to the cut ear it came from
     frames = []
