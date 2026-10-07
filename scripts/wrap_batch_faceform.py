@@ -67,6 +67,15 @@ def main():
     p.add_argument("--base", required=True, help="a working .wrap to clone")
     p.add_argument("--out", required=True)
     p.add_argument("--points", type=int, default=14)
+    p.add_argument("--work-size", type=float, default=100.0,
+                   help="scale every scan to this before wrapping. ProjectGeom's "
+                        "dist is an ABSOLUTE distance, so a project tuned on one "
+                        "dataset tears meshes on another: at dist=1 a HUTUBS cut "
+                        "(extent 0.84) lets vertices project 1.2x the whole ear "
+                        "and the mesh tears, while a SONICOM cut (extent 104 mm) "
+                        "limits them to 1% and the step does nothing")
+    p.add_argument("--project-dist", type=float, default=0.02,
+                   help="ProjectGeom limit as a fraction of --work-size")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--only", nargs="*", default=None)
     a = p.parse_args()
@@ -104,8 +113,12 @@ def main():
             right = [[int(stri[j]), float(sb[j][1]), float(sb[j][2])]
                      for j in range(len(idx))]
 
+            # one working scale for every ear, so the absolute limits inside
+            # the project mean the same thing on every frame
+            w = a.work_size / float(np.ptp(Vs, axis=0).max())
             scan_p = out / "work" / "scan.obj"
-            trimesh.Trimesh(vertices=Vs, faces=Fs, process=False).export(scan_p)
+            trimesh.Trimesh(vertices=Vs * w, faces=Fs, process=False).export(scan_p)
+            right = [[r[0], r[1], r[2]] for r in right]   # barycentric: unchanged
             proj = json.loads(json.dumps(base))
             byid = {v["nodeId"]: v for v in proj["nodes"].values()}
             tpl = next(n for n in proj["nodes"].values()
@@ -116,6 +129,10 @@ def main():
             byid[t_id]["params"]["scale"]["value"] = 1
             byid[s_id]["params"]["fileName"]["value"] = str(scan_p)
             byid[s_id]["params"]["scale"]["value"] = 1
+            for n in proj["nodes"].values():
+                if n["nodeType"] == "ProjectGeom":
+                    n["params"]["limitDist"]["value"] = True
+                    n["params"]["dist"]["value"] = a.project_dist * a.work_size
             for n in proj["nodes"].values():
                 if n["nodeType"] == "SelectPointPairs":
                     n["params"]["pointsLeft"]["value"] = left
@@ -132,6 +149,19 @@ def main():
                    if l.startswith("ERROR")]
             if bad or not (out / f"{name}.obj").exists():
                 raise RuntimeError(bad[0] if bad else "no output written")
+            # back to the scan's own units, and refuse a torn result: a few
+            # edges tens of times the median length are a stretched mesh, which
+            # a distance-to-surface check cannot see
+            wm = trimesh.load(out / f"{name}.obj", process=False, force="mesh")
+            Vo = np.asarray(wm.vertices) / w
+            Fo = np.asarray(wm.faces)
+            e = np.vstack([Fo[:, [0, 1]], Fo[:, [1, 2]], Fo[:, [2, 0]]])
+            el = np.linalg.norm(Vo[e[:, 0]] - Vo[e[:, 1]], axis=1)
+            torn = int((el > 10 * np.median(el)).sum())
+            if torn:
+                raise RuntimeError(f"torn: {torn} edges over 10x the median")
+            trimesh.Trimesh(vertices=Vo, faces=Fo, process=False).export(
+                out / f"{name}.obj")
             done += 1
             if i % 25 == 0 or i == len(fits):
                 print(f"  [{i}/{len(fits)}] {done} ok, {len(failed)} failed, "
