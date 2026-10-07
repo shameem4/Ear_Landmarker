@@ -615,3 +615,50 @@ def test_reseat_tolerance_controls_how_many_move():
     P = np.stack([base - (cam.centre - base) * f for f in (0.02, 0.10, 0.30)])
     assert vbp.reseat(P, depth, cam, 1.0, 0.50)[1].sum() <= \
            vbp.reseat(P, depth, cam, 1.0, 0.05)[1].sum()
+
+
+# --- template wrapping -------------------------------------------------------
+
+def test_rigid_fit_never_mirrors():
+    """An SVD fit can return a reflection, and a mirrored ear is a plausible ear
+    -- it would pass every eyeball check and quietly average left against right
+    in a shape model. The determinant guard is the only thing preventing it."""
+    from ear3d.wrap import rigid_fit
+    rng = np.random.default_rng(0)
+    src = rng.normal(size=(12, 3))
+    mirrored = src * np.array([1.0, 1.0, -1.0])     # ask it to fit a reflection
+    R, t, s = rigid_fit(src, mirrored)
+    assert np.linalg.det(R) > 0, "fit returned a reflection"
+
+
+def test_rigid_fit_recovers_a_known_similarity():
+    from ear3d.wrap import rigid_fit
+    rng = np.random.default_rng(1)
+    src = rng.normal(size=(20, 3))
+    ang = 0.7
+    R0 = np.array([[np.cos(ang), -np.sin(ang), 0], [np.sin(ang), np.cos(ang), 0],
+                   [0, 0, 1.0]])
+    dst = 2.5 * src @ R0.T + np.array([1.0, -2.0, 3.0])
+    R, t, s = rigid_fit(src, dst)
+    assert abs(s - 2.5) < 1e-9
+    assert np.allclose(s * src @ R.T + t, dst, atol=1e-9)
+
+
+def test_edges_of_counts_each_edge_once():
+    """The stiffness term is one row per EDGE; counting an edge twice would
+    silently double the stiffness on interior edges and not on the border."""
+    from ear3d.wrap import edges_of
+    F = np.array([[0, 1, 2], [1, 2, 3]])            # two triangles, shared edge
+    e = edges_of(F)
+    assert len(e) == 5, e
+    assert len({tuple(x) for x in e}) == 5
+
+
+def test_bary_to_xyz_matches_the_corners():
+    """Wrap stores picks as (triangle, u, v); (0,0) must be the FIRST corner, or
+    every anchor read out of a project lands on the wrong vertex."""
+    from ear3d.wrap import bary_to_xyz
+    V = np.array([[0.0, 0, 0], [1.0, 0, 0], [0.0, 1, 0]])
+    F = np.array([[0, 1, 2]])
+    got = bary_to_xyz(V, F, [(0, 0.0, 0.0), (0, 1.0, 0.0), (0, 0.0, 1.0)])
+    assert np.allclose(got, V)
