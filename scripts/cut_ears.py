@@ -46,8 +46,16 @@ DATA = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/clean_3d_data")
 # determinant +1: a rotation, never a reflection. A reflection here would turn
 # every left ear into a right one, which looks perfectly plausible and would
 # only surface as nonsense once a shape model averaged the two together.
-R_LEFT = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
-R_RIGHT = np.array([[0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0]])
+# The HUTUBS cut puts the protrusion along -x (see cut_hutubs), and a local ICP
+# cannot recover a 180 degree error, so SONICOM has to agree with it. Composing
+# with a half turn about y is what makes the two datasets land in ONE frame;
+# without it every SONICOM ear starts back-to-front and the fit grinds the
+# template onto the wrong side of the ear while reporting a plausible surface
+# gap. A half turn is a rotation, so handedness survives it.
+_Y180 = np.diag([-1.0, 1.0, -1.0])
+R_LEFT = _Y180 @ np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
+R_RIGHT = _Y180 @ np.array([[0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0]])
+assert np.linalg.det(_Y180) > 0
 assert np.linalg.det(R_LEFT) > 0 and np.linalg.det(R_RIGHT) > 0
 
 
