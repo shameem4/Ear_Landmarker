@@ -122,7 +122,7 @@ def rigid_fit(src, dst, with_scale=True):
 
 
 def rigid_icp(Vt, Ft, Vs, Fs, iters=30, min_cos=0.5, trim=0.8, with_scale=True,
-              verbose=False):
+              max_dist=None, verbose=False):
     """Refine a similarity against the SURFACE, not just the anchors.
 
     A handful of hand-placed anchors determines a 7-DOF similarity only barely
@@ -139,14 +139,24 @@ def rigid_icp(Vt, Ft, Vs, Fs, iters=30, min_cos=0.5, trim=0.8, with_scale=True,
     V = np.asarray(Vt, float).copy()
     Ns = vertex_normals(Vs, Fs)
     tree = cKDTree(Vs)
+    # A BOUND ON THE SEARCH, so the scan may be larger than the thing being
+    # fitted. Trimming to the closest fraction is not enough on a whole head:
+    # the great majority of it is skull and cheek, so the trimmed set is still
+    # mostly head and the template is dragged off the ear and flattened over
+    # it. With the bound, surrounding geometry is simply out of range.
+    if max_dist is None:
+        max_dist = 0.6 * float(np.ptp(Vt, axis=0).max())
     R_t, t_t, s_t = np.eye(3), np.zeros(3), 1.0
     for i in range(iters):
-        d, idx = tree.query(V)
-        ok = np.einsum("ij,ij->i", vertex_normals(V, Ft), Ns[idx]) > min_cos
+        d, idx = tree.query(V, distance_upper_bound=max_dist)
+        miss = ~np.isfinite(d)
+        idx[miss] = 0
+        ok = (np.einsum("ij,ij->i", vertex_normals(V, Ft), Ns[idx]) > min_cos)
+        ok &= ~miss
         if ok.sum() < 10:
             break
         cut = np.quantile(d[ok], trim)
-        ok &= d <= cut
+        ok &= np.where(miss, False, d <= cut)
         R, t, s = rigid_fit(V[ok], Vs[idx][ok], with_scale=with_scale)
         Vn = s * V @ R.T + t
         step = float(np.abs(Vn - V).max())

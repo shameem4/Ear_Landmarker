@@ -169,7 +169,12 @@ def main():
         if mirrored:
             V = V * np.array([1.0, 1.0, -1.0])
             F = F[:, ::-1]                 # or the normals point inward
-        k = a.target_size / float(np.ptp(V, axis=0).max())
+        # target_size <= 0 means the meshes are already in a common, anatomical
+        # scale (bisected halves and SONICOM heads both are), and rescaling them
+        # by mesh EXTENT would undo that -- a whole head normalised to the size
+        # of an ear leaves the ear a few units across.
+        k = (a.target_size / float(np.ptp(V, axis=0).max())
+             if a.target_size > 0 else 1.0)
         trimesh.Trimesh(vertices=V * k, faces=F, process=False).export(
             seq / f"scan_{i:04d}.obj")
         rows.append([i, name, str(src), round(k, 6), "yes" if mirrored else "no", why])
