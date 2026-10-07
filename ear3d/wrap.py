@@ -103,6 +103,50 @@ def vertex_normals(V, F):
     return N / np.where(n > 0, n, 1.0)
 
 
+def boundary_points(P, N, k=30, gap_deg=120.0):
+    """Points on the EDGE of a point cloud -- the rim of a hole, or of the scan.
+
+    A mesh knows its border from its faces; a cloud does not, and this matters
+    more here than it does for meshes. Where the scan has a hole, the template
+    vertices above it still find nearest neighbours -- the points around the
+    rim -- which are inside `max_dist` and whose normals agree, so they pass
+    every test and pull the template INTO the hole's edge. Rejecting the rim
+    leaves the hole genuinely empty, which is what lets stiffness carry the
+    template across it unmolested.
+
+    The test is angular: project each point's neighbours into its tangent
+    plane and take the largest gap between consecutive directions. In the
+    interior the neighbours surround it and no gap is large; at an edge they
+    all lie to one side.
+    """
+    tree = cKDTree(P)
+    _, idx = tree.query(P, k=k + 1)
+    idx = idx[:, 1:]
+    n = N / np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-12)
+    # a tangent basis per point, from the least-aligned world axis
+    a = np.zeros_like(n)
+    a[np.arange(len(n)), np.argmin(np.abs(n), axis=1)] = 1.0
+    u = np.cross(n, a)
+    u /= np.maximum(np.linalg.norm(u, axis=1, keepdims=True), 1e-12)
+    v = np.cross(n, u)
+    d = P[idx] - P[:, None, :]
+    ang = np.sort(np.arctan2(np.einsum("ijk,ik->ij", d, v),
+                             np.einsum("ijk,ik->ij", d, u)), axis=1)
+    gaps = np.diff(ang, axis=1)
+    wrap = ang[:, 0] + 2 * np.pi - ang[:, -1]
+    return np.degrees(np.maximum(gaps.max(axis=1), wrap)) > gap_deg
+
+
+def scan_normals(Vs, Fs=None, Ns=None):
+    """Normals for a target that may be a mesh or a bare point cloud."""
+    if Ns is not None:
+        Ns = np.asarray(Ns, float)
+        return Ns / np.maximum(np.linalg.norm(Ns, axis=1, keepdims=True), 1e-12)
+    if Fs is None:
+        raise ValueError("a point-cloud target needs Ns; clouds have no faces")
+    return vertex_normals(Vs, Fs)
+
+
 def rigid_fit(src, dst, with_scale=True):
     """Similarity transform taking `src` onto `dst` for corresponding points.
 
@@ -121,8 +165,8 @@ def rigid_fit(src, dst, with_scale=True):
     return R, dc - s * sc @ R.T, s
 
 
-def rigid_icp(Vt, Ft, Vs, Fs, iters=30, min_cos=0.5, trim=0.8, with_scale=True,
-              max_dist=None, verbose=False):
+def rigid_icp(Vt, Ft, Vs, Fs=None, iters=30, min_cos=0.5, trim=0.8,
+              with_scale=True, max_dist=None, verbose=False, Ns=None):
     """Refine a similarity against the SURFACE, not just the anchors.
 
     A handful of hand-placed anchors determines a 7-DOF similarity only barely
@@ -137,7 +181,7 @@ def rigid_icp(Vt, Ft, Vs, Fs, iters=30, min_cos=0.5, trim=0.8, with_scale=True,
     the template off the ear.
     """
     V = np.asarray(Vt, float).copy()
-    Ns = vertex_normals(Vs, Fs)
+    Ns = scan_normals(Vs, Fs, Ns)
     tree = cKDTree(Vs)
     # A BOUND ON THE SEARCH, so the scan may be larger than the thing being
     # fitted. Trimming to the closest fraction is not enough on a whole head:
@@ -179,10 +223,19 @@ def _design(V):
     return sp.csr_matrix((vals, (rows, cols)), shape=(n, 4 * n))
 
 
-def nicp(Vt, Ft, Vs, Fs, anchors=None, schedule=DEFAULT_SCHEDULE,
+def nicp(Vt, Ft, Vs, Fs=None, anchors=None, schedule=DEFAULT_SCHEDULE,
          gamma=1.0, beta=10.0, max_iter=12, tol=1e-3,
-         max_dist=None, min_cos=0.5, free_border=True, verbose=True):
+         max_dist=None, min_cos=0.5, free_border=True, verbose=True,
+         Ns=None, reject_edges=True):
     """Fit template (Vt, Ft) onto scan (Vs, Fs). Returns the deformed vertices.
+
+    The target may be a MESH (Vs, Fs) or a bare POINT CLOUD (Vs, Ns=normals,
+    Fs=None). Nothing in the formulation needs faces: correspondence is a
+    nearest-neighbour query over the target's vertices, and the only other use
+    of Fs was to compute normals, which a cloud carries itself. Where the cloud
+    has no points the weights go to zero and the stiffness term alone decides
+    those vertices, so holes are filled by the TEMPLATE's shape -- warping
+    without registration, which is exactly what is wanted there.
 
     `anchors` is (template_vertex_indices, target_xyz) -- the handful of point
     pairs that tell the fit which way round the ear goes. They are weighted by
@@ -214,8 +267,10 @@ def nicp(Vt, Ft, Vs, Fs, anchors=None, schedule=DEFAULT_SCHEDULE,
     E = edges_of(Ft)
     n, m = len(Vt), len(E)
     border = boundary_vertices(Ft) if free_border else np.array([], int)
-    Ns = vertex_normals(Vs, Fs)
+    Ns = scan_normals(Vs, Fs, Ns)
     tree = cKDTree(Vs)
+    edge = (boundary_points(Vs, Ns) if (reject_edges and Fs is None)
+            else np.zeros(len(Vs), bool))
     if max_dist is None:
         # A fraction of the TEMPLATE, never of the scan. Scaling it by the scan
         # means the same template is allowed a 21-unit reach when wrapped onto a
@@ -251,7 +306,8 @@ def nicp(Vt, Ft, Vs, Fs, anchors=None, schedule=DEFAULT_SCHEDULE,
             U = Vs[idx]
             Nv = vertex_normals(V, Ft)
             w = ((d < max_dist)
-                 & (np.einsum("ij,ij->i", Nv, Ns[idx]) > min_cos)).astype(float)
+                 & (np.einsum("ij,ij->i", Nv, Ns[idx]) > min_cos)
+                 & ~edge[idx]).astype(float)
             w[border] = 0.0          # the border is carried by stiffness alone
             if w.sum() < 4:
                 raise RuntimeError("every correspondence was rejected; the "
