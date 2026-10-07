@@ -84,7 +84,16 @@ def ear_centre_by_density(V, cell=20.0, top=6):
     return V[np.isin(inv, np.argsort(-cnt)[:top])].mean(0)
 
 
-def cut_sonicom(path, side, half=(26.0, 38.0, 30.0)):
+# The crop boxes are DELIBERATELY generous. The first sizes clipped every
+# single cut -- 100% of them reached the box edge in height and
+# anteroposterior, so the box was deciding the ear's size rather than the
+# anatomy, and the tops, bottoms and backs of ears were being cut off. A
+# truncated scan is worse than a loose one: the template has nothing to fit to
+# where the ear is missing, and the border is free of the data term anyway so
+# the surrounding skin costs little. They cannot grow without limit, though --
+# the ear is attached to the head, so a big enough box just swallows the skull.
+# An adult pinna is about 60-65 mm tall, and these are roughly 1.7x that.
+def cut_sonicom(path, side, half=(30.0, 52.0, 42.0)):
     import trimesh
     m = trimesh.load(path)          # process=True welds the STL triangle soup
     V, F = np.asarray(m.vertices), np.asarray(m.faces)
@@ -106,7 +115,7 @@ def cut_hutubs(mesh, C, front, vert, sep):
     # the pinna is what protrudes, so let the protruding vertices vote on a centre
     prot = wide & (V[:, 2] > np.percentile(V[wide][:, 2], 75))
     c = V[prot].mean(0)
-    half = np.array([0.20, 0.26, 0.40]) * sep
+    half = np.array([0.30, 0.42, 0.50]) * sep
     keep = (np.all(np.abs(V[:, :2] - c[:2]) < half[:2], axis=1)
             & (V[:, 2] > c[2] - half[2]))
     e = _largest_piece(g, keep)
