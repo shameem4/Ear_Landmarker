@@ -40,11 +40,20 @@ from ear3d.wrap import (DEFAULT_SCHEDULE, edges_of, load_mesh,  # noqa: E402
 def mirror_to_left(V, F):
     """Mirror a right ear into left form. Winding is flipped to match.
 
-    Negating one axis reverses every triangle's orientation, so without the flip
-    the normals point into the mesh, the normal-compatibility test rejects every
-    correspondence, and the fit fails with no obvious cause.
+    THE AXIS IS Z, the anteroposterior one, not the protrusion axis. Left and
+    right ears mirror across the body's sagittal plane, but each side is cut in
+    its own frame and those frames already differ by a half turn about the
+    vertical; composing the two, and then the mapping into the ear frame, lands
+    the mirror on z. Measured, on a subject's own two ears aligned to each
+    other: mirroring z leaves them 0.5-0.9% of ear size apart, which is what one
+    person's two ears should be, while mirroring x leaves them ~2% apart -- no
+    better than not mirroring at all, which is what it was really doing.
+
+    Negating one axis reverses every triangle's orientation, so without the
+    winding flip the normals point into the mesh, the normal-compatibility test
+    rejects every correspondence, and the fit fails with no obvious cause.
     """
-    return V * np.array([-1.0, 1.0, 1.0]), F[:, ::-1]
+    return V * np.array([1.0, 1.0, -1.0]), F[:, ::-1]
 
 
 def fit_one(Vs, Fs, Vt, Ft, stages):
