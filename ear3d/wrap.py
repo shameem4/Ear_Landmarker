@@ -40,7 +40,8 @@ from scipy.sparse.linalg import spsolve
 from scipy.spatial import cKDTree
 
 __all__ = ["load_mesh", "edges_of", "rigid_fit", "rigid_icp", "nicp",
-           "project_to_surface", "bary_to_xyz", "DEFAULT_SCHEDULE"]
+           "project_to_surface", "bary_to_xyz", "boundary_vertices",
+           "smooth_border", "DEFAULT_SCHEDULE"]
 
 
 # Stiffness, from very stiff to free. Each entry is run to convergence before
@@ -284,3 +285,34 @@ def project_to_surface(V, Vs, Fs, max_move=None):
         out[keep] = close[keep]
         return out, dist
     return close, dist
+
+
+def smooth_border(V, F, iters=12, rings=2):
+    """Laplacian-smooth the border ring of a mesh, leaving the interior alone.
+
+    An averaged corpus is rough around its edge and nowhere else, because the
+    border is the one part the fit does not pull onto the scan -- it has no true
+    correspondence, so it is carried by stiffness and lands somewhere slightly
+    different in every subject. Averaging those leaves a wobble, worst where the
+    template's edge crosses the lobe-to-cheek junction, which has no landmark to
+    settle it.
+
+    Smoothing it discards nothing: there is no measurement there to lose. The
+    interior, which IS driven by the scans, is not touched.
+    """
+    V = np.asarray(V, float).copy()
+    import collections
+    adj = collections.defaultdict(set)
+    for t in F:
+        for i in range(3):
+            adj[t[i]].add(t[(i + 1) % 3])
+            adj[t[i]].add(t[(i + 2) % 3])
+    band = set(boundary_vertices(F).tolist())
+    for _ in range(rings - 1):
+        band |= {n for v in list(band) for n in adj[v]}
+    band = sorted(band)
+    nbr = [sorted(adj[v]) for v in band]
+    for _ in range(iters):
+        upd = np.array([V[n].mean(0) for n in nbr])
+        V[band] = 0.5 * V[band] + 0.5 * upd
+    return V

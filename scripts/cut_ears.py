@@ -117,13 +117,67 @@ def cut_hutubs(mesh, C, front, vert, sep):
     return e
 
 
+def pose_by_transfer(mesh, ref_path, cfg, iters=60):
+    """Borrow a head frame from a subject MediaPipe could pose.
+
+    When no face is found there is still a head, and heads are alike enough to
+    register. A reference head whose tragions ARE known is aligned to this one
+    by trimmed rigid ICP, and its tragions ride along. The result is coarse --
+    it is one person's landmarks pushed onto another's skull -- but the crop
+    only needs to find the ear, and the pinna is then located geometrically
+    inside it exactly as in the normal path.
+    """
+    from scipy.spatial import cKDTree
+    from ear3d.wrap import rigid_fit
+    ref = load_head(ref_path)
+    cfg2 = dict(cfg)
+    cfg2["mesh"] = str(ref_path)
+    pose = head_pose(ref, cfg2)
+    if pose is None:
+        raise RuntimeError(f"the reference head {pathlib.Path(ref_path).name} "
+                           f"cannot be posed either")
+    lat, vert, tr_r, tr_l = pose
+    A = np.asarray(ref.vertices)
+    B = np.asarray(mesh.vertices)
+    # coarse: match centroid and size, then trimmed ICP on a subsample
+    ia = np.random.default_rng(0).choice(len(A), min(20000, len(A)), replace=False)
+    X = A[ia]
+    k = float(np.ptp(B, axis=0).max() / np.ptp(A, axis=0).max())
+    X = (X - A.mean(0)) * k + B.mean(0)
+    carry = np.array([lat, vert, np.asarray(tr_r), np.asarray(tr_l)])
+    carry[:2] = carry[:2] * k + 0.0                     # directions scale only
+    carry[2:] = (carry[2:] - A.mean(0)) * k + B.mean(0)
+    tree = cKDTree(B)
+    for _ in range(iters):
+        d, idx = tree.query(X)
+        keep = d <= np.quantile(d, 0.7)
+        R, t, sc = rigid_fit(X[keep], B[idx][keep])
+        X = sc * X @ R.T + t
+        carry[:2] = sc * carry[:2] @ R.T                # directions: no offset
+        carry[2:] = sc * carry[2:] @ R.T + t
+    gap = float(np.median(tree.query(X)[0])) / float(np.ptp(B, axis=0).max())
+    lat2 = carry[0] / np.linalg.norm(carry[0])
+    vert2 = carry[1] / np.linalg.norm(carry[1])
+    return (lat2, vert2, carry[2], carry[3]), gap
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--dataset", choices=["hutubs", "sonicom"], required=True)
     p.add_argument("--out", default=None, help="directory for the cut ears")
     p.add_argument("--sheet", default=None, help="contact sheet PNG to eyeball")
     p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--only", nargs="*", default=None,
+                   help="restrict to these subject names")
     p.add_argument("--tile", type=int, default=300)
+    p.add_argument("--force-transfer", action="store_true",
+                   help="transfer the frame even when MediaPipe succeeds -- it "
+                        "can find a face and still pose it badly, which shows up "
+                        "as a cut with no ear relief in it")
+    p.add_argument("--reference", default=None,
+                   help="a HUTUBS head that DOES pose; when MediaPipe fails on a "
+                        "subject, its frame is transferred from this one by ICP "
+                        "instead of the subject being dropped")
     a = p.parse_args()
     cfg = dict(DEFAULTS)
     cfg["skin"] = False                 # geometry only; shape is what gets fitted
@@ -141,6 +195,8 @@ def main():
     else:
         for f in sorted(glob.glob(str(DATA / "3D head meshes" / "*.ply"))):
             jobs.append((pathlib.Path(f).stem.replace("_3DheadMesh", ""), f, None))
+    if a.only:
+        jobs = [j for j in jobs if j[0] in set(a.only)]
     if a.limit:
         jobs = jobs[:a.limit]
 
@@ -152,9 +208,14 @@ def main():
             else:
                 mesh = load_head(path)
                 cfg["mesh"] = path
-                pose = head_pose(mesh, cfg)
+                pose = None if a.force_transfer else head_pose(mesh, cfg)
                 if pose is None:
-                    raise RuntimeError("MediaPipe found no face on any view")
+                    if not a.reference:
+                        raise RuntimeError("MediaPipe found no face on any view")
+                    pose, gap = pose_by_transfer(mesh, a.reference, cfg)
+                    print(f"    (no face; frame transferred from "
+                          f"{pathlib.Path(a.reference).stem}, surface gap "
+                          f"{100*gap:.2f}% of head size)")
                 lat, vert, tr_r, tr_l = pose
                 sep = float(np.linalg.norm(np.asarray(tr_l) - np.asarray(tr_r)))
                 cuts = [(s, cut_hutubs(mesh, C, fr, vert, sep)) for s, C, fr in

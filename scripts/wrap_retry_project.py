@@ -153,14 +153,23 @@ def main():
     rows = []
     for i, (name, src, why) in enumerate(frames, start=1):
         m = trimesh.load(src, process=False, force="mesh")
-        V = np.asarray(m.vertices)
+        V, F = np.asarray(m.vertices), np.asarray(m.faces)
+        # RIGHT EARS ARE MIRRORED INTO LEFT FORM, as the automatic fitting does
+        # internally. Without this the template is the opposite hand from half
+        # the frames and no amount of control points will make it fit -- the
+        # first version of this project shipped that way and only the left-ear
+        # frames could be wrapped. The axis is z; see wrap_corpus.mirror_to_left.
+        mirrored = name.endswith("_right")
+        if mirrored:
+            V = V * np.array([1.0, 1.0, -1.0])
+            F = F[:, ::-1]                 # or the normals point inward
         k = a.target_size / float(np.ptp(V, axis=0).max())
-        m.vertices = V * k
-        m.export(seq / f"scan_{i:04d}.obj")
-        rows.append([i, name, str(src), round(k, 6), why])
+        trimesh.Trimesh(vertices=V * k, faces=F, process=False).export(
+            seq / f"scan_{i:04d}.obj")
+        rows.append([i, name, str(src), round(k, 6), "yes" if mirrored else "no", why])
     with open(out / "manifest.csv", "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["frame", "name", "source", "scale_applied", "why"])
+        w.writerow(["frame", "name", "source", "scale_applied", "mirrored", "why"])
         w.writerows(rows)
 
     d = json.load(open(a.base))
@@ -189,7 +198,8 @@ def main():
     print(f"  results will be written as {out / 'wrapped_####.obj'}")
     print(f"  frame -> subject mapping in {out / 'manifest.csv'}")
     for r in rows:
-        print(f"    frame {r[0]:3d}  {r[1]:<18s} x{r[3]:<10.4g} {r[4]}")
+        print(f"    frame {r[0]:3d}  {r[1]:<18s} x{r[3]:<10.4g} "
+              f"{'mirrored' if r[4] == 'yes' else '        '}  {r[5]}")
 
 
 if __name__ == "__main__":
