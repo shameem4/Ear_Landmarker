@@ -39,8 +39,8 @@ import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 from scipy.spatial import cKDTree
 
-__all__ = ["load_mesh", "edges_of", "rigid_fit", "nicp", "project_to_surface",
-           "bary_to_xyz", "DEFAULT_SCHEDULE"]
+__all__ = ["load_mesh", "edges_of", "rigid_fit", "rigid_icp", "nicp",
+           "project_to_surface", "bary_to_xyz", "DEFAULT_SCHEDULE"]
 
 
 # Stiffness, from very stiff to free. Each entry is run to convergence before
@@ -102,6 +102,45 @@ def rigid_fit(src, dst, with_scale=True):
         R = (U @ Vt).T
     s = float(sig.sum() / (S ** 2).sum()) if with_scale else 1.0
     return R, dc - s * sc @ R.T, s
+
+
+def rigid_icp(Vt, Ft, Vs, Fs, iters=30, min_cos=0.5, trim=0.8, with_scale=True,
+              verbose=False):
+    """Refine a similarity against the SURFACE, not just the anchors.
+
+    A handful of hand-placed anchors determines a 7-DOF similarity only barely
+    -- three pairs give nine equations for seven unknowns, and each pair carries
+    its own placement error -- so the pose that comes out of them can be off
+    even when every anchor is sensible. The whole surface has thousands of
+    constraints and settles it.
+
+    `trim` keeps only that fraction of the closest matches each iteration. The
+    template covers the ear and the scan may be a whole head, so the worst
+    matches are vertices reaching for cheek or scalp; letting them vote drags
+    the template off the ear.
+    """
+    V = np.asarray(Vt, float).copy()
+    Ns = vertex_normals(Vs, Fs)
+    tree = cKDTree(Vs)
+    R_t, t_t, s_t = np.eye(3), np.zeros(3), 1.0
+    for i in range(iters):
+        d, idx = tree.query(V)
+        ok = np.einsum("ij,ij->i", vertex_normals(V, Ft), Ns[idx]) > min_cos
+        if ok.sum() < 10:
+            break
+        cut = np.quantile(d[ok], trim)
+        ok &= d <= cut
+        R, t, s = rigid_fit(V[ok], Vs[idx][ok], with_scale=with_scale)
+        Vn = s * V @ R.T + t
+        step = float(np.abs(Vn - V).max())
+        V = Vn
+        R_t, t_t, s_t = R @ R_t, s * t_t @ R.T + t, s * s_t
+        if step < 1e-6 * float(np.ptp(Vt, axis=0).max()):
+            break
+    if verbose:
+        print(f"  rigid icp: {i + 1} iters, total scale {s_t:.4f}, "
+              f"median gap {np.median(d[ok]):.4f}")
+    return V, (R_t, t_t, s_t)
 
 
 def _design(V):

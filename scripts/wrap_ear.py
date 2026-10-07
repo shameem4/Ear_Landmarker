@@ -33,7 +33,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from ear3d.wrap import (DEFAULT_SCHEDULE, bary_to_xyz, load_mesh,  # noqa: E402
-                        nicp, project_to_surface, rigid_fit)
+                        nicp, project_to_surface, rigid_fit, rigid_icp)
 
 
 def read_project(path):
@@ -110,6 +110,13 @@ def main():
                    help="rigid alignment without scale, as Wrap's default")
     p.add_argument("--project-to-surface", action="store_true",
                    help="snap onto the scan at the end, like Wrap's ProjectGeom")
+    p.add_argument("--template", default=None,
+                   help="use this mesh as the template instead of the project's. "
+                        "It must have the project template's topology -- then the "
+                        "project's barycentric anchors still name the same "
+                        "anatomy and transfer unchanged.")
+    p.add_argument("--no-icp", action="store_true",
+                   help="skip the surface rigid ICP and trust the anchors alone")
     p.add_argument("--stages", type=int, default=len(DEFAULT_SCHEDULE))
     a = p.parse_args()
 
@@ -117,6 +124,16 @@ def main():
         read_project(a.project)
     print(f"template {pathlib.Path(tpl_path).name}\nscan     {pathlib.Path(scan_path).name}")
     Vt, Ft = load_mesh(tpl_path)
+    if a.template:
+        Va, Fa = load_mesh(a.template)
+        if len(Va) != len(Vt) or not np.array_equal(Fa, Ft):
+            sys.exit(f"{a.template} has {len(Va)} verts / {len(Fa)} faces but the "
+                     f"project's template has {len(Vt)} / {len(Ft)}. The anchors "
+                     f"are barycentric on the project template's faces, so a "
+                     f"different topology would scatter them.")
+        print(f"  template overridden with {pathlib.Path(a.template).name} "
+              f"(same topology, so the anchors carry over)")
+        Vt, tpl_s, tpl_t = Va, 1.0, np.zeros(3)
     Vs, Fs = load_mesh(scan_path)
     Vt = Vt * tpl_s + tpl_t
     Vs = Vs * scan_s + scan_t
@@ -136,10 +153,17 @@ def main():
     print(f"  rigid: scale {s:.4f}, anchor residual "
           f"{np.linalg.norm(at0 - asc, axis=1).mean():.4f}")
 
+    if not a.no_icp:
+        # the anchors said roughly where; the surface says exactly where
+        V0, (Ri, ti, si) = rigid_icp(V0, Ft, Vs, Fs, verbose=True)
+        at0 = si * at0 @ Ri.T + ti
+
     # the control points steer the fit; they are given as positions on template
     # triangles, so pin the nearest template VERTEX to each -- the solver
     # constrains vertices, not surfaces
     ct = s * bary_to_xyz(Vt, Ft, CL) @ Rm.T + t
+    if not a.no_icp:
+        ct = si * ct @ Ri.T + ti
     ca = bary_to_xyz(Vs, Fs, CR)
     li = [int(np.argmin(np.linalg.norm(V0 - p, axis=1))) for p in ct]
 
