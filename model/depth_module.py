@@ -135,21 +135,28 @@ class EarLifter3DModule(EarDepth3DModule):
     the inherited error belongs.
     """
 
-    def __init__(self, *args, xy_noise: float = 0.01, width: int = 256,
-                 **kwargs) -> None:
+    def __init__(self, *args, xy_noise: float = 0.0, width: int = 256,
+                 use_conf: bool = True, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         from model.lifter import EarDepthLifter
-        self.save_hyperparameters({"xy_noise": xy_noise, "width": width})
+        self.save_hyperparameters({"xy_noise": xy_noise, "width": width,
+                                   "use_conf": use_conf})
         self.model = EarDepthLifter(num_landmarks=self.hparams.num_landmarks,
-                                    width=width)
+                                    width=width, use_conf=use_conf)
 
     def _shared_step(self, batch):
         k = self.hparams.num_landmarks
         t = batch["landmarks"].view(-1, k, 3)
-        xy = t[:, :, :2]
-        if self.training and self.hparams.xy_noise > 0:
-            xy = xy + torch.randn_like(xy) * self.hparams.xy_noise
-        zp, zt = self.model(xy), t[:, :, 2]
+        # the 2D model's real output when it has been precomputed, which is
+        # what this head meets at test time; ground truth only as a fallback
+        if "pred_xy" in batch:
+            xy = batch["pred_xy"].view(-1, k, 2)
+            conf = batch.get("pred_conf")
+        else:
+            xy, conf = t[:, :, :2], torch.ones_like(t[:, :, 0])
+            if self.training and self.hparams.xy_noise > 0:
+                xy = xy + torch.randn_like(xy) * self.hparams.xy_noise
+        zp, zt = self.model(xy, conf if self.model.use_conf else None), t[:, :, 2]
         m = batch.get("visible")
         m = torch.ones_like(zt) if m is None else m
         if self.hparams.z_visible_only and "seen" in batch:
@@ -161,6 +168,58 @@ class EarLifter3DModule(EarDepth3DModule):
             z_mae = ((zp - zt).abs() * m).sum() / den
             z_base = (zt.abs() * m).sum() / den
             nme = torch.zeros((), device=zp.device)   # this head predicts no x, y
+        return {"loss": loss, "nme": nme, "z_mae": z_mae, "z_base": z_base,
+                "z_skill": 1.0 - z_mae / z_base.clamp_min(1e-9),
+                "per_point_err": torch.zeros_like(zp)}
+
+
+class EarFeatureLifter3DModule(EarLifter3DModule):
+    """Head 3b: the lifter with image features sampled at each landmark.
+
+    The 2D model is frozen and supplies three things: the coordinates, the
+    per-landmark confidence, and the decoder feature map the lifter samples.
+    Only the lifter trains, so this cannot damage the existing 2D accuracy --
+    the same property that makes head 3 attractive in the first place.
+    """
+
+    def __init__(self, *args, base_ckpt: str = "", point_width: int = 32,
+                 **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        if not base_ckpt:
+            raise ValueError("head 3b needs --base-ckpt, the frozen 2D model")
+        from model.lifter import FeatureLifter
+        base = EarLandmarkerModule.load_from_checkpoint(
+            base_ckpt, map_location="cpu").model.eval()
+        for q in base.parameters():
+            q.requires_grad_(False)
+        self.base = base
+        self.save_hyperparameters({"base_ckpt": base_ckpt,
+                                   "point_width": point_width})
+        self.model = FeatureLifter(
+            feat_ch=base.stage2_ch, num_landmarks=self.hparams.num_landmarks,
+            point_width=point_width, width=self.hparams.width,
+            use_conf=self.hparams.use_conf)
+
+    def _shared_step(self, batch):
+        k = self.hparams.num_landmarks
+        t = batch["landmarks"].view(-1, k, 3)
+        with torch.no_grad():
+            feat = self.base._decode(batch["image"])
+            hm = self.base.to_heatmap(feat)
+            xy = self.base.soft_argmax(hm, self.base.tau).view(-1, k, 2)
+            conf = self.base.heatmap_confidence(hm, self.base.tau)
+        zp, zt = self.model(feat, xy, conf if self.model.use_conf else None), t[:, :, 2]
+        m = batch.get("visible")
+        m = torch.ones_like(zt) if m is None else m
+        if self.hparams.z_visible_only and "seen" in batch:
+            m = m * batch["seen"]
+        den = m.sum().clamp_min(1.0)
+        loss = (F.smooth_l1_loss(zp, zt, beta=self.hparams.z_beta,
+                                 reduction="none") * m).sum() / den
+        with torch.no_grad():
+            z_mae = ((zp - zt).abs() * m).sum() / den
+            z_base = (zt.abs() * m).sum() / den
+            nme = (torch.norm(xy - t[:, :, :2], dim=-1) * m).sum() / den
         return {"loss": loss, "nme": nme, "z_mae": z_mae, "z_base": z_base,
                 "z_skill": 1.0 - z_mae / z_base.clamp_min(1e-9),
                 "per_point_err": torch.zeros_like(zp)}

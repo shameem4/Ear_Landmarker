@@ -19,10 +19,14 @@ sys.path.insert(0, str(ROOT))
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data", default="data/depth3d")
-    p.add_argument("--head", choices=["z", "shape", "lifter"], default="z",
+    p.add_argument("--head", choices=["z", "shape", "lifter", "feat"], default="z",
                    help="z: per-landmark depth off the heatmap. shape: shape "
                         "coefficients and pose, landmarks follow. lifter: a "
-                        "separate network from 55 (x,y) to 55 z")
+                        "separate network from 55 (x,y) to 55 z. feat: "
+                        "the same lifter, plus image features sampled at each "
+                        "landmark")
+    p.add_argument("--base-ckpt", default="", help="frozen 2D model, for --head feat")
+    p.add_argument("--width", type=int, default=256)
     p.add_argument("--basis", default="", help="required for --head shape")
     p.add_argument("--n-modes", type=int, default=40)
     p.add_argument("--out", default=None)
@@ -47,16 +51,22 @@ def main():
 
     from data.dataset import AugmentationParams
     from data.depth_dataset import EarDepthDataset
-    from model.depth_module import (EarDepth3DModule, EarLifter3DModule,
-                                    EarShape3DModule)
+    from model.depth_module import (EarDepth3DModule, EarFeatureLifter3DModule,
+                                    EarLifter3DModule, EarShape3DModule)
 
     pl.seed_everything(a.seed, workers=True)
     d = pathlib.Path(a.data)
     # perspective_deg stays 0: see data/depth_dataset and the note in
     # _geo_augment. Everything else is the 2D recipe unchanged.
     aug = AugmentationParams(perspective_deg=0.0)
-    train = EarDepthDataset(d / "train.csv", d, augmentation=aug)
-    val = EarDepthDataset(d / "val.csv", d, augmentation=None)
+    # The lifter heads read the 2D model's precomputed output, which was
+    # computed on the STORED image, so they must see that image unaugmented.
+    lifting = a.head in ("lifter", "feat")
+    train = EarDepthDataset(d / "train.csv", d,
+                            augmentation=None if lifting else aug,
+                            with_pred=(a.head == "lifter"))
+    val = EarDepthDataset(d / "val.csv", d, augmentation=None,
+                          with_pred=(a.head == "lifter"))
     print(f"{len(train)} train, {len(val)} val views", flush=True)
 
     dl = dict(batch_size=a.batch, num_workers=a.workers, pin_memory=True,
@@ -73,8 +83,13 @@ def main():
         if not a.basis:
             sys.exit("--head shape needs --basis from build_landmark_basis.py")
         model = EarShape3DModule(basis=a.basis, n_modes=a.n_modes, **common)
+    elif a.head == "lifter":
+        model = EarLifter3DModule(width=a.width, **common)
     else:
-        model = EarLifter3DModule(**common)
+        if not a.base_ckpt:
+            sys.exit("--head feat needs --base-ckpt, the frozen 2D model")
+        model = EarFeatureLifter3DModule(base_ckpt=a.base_ckpt,
+                                         width=a.width, **common)
     n = sum(q.numel() for q in model.model.parameters() if q.requires_grad)
     print(f"head {a.head!r}: {n:,} trainable parameters", flush=True)
     out = pathlib.Path(a.out or f"runs/depth_{a.head}")

@@ -45,6 +45,7 @@ class EarDepthDataset(EarLandmarkDataset):
         stats: Optional[Dict[str, Sequence[float]]] = None,
         landmarks_file: str = "landmarks.npy",
         visible_file: str = "visible.npy",
+        with_pred: bool = False,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.image_size = image_size
@@ -56,6 +57,19 @@ class EarDepthDataset(EarLandmarkDataset):
             raise ValueError(f"{landmarks_file} is {self.landmarks.shape}, "
                              f"expected (N, 55, 3) -- this is the depth corpus")
         self.rendered_visible = np.load(self.data_dir / visible_file, mmap_mode="r")
+        # The 2D model's OWN output on these images, if it has been precomputed.
+        # A lifter is fed this at test time, so it should be trained on it; the
+        # alternative, ground truth plus isotropic noise, gets the error
+        # distribution wrong -- real landmark error is correlated between
+        # neighbours and biased along the contour, not round.
+        self.pred_xy = self.pred_conf = None
+        if with_pred:
+            px, pc = self.data_dir / "pred_xy.npy", self.data_dir / "pred_conf.npy"
+            if not px.exists():
+                raise FileNotFoundError(
+                    f"{px} not found -- run scripts/precompute_xy.py first")
+            self.pred_xy = np.load(px, mmap_mode="r")
+            self.pred_conf = np.load(pc, mmap_mode="r")
         mean = stats["mean"] if stats else [0.5, 0.5, 0.5]
         std = stats["std"] if stats else [0.5, 0.5, 0.5]
         self._norm_mean, self._norm_std = mean, std
@@ -93,9 +107,19 @@ class EarDepthDataset(EarLandmarkDataset):
 
         in_frame = ((xy >= 0.0) & (xy <= 1.0)).all(dim=1)
         valid = (in_frame & ~out_of_crop).float()
-        return {
+        out = {
             "image": tensor_img,
             "landmarks": torch.cat([xy, z[:, None]], dim=1).view(-1),  # (55*3,)
             "visible": valid,                       # supervise x, y here
             "seen": seen.float(),                   # the renderer could see it
         }
+        if self.pred_xy is not None:
+            # NOT augmented: these were computed on the stored image, so they
+            # belong with an unaugmented one. A lifter trained on them must
+            # therefore run without geometric augmentation, which is why
+            # train_depth turns it off for the lifter heads.
+            out["pred_xy"] = torch.tensor(np.asarray(self.pred_xy[gi]),
+                                          dtype=torch.float32).view(-1)
+            out["pred_conf"] = torch.tensor(np.asarray(self.pred_conf[gi]),
+                                            dtype=torch.float32)
+        return out
