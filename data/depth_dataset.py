@@ -46,6 +46,7 @@ class EarDepthDataset(EarLandmarkDataset):
         landmarks_file: str = "landmarks.npy",
         visible_file: str = "visible.npy",
         with_pred: bool = False,
+        coeffs: str = "",
     ) -> None:
         self.data_dir = Path(data_dir)
         self.image_size = image_size
@@ -63,6 +64,13 @@ class EarDepthDataset(EarLandmarkDataset):
         # distribution wrong -- real landmark error is correlated between
         # neighbours and biased along the contour, not round.
         self.pred_xy = self.pred_conf = self.pred_feat = None
+        # Ground-truth shape coefficients per EAR, so a shape head can be
+        # supervised on what it actually predicts. Learning 40 coefficients
+        # only through 55 projected points is a very indirect signal.
+        self.coeffs = None
+        if coeffs:
+            z = np.load(coeffs, allow_pickle=True)
+            self.coeffs = {str(n): c for n, c in zip(z["names"], z["coeffs"])}
         if with_pred:
             px, pc = self.data_dir / "pred_xy.npy", self.data_dir / "pred_conf.npy"
             if not px.exists():
@@ -115,6 +123,10 @@ class EarDepthDataset(EarLandmarkDataset):
             "visible": valid,                       # supervise x, y here
             "seen": seen.float(),                   # the renderer could see it
         }
+        if self.coeffs is not None:
+            c = self.coeffs.get(sample["ear"])
+            out_c = (torch.tensor(c, dtype=torch.float32) if c is not None
+                     else torch.zeros(40))
         if self.pred_xy is not None:
             # NOT augmented: these were computed on the stored image, so they
             # belong with an unaugmented one. A lifter trained on them must
@@ -127,4 +139,8 @@ class EarDepthDataset(EarLandmarkDataset):
             if self.pred_feat is not None:
                 out["pred_feat"] = torch.tensor(
                     np.asarray(self.pred_feat[gi]), dtype=torch.float32)
+        if self.coeffs is not None:
+            out["coeffs"] = out_c
+            out["has_coeffs"] = torch.tensor(
+                1.0 if self.coeffs.get(sample["ear"]) is not None else 0.0)
         return out

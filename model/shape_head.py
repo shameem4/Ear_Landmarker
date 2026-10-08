@@ -53,7 +53,8 @@ class EarShapeLandmarker(EarLandmarker):
 
     def __init__(self, basis: str | Path, num_landmarks: int = NUM_LANDMARKS,
                  backbone: str = "default", width_mult: float = 1.0,
-                 n_modes: int = 0, init_scale: float = 0.65) -> None:
+                 n_modes: int = 0, init_scale: float = 0.65,
+                 head: str = "spatial") -> None:
         super().__init__(num_landmarks=num_landmarks, backbone=backbone,
                          width_mult=width_mult)
         del self.head
@@ -69,14 +70,31 @@ class EarShapeLandmarker(EarLandmarker):
         self.register_buffer("lm_basis", torch.tensor(B, dtype=torch.float32))
 
         self.n_out = self.n_modes + 6 + 1 + 2        # shape, rot6d, log s, t
-        self.pred = nn.Sequential(nn.Flatten(), nn.Linear(self.stage4_ch, self.n_out))
-        nn.init.zeros_(self.pred[1].weight)
+        # A GLOBAL AVERAGE POOL CANNOT SEE WHERE ANYTHING IS, and pose is
+        # entirely about where things are -- the translation especially is a
+        # position, which pooling destroys by construction. The first version
+        # of this head was GAP followed by one Linear, and it underfitted:
+        # its TRAINING error, 0.01685, was worse than head 1's validation
+        # error, and a learning-rate sweep moved it by 0.00001. Keeping the
+        # 6x6 grid is the obvious thing the architecture was missing.
+        self.head_kind = head
+        if head == "spatial":
+            self.pred = nn.Sequential(
+                nn.Conv2d(self.stage4_ch, 64, 1, bias=False),
+                nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+                nn.Flatten(), nn.Linear(64 * 6 * 6, 256), nn.ReLU(inplace=True),
+                nn.Linear(256, self.n_out))
+        else:
+            self.pred = nn.Sequential(nn.Flatten(),
+                                      nn.Linear(self.stage4_ch, self.n_out))
+        last = self.pred[-1]
+        nn.init.zeros_(last.weight)
         with torch.no_grad():
             b = torch.zeros(self.n_out)
             b[self.n_modes:self.n_modes + 6] = torch.tensor([1., 0., 0., 0., 1., 0.])
             b[self.n_modes + 6] = float(np.log(init_scale))
             b[self.n_modes + 7:] = 0.5               # centre of the crop
-            self.pred[1].bias.copy_(b)
+            last.bias.copy_(b)
         # Zero weights so the first prediction is exactly the mean ear at the
         # crop centre. Unlike a heatmap layer this starves nothing: the pose and
         # coefficient gradients w.r.t. the weights are nonzero from step one,
@@ -99,6 +117,8 @@ class EarShapeLandmarker(EarLandmarker):
 
     def parameters_from(self, x: torch.Tensor) -> torch.Tensor:
         _, _, s4 = self.forward_features(x)
+        if self.head_kind == "spatial":
+            return self.pred(s4)                       # keeps the 6x6 layout
         return self.pred(F.adaptive_avg_pool2d(s4, 1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

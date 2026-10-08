@@ -86,6 +86,10 @@ class EarDepth3DModule(EarLandmarkerModule):
 
     def validation_step(self, batch, batch_idx):
         r = self._shared_step(batch)
+        for k in ("mesh_err", "mesh_base"):
+            if k in r:
+                self.log(f"val/{k}", r[k], prog_bar=(k == "mesh_err"),
+                         sync_dist=True)
         for k in ("loss", "nme", "z_mae", "z_base", "z_skill"):
             self.log(f"val/{k}", r[k], prog_bar=k in ("nme", "z_mae", "z_skill"),
                      sync_dist=True)
@@ -102,27 +106,47 @@ class EarShape3DModule(EarDepth3DModule):
     """Head 2: shape coefficients and pose; the landmarks follow."""
 
     def __init__(self, *args, basis: str = "", n_modes: int = 40,
-                 coeff_l2: float = 1e-3, **kwargs) -> None:
+                 coeff_l2: float = 1e-3, shape_head: str = "spatial",
+                 coeff_sup: float = 0.0, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         if not basis:
             raise ValueError("head 2 needs --basis (scripts/build_landmark_basis.py)")
         from model.shape_head import EarShapeLandmarker
         self.save_hyperparameters({"basis": basis, "n_modes": n_modes,
-                                   "coeff_l2": coeff_l2})
+                                   "coeff_l2": coeff_l2,
+                                   "shape_head": shape_head,
+                                   "coeff_sup": coeff_sup})
         self.model = EarShapeLandmarker(
             basis, num_landmarks=self.hparams.num_landmarks,
             backbone=self.hparams.backbone, width_mult=self.hparams.width_mult,
-            n_modes=n_modes)
+            n_modes=n_modes, head=shape_head)
 
     def _shared_step(self, batch):
-        r = super()._shared_step(batch)
-        # the coefficients are in standard deviations, so a unit gaussian is
-        # the correct prior and this penalty is calibrated rather than guessed
+        r = dict(super()._shared_step(batch))
+        need = self.hparams.coeff_l2 > 0 or self.hparams.coeff_sup > 0
+        if not need:
+            return r
+        p = self.model.parameters_from(batch["image"])
+        c = p[:, :self.model.n_modes]
         if self.hparams.coeff_l2 > 0:
-            p = self.model.parameters_from(batch["image"])
-            c = p[:, :self.model.n_modes]
-            r = dict(r)
+            # coefficients are in standard deviations, so a unit gaussian is
+            # the right prior and this penalty is calibrated, not guessed
             r["loss"] = r["loss"] + self.hparams.coeff_l2 * c.pow(2).mean()
+        if self.hparams.coeff_sup > 0 and "coeffs" in batch:
+            tgt = batch["coeffs"][:, :self.model.n_modes]
+            w = batch["has_coeffs"][:, None]
+            r["loss"] = r["loss"] + self.hparams.coeff_sup * (
+                ((c - tgt) ** 2 * w).sum() / w.sum().clamp_min(1) / c.shape[1])
+        if "coeffs" in batch:
+            with torch.no_grad():
+                tgt = batch["coeffs"][:, :self.model.n_modes]
+                # MESH error, which is the capability this head exists for:
+                # the vertex displacement the coefficient error implies
+                dv = torch.einsum("bm,mkj->bkj", (c - tgt),
+                                  self.model.lm_basis)
+                r["mesh_err"] = dv.norm(dim=-1).mean()
+                dm = torch.einsum("bm,mkj->bkj", tgt, self.model.lm_basis)
+                r["mesh_base"] = dm.norm(dim=-1).mean()   # predicting the mean
         return r
 
 

@@ -29,6 +29,10 @@ def main():
     p.add_argument("--width", type=int, default=256)
     p.add_argument("--basis", default="", help="required for --head shape")
     p.add_argument("--n-modes", type=int, default=40)
+    p.add_argument("--shape-head", default="spatial", choices=["spatial", "gap"])
+    p.add_argument("--coeffs", default="", help="gt_coeffs npz, for --coeff-sup")
+    p.add_argument("--coeff-sup", type=float, default=0.0,
+                   help="weight on supervising the shape coefficients directly")
     p.add_argument("--out", default=None)
     p.add_argument("--epochs", type=int, default=40)
     p.add_argument("--batch", type=int, default=64)
@@ -64,9 +68,9 @@ def main():
     lifting = a.head in ("lifter", "feat")
     train = EarDepthDataset(d / "train.csv", d,
                             augmentation=None if lifting else aug,
-                            with_pred=lifting)
+                            with_pred=lifting, coeffs=a.coeffs)
     val = EarDepthDataset(d / "val.csv", d, augmentation=None,
-                          with_pred=lifting)
+                          with_pred=lifting, coeffs=a.coeffs)
     print(f"{len(train)} train, {len(val)} val views", flush=True)
 
     dl = dict(batch_size=a.batch, num_workers=a.workers, pin_memory=True,
@@ -82,7 +86,9 @@ def main():
     elif a.head == "shape":
         if not a.basis:
             sys.exit("--head shape needs --basis from build_landmark_basis.py")
-        model = EarShape3DModule(basis=a.basis, n_modes=a.n_modes, **common)
+        model = EarShape3DModule(basis=a.basis, n_modes=a.n_modes,
+                                 shape_head=a.shape_head,
+                                 coeff_sup=a.coeff_sup, **common)
     elif a.head == "lifter":
         model = EarLifter3DModule(width=a.width, **common)
     else:
