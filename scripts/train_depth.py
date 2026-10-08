@@ -19,7 +19,13 @@ sys.path.insert(0, str(ROOT))
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data", default="data/depth3d")
-    p.add_argument("--out", default="runs/depth_h1")
+    p.add_argument("--head", choices=["z", "shape", "lifter"], default="z",
+                   help="z: per-landmark depth off the heatmap. shape: shape "
+                        "coefficients and pose, landmarks follow. lifter: a "
+                        "separate network from 55 (x,y) to 55 z")
+    p.add_argument("--basis", default="", help="required for --head shape")
+    p.add_argument("--n-modes", type=int, default=40)
+    p.add_argument("--out", default=None)
     p.add_argument("--epochs", type=int, default=40)
     p.add_argument("--batch", type=int, default=64)
     p.add_argument("--lr", type=float, default=1e-3)
@@ -29,6 +35,8 @@ def main():
     p.add_argument("--width-mult", type=float, default=1.0)
     p.add_argument("--limit-batches", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--accelerator", default="auto",
+                   help="'cpu' to stay off a GPU someone else is using")
     a = p.parse_args()
 
     import pytorch_lightning as pl
@@ -39,7 +47,8 @@ def main():
 
     from data.dataset import AugmentationParams
     from data.depth_dataset import EarDepthDataset
-    from model.depth_module import EarDepth3DModule
+    from model.depth_module import (EarDepth3DModule, EarLifter3DModule,
+                                    EarShape3DModule)
 
     pl.seed_everything(a.seed, workers=True)
     d = pathlib.Path(a.data)
@@ -55,15 +64,25 @@ def main():
     tl = DataLoader(train, shuffle=True, drop_last=True, **dl)
     vl = DataLoader(val, shuffle=False, **dl)
 
-    model = EarDepth3DModule(lr=a.lr, max_epochs=a.epochs, arch="heatmap",
-                             width_mult=a.width_mult, z_weight=a.z_weight,
-                             z_visible_only=a.z_visible_only)
-    out = pathlib.Path(a.out)
+    common = dict(lr=a.lr, max_epochs=a.epochs, arch="heatmap",
+                  width_mult=a.width_mult, z_weight=a.z_weight,
+                  z_visible_only=a.z_visible_only)
+    if a.head == "z":
+        model = EarDepth3DModule(**common)
+    elif a.head == "shape":
+        if not a.basis:
+            sys.exit("--head shape needs --basis from build_landmark_basis.py")
+        model = EarShape3DModule(basis=a.basis, n_modes=a.n_modes, **common)
+    else:
+        model = EarLifter3DModule(**common)
+    n = sum(q.numel() for q in model.model.parameters() if q.requires_grad)
+    print(f"head {a.head!r}: {n:,} trainable parameters", flush=True)
+    out = pathlib.Path(a.out or f"runs/depth_{a.head}")
     ck = ModelCheckpoint(dirpath=out / "ckpt", filename="{epoch}-{val_z_mae:.4f}",
                          monitor="val_z_mae", mode="min", save_top_k=2,
                          save_last=True)
     tr = pl.Trainer(
-        max_epochs=a.epochs, accelerator="auto", devices=1,
+        max_epochs=a.epochs, accelerator=a.accelerator, devices=1,
         default_root_dir=str(out), logger=CSVLogger(str(out), name="csv"),
         callbacks=[ck], log_every_n_steps=20,
         limit_train_batches=a.limit_batches, limit_val_batches=a.limit_batches,

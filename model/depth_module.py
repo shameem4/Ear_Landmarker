@@ -96,3 +96,71 @@ class EarDepth3DModule(EarLandmarkerModule):
         r = self._shared_step(batch)
         for k in ("loss", "nme", "z_mae", "z_base", "z_skill"):
             self.log(f"test/{k}", r[k], sync_dist=True)
+
+
+class EarShape3DModule(EarDepth3DModule):
+    """Head 2: shape coefficients and pose; the landmarks follow."""
+
+    def __init__(self, *args, basis: str = "", n_modes: int = 40,
+                 coeff_l2: float = 1e-3, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        if not basis:
+            raise ValueError("head 2 needs --basis (scripts/build_landmark_basis.py)")
+        from model.shape_head import EarShapeLandmarker
+        self.save_hyperparameters({"basis": basis, "n_modes": n_modes,
+                                   "coeff_l2": coeff_l2})
+        self.model = EarShapeLandmarker(
+            basis, num_landmarks=self.hparams.num_landmarks,
+            backbone=self.hparams.backbone, width_mult=self.hparams.width_mult,
+            n_modes=n_modes)
+
+    def _shared_step(self, batch):
+        r = super()._shared_step(batch)
+        # the coefficients are in standard deviations, so a unit gaussian is
+        # the correct prior and this penalty is calibrated rather than guessed
+        if self.hparams.coeff_l2 > 0:
+            p = self.model.parameters_from(batch["image"])
+            c = p[:, :self.model.n_modes]
+            r = dict(r)
+            r["loss"] = r["loss"] + self.hparams.coeff_l2 * c.pow(2).mean()
+        return r
+
+
+class EarLifter3DModule(EarDepth3DModule):
+    """Head 3: 55 (x, y) -> 55 z, with no image at all.
+
+    Trained on the GROUND-TRUTH coordinates, with noise standing in for the 2D
+    model's error, so it measures lifting ability rather than inheriting the
+    landmarker's mistakes. Evaluation feeds it real predictions, which is where
+    the inherited error belongs.
+    """
+
+    def __init__(self, *args, xy_noise: float = 0.01, width: int = 256,
+                 **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        from model.lifter import EarDepthLifter
+        self.save_hyperparameters({"xy_noise": xy_noise, "width": width})
+        self.model = EarDepthLifter(num_landmarks=self.hparams.num_landmarks,
+                                    width=width)
+
+    def _shared_step(self, batch):
+        k = self.hparams.num_landmarks
+        t = batch["landmarks"].view(-1, k, 3)
+        xy = t[:, :, :2]
+        if self.training and self.hparams.xy_noise > 0:
+            xy = xy + torch.randn_like(xy) * self.hparams.xy_noise
+        zp, zt = self.model(xy), t[:, :, 2]
+        m = batch.get("visible")
+        m = torch.ones_like(zt) if m is None else m
+        if self.hparams.z_visible_only and "seen" in batch:
+            m = m * batch["seen"]
+        den = m.sum().clamp_min(1.0)
+        loss = (F.smooth_l1_loss(zp, zt, beta=self.hparams.z_beta,
+                                 reduction="none") * m).sum() / den
+        with torch.no_grad():
+            z_mae = ((zp - zt).abs() * m).sum() / den
+            z_base = (zt.abs() * m).sum() / den
+            nme = torch.zeros((), device=zp.device)   # this head predicts no x, y
+        return {"loss": loss, "nme": nme, "z_mae": z_mae, "z_base": z_base,
+                "z_skill": 1.0 - z_mae / z_base.clamp_min(1e-9),
+                "per_point_err": torch.zeros_like(zp)}
