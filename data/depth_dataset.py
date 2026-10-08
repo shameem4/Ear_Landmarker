@@ -62,7 +62,7 @@ class EarDepthDataset(EarLandmarkDataset):
         # alternative, ground truth plus isotropic noise, gets the error
         # distribution wrong -- real landmark error is correlated between
         # neighbours and biased along the contour, not round.
-        self.pred_xy = self.pred_conf = None
+        self.pred_xy = self.pred_conf = self.pred_feat = None
         if with_pred:
             px, pc = self.data_dir / "pred_xy.npy", self.data_dir / "pred_conf.npy"
             if not px.exists():
@@ -70,6 +70,8 @@ class EarDepthDataset(EarLandmarkDataset):
                     f"{px} not found -- run scripts/precompute_xy.py first")
             self.pred_xy = np.load(px, mmap_mode="r")
             self.pred_conf = np.load(pc, mmap_mode="r")
+            pf = self.data_dir / "pred_feat.npy"
+            self.pred_feat = np.load(pf, mmap_mode="r") if pf.exists() else None
         mean = stats["mean"] if stats else [0.5, 0.5, 0.5]
         std = stats["std"] if stats else [0.5, 0.5, 0.5]
         self._norm_mean, self._norm_std = mean, std
@@ -122,4 +124,7 @@ class EarDepthDataset(EarLandmarkDataset):
                                           dtype=torch.float32).view(-1)
             out["pred_conf"] = torch.tensor(np.asarray(self.pred_conf[gi]),
                                             dtype=torch.float32)
+            if self.pred_feat is not None:
+                out["pred_feat"] = torch.tensor(
+                    np.asarray(self.pred_feat[gi]), dtype=torch.float32)
         return out

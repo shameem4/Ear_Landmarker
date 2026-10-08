@@ -45,6 +45,17 @@ from ear3d.scheme import STRIPS                                 # noqa: E402
 from ear3d.wrap import base_topology, load_mesh                 # noqa: E402
 
 
+def _flush(out, rows, lms, viss):
+    """Write what we have so far, so a crash costs one chunk and not the run."""
+    np.save(out / "landmarks.npy", np.asarray(lms, np.float32))
+    np.save(out / "visible.npy", np.asarray(viss, bool))
+    with open(out / "manifest.csv", "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["idx", "image_file", "ear", "source_mesh", "yaw", "pitch",
+                    "occupancy", "n_visible"])
+        w.writerows(rows)
+
+
 def ear_frame(M):
     """Rotation taking the ear to the renderer's canonical pose.
 
@@ -78,6 +89,8 @@ def main():
                    help="how much of the crop the ear fills, sampled per view")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--resume", action="store_true",
+                   help="keep the ears already in the output and carry on")
     p.add_argument("--quality", type=int, default=95)
     a = p.parse_args()
 
@@ -105,7 +118,23 @@ def main():
     print(f"{len(jobs)} ears x {len(a.yaws)}x{len(a.pitches)} views", flush=True)
 
     rows, lms, viss, skipped, n = [], [], [], [], 0
+    done_ears = set()
+    if a.resume and (out / "manifest.csv").exists():
+        import csv as _csv
+        prev = list(_csv.DictReader(open(out / "manifest.csv")))
+        if prev:
+            rows = [[r[k] for k in ("idx", "image_file", "ear", "source_mesh",
+                                    "yaw", "pitch", "occupancy", "n_visible")]
+                    for r in prev]
+            lms = list(np.load(out / "landmarks.npy"))
+            viss = list(np.load(out / "visible.npy"))
+            done_ears = {r["ear"] for r in prev}
+            n = max(int(r["idx"]) for r in prev) + 1
+            print(f"resuming: {len(done_ears)} ears and {n} views already done",
+                  flush=True)
     for f, tp in jobs:
+        if f.stem in done_ears:
+            continue
         z = np.load(tp, allow_pickle=True)
         M, src = z["matrix"], str(z["source"])
         V, F = load_mesh(f)
@@ -153,18 +182,21 @@ def main():
         apply_skin(g, seed=int(rng.integers(1 << 30)), tone=cfg["tone"],
                    ao_strength=cfg["ao_strength"], n_rays=cfg["ao_rays"])
 
+        # ONE RENDERER PER EAR, not per view. Filament holds a GPU context per
+        # engine, and creating 9996 of them leaked until the driver refused --
+        # the run died at 6600 views with no traceback, mid-write. The geometry
+        # only changes per ear; the camera is all that moves between views.
+        r = o3d.visualization.rendering.OffscreenRenderer(
+            a.render_size, a.render_size)
+        r.scene.add_geometry("h", g, MATERIAL)
+        light_scene(r.scene, (0.5, 0.5, 0.5))
         for yaw in a.yaws:
             for pitch in a.pitches:
-                r = o3d.visualization.rendering.OffscreenRenderer(
-                    a.render_size, a.render_size)
-                r.scene.add_geometry("h", g, MATERIAL)
-                light_scene(r.scene, (0.5, 0.5, 0.5))
                 E = orbit_extrinsic(yaw, pitch, cfg)
                 K, E = camera_ke(a.render_size, cfg, E)
                 r.setup_camera(K, E, a.render_size, a.render_size)
                 img = np.asarray(r.render_to_image())[:, :, :3]
                 depth = np.asarray(r.render_to_depth_image(z_in_view_space=True))
-                del r
                 cam = Camera(K, E, img.shape[:2], a.render_size)
                 uv = cam.project(Lc)
                 zc = (Lc @ cam.R.T + cam.t)[:, 2]          # camera-space depth
@@ -205,16 +237,15 @@ def main():
                 lms.append(np.c_[xy, zn])
                 viss.append(vis)
                 n += 1
-        if len(rows) and len(rows) % 200 < len(a.yaws) * len(a.pitches):
-            print(f"  {n} views from {f.stem}", flush=True)
+        del r
+        done_ears.add(f.stem)
+        # FLUSH AS WE GO. The first version accumulated everything and wrote at
+        # the end, so a crash at 6600 of 9800 views threw away forty minutes.
+        if len(done_ears) % 20 == 0 or f is jobs[-1][0]:
+            _flush(out, rows, lms, viss)
+            print(f"  {n} views, {len(done_ears)} ears done", flush=True)
 
-    np.save(out / "landmarks.npy", np.asarray(lms, np.float32))
-    np.save(out / "visible.npy", np.asarray(viss, bool))
-    with open(out / "manifest.csv", "w", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(["idx", "image_file", "ear", "source_mesh", "yaw", "pitch",
-                    "occupancy", "n_visible"])
-        w.writerows(rows)
+    _flush(out, rows, lms, viss)
     print(f"\n{n} views -> {out}")
     if skipped:
         print(f"  {len(skipped)} ears skipped:")

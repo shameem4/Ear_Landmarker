@@ -64,9 +64,9 @@ def main():
     lifting = a.head in ("lifter", "feat")
     train = EarDepthDataset(d / "train.csv", d,
                             augmentation=None if lifting else aug,
-                            with_pred=(a.head == "lifter"))
+                            with_pred=lifting)
     val = EarDepthDataset(d / "val.csv", d, augmentation=None,
-                          with_pred=(a.head == "lifter"))
+                          with_pred=lifting)
     print(f"{len(train)} train, {len(val)} val views", flush=True)
 
     dl = dict(batch_size=a.batch, num_workers=a.workers, pin_memory=True,

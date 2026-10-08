@@ -203,12 +203,21 @@ class EarFeatureLifter3DModule(EarLifter3DModule):
     def _shared_step(self, batch):
         k = self.hparams.num_landmarks
         t = batch["landmarks"].view(-1, k, 3)
-        with torch.no_grad():
-            feat = self.base._decode(batch["image"])
-            hm = self.base.to_heatmap(feat)
-            xy = self.base.soft_argmax(hm, self.base.tau).view(-1, k, 2)
-            conf = self.base.heatmap_confidence(hm, self.base.tau)
-        zp, zt = self.model(feat, xy, conf if self.model.use_conf else None), t[:, :, 2]
+        if "pred_feat" in batch:
+            # already sampled at the predicted landmarks, and fixed because the
+            # base is frozen and these heads see no geometric augmentation
+            xy = batch["pred_xy"].view(-1, k, 2)
+            conf, sampled = batch["pred_conf"], batch["pred_feat"]
+            zp = self.model.from_sampled(sampled, xy,
+                                         conf if self.model.use_conf else None)
+        else:
+            with torch.no_grad():
+                feat = self.base._decode(batch["image"])
+                hm = self.base.to_heatmap(feat)
+                xy = self.base.soft_argmax(hm, self.base.tau).view(-1, k, 2)
+                conf = self.base.heatmap_confidence(hm, self.base.tau)
+            zp = self.model(feat, xy, conf if self.model.use_conf else None)
+        zt = t[:, :, 2]
         m = batch.get("visible")
         m = torch.ones_like(zt) if m is None else m
         if self.hparams.z_visible_only and "seen" in batch:

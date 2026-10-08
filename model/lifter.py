@@ -109,6 +109,21 @@ class FeatureLifter(nn.Module):
                                         align_corners=False)
         return out.squeeze(-1).transpose(1, 2)            # (B, K, C)
 
+    def from_sampled(self, f: torch.Tensor, xy: torch.Tensor,
+                     conf: torch.Tensor | None = None) -> torch.Tensor:
+        """The second half of forward, given features already sampled."""
+        xy = xy.view(len(xy), self.k, 2)
+        n, s = EarDepthLifter.normalise(xy)
+        parts = [f, n]
+        if self.use_conf:
+            if conf is None:
+                raise ValueError("this lifter was built with use_conf=True")
+            parts.append(conf.view(len(xy), self.k, 1))
+        t = self.point(torch.cat(parts, dim=-1))
+        z = self.net(t.reshape(len(xy), -1))
+        z = z - z.mean(dim=1, keepdim=True)
+        return z * s[:, None]
+
     def forward(self, feat: torch.Tensor, xy: torch.Tensor,
                 conf: torch.Tensor | None = None) -> torch.Tensor:
         xy = xy.view(len(xy), self.k, 2)

@@ -36,6 +36,14 @@ def main():
     p.add_argument("--batch", type=int, default=64)
     p.add_argument("--device", default="cpu")
     p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--features", action="store_true",
+                   help="also store the decoder features SAMPLED AT the predicted "
+                        "landmarks. The base is frozen and the lifter heads run "
+                        "without geometric augmentation, so those vectors never "
+                        "change -- precomputing them turns head 3b from a "
+                        "backbone forward per step into a table lookup, which is "
+                        "the difference between trainable on a CPU and not. "
+                        "9800 x 55 x 96 in float16 is about 100 MB.")
     a = p.parse_args()
 
     import torch
@@ -68,14 +76,23 @@ def main():
     n = len(rows)
     xy = np.zeros((n, 55, 2), np.float32)
     conf = np.ones((n, 55), np.float32)
+    feats = None
     with torch.no_grad():
         for k, (img, idx) in enumerate(dl):
             img = img.to(a.device)
             if has_hm:
-                hm = net.heatmaps(img)
+                d_ = net._decode(img)
+                hm = net.to_heatmap(d_)
                 pred = net.soft_argmax(hm, getattr(net, "tau", 1.0))
                 c = net.heatmap_confidence(hm, getattr(net, "tau", 1.0))
                 conf[idx.numpy()] = c.cpu().numpy()
+                if a.features:
+                    from model.lifter import FeatureLifter
+                    pts = pred.view(len(img), 55, 2).clamp(0.0, 1.0)
+                    f = FeatureLifter.sample(d_, pts).cpu().numpy()
+                    if feats is None:
+                        feats = np.zeros((n, 55, f.shape[-1]), np.float16)
+                    feats[idx.numpy()] = f.astype(np.float16)
             else:
                 pred = net(img)
             xy[idx.numpy()] = pred.view(len(img), 55, 2).cpu().numpy()
@@ -84,6 +101,10 @@ def main():
 
     np.save(d / "pred_xy.npy", xy)
     np.save(d / "pred_conf.npy", conf)
+    if feats is not None:
+        np.save(d / "pred_feat.npy", feats)
+        print(f"  features {feats.shape} -> pred_feat.npy "
+              f"({feats.nbytes / 1e6:.0f} MB)")
     gt = np.load(d / "landmarks.npy", mmap_mode="r")[:, :, :2]
     err = np.linalg.norm(xy - np.asarray(gt), axis=-1)
     print(f"\nwrote pred_xy.npy and pred_conf.npy for {n} views")
