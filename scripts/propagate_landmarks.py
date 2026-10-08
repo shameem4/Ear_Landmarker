@@ -24,7 +24,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from ear3d.scheme import STRIPS, STRIP_NAMES          # noqa: E402
-from ear3d.wrap import load_mesh                      # noqa: E402
+from ear3d.wrap import base_topology, load_mesh       # noqa: E402
 
 
 def place(V, F, tri, bary):

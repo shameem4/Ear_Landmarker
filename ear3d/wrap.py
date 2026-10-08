@@ -132,6 +132,30 @@ def vertex_normals(V, F):
     return N / np.where(n > 0, n, 1.0)
 
 
+def base_topology(V, F, Vt, Ft, name=""):
+    """A fit at the TEMPLATE's resolution, whatever resolution it was saved at.
+
+    Wrap's graph ends in SubdivideGeom, so its fits come back with several
+    times the template's vertices. Subdivision keeps the originals in order and
+    appends the new ones, which makes base resolution recoverable -- but that
+    is checked rather than assumed, by confirming the first len(Vt) vertices
+    still span the mesh. A renumbering would pass every other test and quietly
+    scramble anything indexed by vertex.
+    """
+    if len(V) == len(Vt) and np.array_equal(F, Ft):
+        return V, F
+    if len(V) < len(Vt):
+        raise ValueError(f"{name}: {len(V)} vertices, fewer than the template's "
+                         f"{len(Vt)}")
+    span = float(np.ptp(V[:len(Vt)], axis=0).max())
+    full = float(np.ptp(V, axis=0).max())
+    if span < 0.9 * full:
+        raise ValueError(f"{name}: the first {len(Vt)} vertices span only "
+                         f"{100 * span / full:.0f}% of the mesh, so they are "
+                         f"not the template's vertices")
+    return V[:len(Vt)], Ft
+
+
 def boundary_points(P, N, k=30, gap_deg=120.0):
     """Points on the EDGE of a point cloud -- the rim of a hole, or of the scan.
 
