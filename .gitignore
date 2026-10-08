@@ -39,3 +39,4 @@
 # scripts/ingest_render3d.py; the source meshes live in ../clean_3d_data.
 /data/render3d/
 data/depth3d/
+.venv_da3/
