@@ -35,6 +35,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from scipy.spatial import cKDTree                               # noqa: E402
+
 from ear3d.camera import Camera, camera_ke, orbit_extrinsic     # noqa: E402
 from ear3d.config import DEFAULTS                               # noqa: E402
 from ear3d.frames import load_head                              # noqa: E402
@@ -102,7 +104,7 @@ def main():
         jobs = jobs[:a.limit]
     print(f"{len(jobs)} ears x {len(a.yaws)}x{len(a.pitches)} views", flush=True)
 
-    rows, lms, viss, n = [], [], [], 0
+    rows, lms, viss, skipped, n = [], [], [], [], 0
     for f, tp in jobs:
         z = np.load(tp, allow_pickle=True)
         M, src = z["matrix"], str(z["source"])
@@ -113,8 +115,31 @@ def main():
         L = np.einsum("ij,ijk->ik", bary, V[F[tri]])
         L = L @ M[:3, :3].T + M[:3, 3]              # onto the head
 
-        head = load_head(src)
-        if head is None:
+        # LOAD THE SOURCE THE WAY ITS TRANSFORM EXPECTS. cut_hutubs works on
+        # load_head's normalised copy; cut_sonicom works on the raw STL. Using
+        # load_head for both put the SONICOM landmarks 95 units from a mesh
+        # normalised to unit radius, and the renders came back as empty grey
+        # with the marks floating on nothing.
+        if str(z["dataset"]) == "hutubs":
+            head = load_head(src)
+        else:
+            import open3d as o3d_
+            head = o3d_.io.read_triangle_mesh(src)
+            if len(head.vertices):
+                head.compute_vertex_normals()
+        if head is None or not len(head.vertices):
+            skipped.append((f.stem, "the source mesh would not load"))
+            continue
+
+        # AND CHECK IT, rather than trusting the branch above. The marks came
+        # off this very surface, so they must sit on it; anything else means
+        # the frames disagree and every label from this ear would be fiction.
+        Vsrc = np.asarray(head.vertices)
+        gap = float(np.median(cKDTree(Vsrc).query(L)[0]))
+        ear = float(np.ptp(L, axis=0).max())
+        if gap > 0.05 * ear:
+            skipped.append((f.stem, f"landmarks sit {gap / ear:.2f} ear-widths "
+                                    f"off the source surface"))
             continue
         Q = ear_frame(M)
         c = L.mean(0)
@@ -191,6 +216,10 @@ def main():
                     "occupancy", "n_visible"])
         w.writerows(rows)
     print(f"\n{n} views -> {out}")
+    if skipped:
+        print(f"  {len(skipped)} ears skipped:")
+        for nm, why in skipped[:10]:
+            print(f"    {nm}: {why}")
     A = np.asarray(lms)
     if len(A):
         print(f"  x,y in [{A[:, :, :2].min():.3f}, {A[:, :, :2].max():.3f}]")
