@@ -70,7 +70,7 @@ def main():
     p.add_argument("--split", default="test.csv")
     p.add_argument("--basis", default="")
     p.add_argument("--ckpt", default="")
-    p.add_argument("--head", choices=["z", "shape", "lifter"], default="z")
+    p.add_argument("--head", choices=["z", "shape", "lifter", "feat"], default="z")
     p.add_argument("--samples", type=int, default=600)
     p.add_argument("--iters", type=int, default=400)
     a = p.parse_args()
@@ -100,12 +100,19 @@ def main():
     if a.ckpt:
         from torch.utils.data import DataLoader
         from data.depth_dataset import EarDepthDataset
-        from model.depth_module import (EarDepth3DModule, EarLifter3DModule,
-                                        EarShape3DModule)
+        from model.depth_module import (EarDepth3DModule,
+                                        EarFeatureLifter3DModule,
+                                        EarLifter3DModule, EarShape3DModule)
         cls = {"z": EarDepth3DModule, "shape": EarShape3DModule,
-               "lifter": EarLifter3DModule}[a.head]
+               "lifter": EarLifter3DModule,
+               "feat": EarFeatureLifter3DModule}[a.head]
         model = cls.load_from_checkpoint(a.ckpt, map_location="cpu").eval()
-        ds = EarDepthDataset(d / a.split, d, augmentation=None)
+        # the lifter heads were TRAINED on the 2D model's precomputed output;
+        # evaluating them on ground-truth coordinates with all-ones confidence
+        # is a different input distribution and scores far worse -- it read
+        # skill 0.169 against 0.702 on validation purely from this
+        ds = EarDepthDataset(d / a.split, d, augmentation=None,
+                             with_pred=a.head in ("lifter", "feat"))
         dl = DataLoader(ds, batch_size=64, num_workers=4)
         tot = {"nme": 0.0, "z_mae": 0.0, "z_base": 0.0, "n": 0}
         with torch.no_grad():
