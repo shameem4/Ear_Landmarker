@@ -290,10 +290,12 @@ class EarLandmarkerHeatmap(EarLandmarker):
     """
 
     def __init__(self, num_landmarks: int = NUM_LANDMARKS, tau: float = 1.0,
-                 backbone: str = "default", width_mult: float = 1.0) -> None:
+                 backbone: str = "default", width_mult: float = 1.0,
+                 predict_z: bool = False) -> None:
         super().__init__(num_landmarks=num_landmarks, backbone=backbone,
                          width_mult=width_mult)
         self.tau = tau
+        self.predict_z = predict_z
 
         # The GAP head is unused by this subclass; drop it so it does not appear
         # in the state dict or the parameter count.
@@ -307,6 +309,13 @@ class EarLandmarkerHeatmap(EarLandmarker):
         self.bn3 = nn.BatchNorm2d(dec_ch)
         self.refine = BlazeBlock(dec_ch, dec_ch)
         self.to_heatmap = nn.Conv2d(dec_ch, num_landmarks, 1, bias=True)
+        # DEPTH AS INTEGRAL REGRESSION, not a global vector. to_z predicts a z
+        # VALUE AT EVERY PIXEL for each landmark, and the reported z is its
+        # expectation under the same spatial softmax that produces x and y. So
+        # depth is read where the model believes the point is, and a shift in
+        # the heatmap moves x, y and z together instead of letting them drift
+        # apart. A pooled FC head has no such tie.
+        self.to_z = nn.Conv2d(dec_ch, num_landmarks, 1, bias=True) if predict_z else None
 
         self._init_weights()
         # Small (not zero) weights on the final 1x1: the heatmaps start nearly
@@ -316,6 +325,16 @@ class EarLandmarkerHeatmap(EarLandmarker):
         # network below it without gradient on the first step.
         nn.init.normal_(self.to_heatmap.weight, mean=0.0, std=0.01)
         nn.init.zeros_(self.to_heatmap.bias)
+        if self.to_z is not None:
+            # ZERO here, unlike to_heatmap. The argument against zeroing that
+            # one is that it cuts gradient to everything below it; for to_z it
+            # does not, because the heatmap path still carries gradient into
+            # the decoder, and dL/dW for this layer is itself nonzero. So z can
+            # start at exactly 0 -- the root depth, and the correct prior --
+            # rather than at whatever the decoder features happen to sum to,
+            # which measured 0.43 against a label range of [-0.35, 0.52].
+            nn.init.zeros_(self.to_z.weight)
+            nn.init.zeros_(self.to_z.bias)
 
     @staticmethod
     def soft_argmax(heatmaps: torch.Tensor, tau: float = 1.0) -> torch.Tensor:
@@ -340,23 +359,53 @@ class EarLandmarkerHeatmap(EarLandmarker):
         y = (probs.sum(dim=3) * ys).sum(dim=-1)   # marginalise over x -> (B, K)
         return torch.stack((x, y), dim=-1).reshape(b, k * 2)
 
+    def _decode(self, x: torch.Tensor) -> torch.Tensor:
+        """Shared decoder feature, (B, dec_ch, 24, 24)."""
+        s2, s3, s4 = self.forward_features(x)
+        d = self.bn4(self.lat4(s4))                                  # (B, 96, 6, 6)
+        d = F.interpolate(d, size=s3.shape[-2:], mode="bilinear", align_corners=False)
+        d = d + self.bn3(self.lat3(s3))                              # (B, 96, 12, 12)
+        d = F.interpolate(d, size=s2.shape[-2:], mode="bilinear", align_corners=False)
+        d = F.relu(d + s2)                                           # (B, 96, 24, 24)
+        return self.refine(d)
+
     def heatmaps(self, x: torch.Tensor) -> torch.Tensor:
         """Return the raw (B, K, 24, 24) heatmaps.
 
         Exposed because the spatial softmax doubles as a per-point confidence,
         which is the principled quantity to drive temporal smoothing.
         """
-        s2, s3, s4 = self.forward_features(x)
+        return self.to_heatmap(self._decode(x))                      # (B, K, 24, 24)
 
-        d = self.bn4(self.lat4(s4))                                  # (B, 96, 6, 6)
-        d = F.interpolate(d, size=s3.shape[-2:], mode="bilinear", align_corners=False)
-        d = d + self.bn3(self.lat3(s3))                              # (B, 96, 12, 12)
-        d = F.interpolate(d, size=s2.shape[-2:], mode="bilinear", align_corners=False)
-        d = F.relu(d + s2)                                           # (B, 96, 24, 24)
-        d = self.refine(d)
-        return self.to_heatmap(d)                                    # (B, K, 24, 24)
+    def heatmaps_and_z(self, x: torch.Tensor):
+        """(heatmaps, per-pixel z maps). Both (B, K, 24, 24)."""
+        if self.to_z is None:
+            raise RuntimeError("this head was built without predict_z")
+        d = self._decode(x)
+        return self.to_heatmap(d), self.to_z(d)
+
+    @staticmethod
+    def soft_argmax_3d(heatmaps: torch.Tensor, zmap: torch.Tensor,
+                       tau: float = 1.0) -> torch.Tensor:
+        """(B, K * 3) as (x, y, z) per landmark, z in the SAME units as x and y.
+
+        x and y are the spatial expectation, exactly as soft_argmax gives them;
+        z is the expectation of the z map under that same distribution.
+        """
+        b, k, h, w = heatmaps.shape
+        probs = F.softmax(heatmaps.reshape(b, k, h * w) / tau, dim=-1)
+        z = (probs * zmap.reshape(b, k, h * w)).sum(dim=-1)           # (B, K)
+        probs = probs.reshape(b, k, h, w)
+        xs = (torch.arange(w, dtype=probs.dtype, device=probs.device) + 0.5) / w
+        ys = (torch.arange(h, dtype=probs.dtype, device=probs.device) + 0.5) / h
+        x = (probs.sum(dim=2) * xs).sum(dim=-1)
+        y = (probs.sum(dim=3) * ys).sum(dim=-1)
+        return torch.stack((x, y, z), dim=-1).reshape(b, k * 3)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.to_z is not None:
+            hm, zm = self.heatmaps_and_z(x)
+            return self.soft_argmax_3d(hm, zm, self.tau)
         return self.soft_argmax(self.heatmaps(x), self.tau)
 
     @staticmethod

@@ -69,7 +69,7 @@ def _run(aug: AugmentationParams, dot: tuple[float, float], draws: list[float]):
     random.uniform = lambda a, b: next(it)
     random.random = lambda: 0.0          # force probability-gated augs to fire
     try:
-        out_img, out_lm = _bare_dataset(aug)._geo_augment(img, lm)
+        out_img, out_lm, _ = _bare_dataset(aug)._geo_augment(img, lm)
     finally:
         random.uniform, random.random = real_uniform, real_random
     return out_img, (out_lm[0, 0].item(), out_lm[0, 1].item())
@@ -149,7 +149,7 @@ def test_visibility_mask_marks_out_of_frame_points():
     real_uniform = random.uniform
     random.uniform = lambda a, b: next(it)
     try:
-        _, out_lm = ds._geo_augment(img, lm)
+        _, out_lm, _ = ds._geo_augment(img, lm)
     finally:
         random.uniform = real_uniform
 

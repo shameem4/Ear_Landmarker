@@ -128,7 +128,7 @@ class EarLandmarkDataset(Dataset):
 
         # Geometric augmentations (PIL space -- must transform landmarks)
         if self.augmentation:
-            image, landmarks = self._geo_augment(image, landmarks)
+            image, landmarks, _ = self._geo_augment(image, landmarks)
 
         # PIL -> tensor [0, 1]
         tensor_img = TF.to_tensor(image)
@@ -159,13 +159,29 @@ class EarLandmarkDataset(Dataset):
 
     def _geo_augment(
         self, image: Image.Image, landmarks: torch.Tensor,
-    ) -> Tuple[Image.Image, torch.Tensor]:
-        """Geometric augmentations that require joint image+landmark transform."""
+        z: Optional[torch.Tensor] = None,
+    ) -> Tuple[Image.Image, torch.Tensor, Optional[torch.Tensor]]:
+        """Geometric augmentations that require joint image+landmark transform.
+
+        `z`, when given, is a depth per landmark in the same units as x and y.
+        Only the crop scale touches it: a flip, a translation and an in-plane
+        rotation all leave depth alone. The perspective warp is the exception
+        and is refused outright -- a homography has no parallax, so it would
+        leave the image looking turned while z stayed frontal.
+        """
         aug = self.augmentation
+        if z is not None and aug.perspective_deg > 0:
+            raise ValueError(
+                "perspective augmentation cannot be used with depth labels: a "
+                "homography produces no parallax, so z would be left frontal "
+                "while the image is turned. Render a real rotation instead "
+                "(scripts/ingest_depth3d.py)")
 
         # Bbox jitter (simulates detector crop variance)
         if aug.bbox_jitter > 0 and random.random() < aug.bbox_jitter_prob:
-            image, landmarks = self._bbox_jitter(image, landmarks, aug.bbox_jitter)
+            image, landmarks, k = self._bbox_jitter(image, landmarks, aug.bbox_jitter)
+            if z is not None:
+                z = z * k
 
         # Horizontal flip
         if aug.horizontal_flip and random.random() < aug.flip_prob:
@@ -209,12 +225,18 @@ class EarLandmarkDataset(Dataset):
             landmarks[:, 0] = x_new + 0.5
             landmarks[:, 1] = y_new + 0.5
 
-        return image, landmarks
+        return image, landmarks, z
 
     def _bbox_jitter(
         self, image: Image.Image, landmarks: torch.Tensor, jitter: float,
-    ) -> Tuple[Image.Image, torch.Tensor]:
-        """Simulate detector bbox variance by random crop/scale."""
+    ) -> Tuple[Image.Image, torch.Tensor, float]:
+        """Simulate detector bbox variance by random crop/scale.
+
+        Also returns the factor the normalised coordinates were scaled by. A
+        depth label lives in the same units as x and y, so it has to be scaled
+        by the same amount; without that every jittered sample carries a
+        wrong-scale z and nothing in the loss can tell.
+        """
         w, h = image.size
         scale = random.uniform(1.0 - jitter, 1.0 + jitter)
         tx = random.uniform(-jitter, jitter) * w
@@ -235,7 +257,13 @@ class EarLandmarkDataset(Dataset):
         landmarks[:, 0] = (landmarks[:, 0] * w - x1) / crop_w
         landmarks[:, 1] = (landmarks[:, 1] * h - y1) / crop_h
 
-        return cropped, landmarks
+        # THE WIDTH FACTOR, not a blend of the two. The crop is square unless
+        # it ran off an edge and was clamped, and then x and y gain different
+        # factors -- the image is stretched anisotropically and no single
+        # number is right for depth. z is defined as a fraction of the crop
+        # WIDTH, so the width factor is the one that keeps that definition
+        # true. A geometric mean of the two matches neither axis.
+        return cropped, landmarks, float(w / crop_w)
 
     @staticmethod
     def _perspective_matrix(yaw_deg: float, pitch_deg: float, focal: float = 2.0) -> np.ndarray:
