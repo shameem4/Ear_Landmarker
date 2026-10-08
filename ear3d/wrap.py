@@ -61,13 +61,42 @@ def load_mesh(path):
     return np.asarray(m.vertices, float), np.asarray(m.faces, int)
 
 
+# Wrap's barycentric convention: the stored (u, v) weight the SECOND and THIRD
+# corners is WRONG -- they weight the FIRST and SECOND, and the implied third
+# weight 1-u-v goes on the LAST corner. P = u*a + v*b + (1-u-v)*c.
+#
+# Getting this wrong displaces every point by up to one triangle, about 1.3 mm
+# on this template. That is invisible on a long segment and invisible to a
+# surface check, because the point is still exactly on the mesh -- but where
+# two landmarks are a few mm apart it swings the angle between them wildly. It
+# manufactured five to six "kinks" in every set of marks this project audited,
+# and sent a person back to re-place points that were correct. Established by
+# testing all six corner assignments against three independently eye-checked
+# projects: this one gives 0 flagged turns on all three, the others 1 to 6.
+def wrap_barycentric(V, F, tri, u, v):
+    """A Wrap SelectPoints entry -> xyz. Scalars or arrays."""
+    c = V[F[np.asarray(tri, int)]]
+    u, v = np.asarray(u, float), np.asarray(v, float)
+    w = np.stack([u, v, 1.0 - u - v], axis=-1)[..., None]
+    return (w * c).sum(axis=-2)
+
+
+def wrap_barycentric_inverse(V, F, tri, bary):
+    """trimesh barycentric (b0, b1, b2) -> the (u, v) Wrap wants to store."""
+    bary = np.asarray(bary, float)
+    return bary[..., 0], bary[..., 1]
+
+
 def bary_to_xyz(V, F, pts):
-    """Barycentric picks [(triangle, u, v), ...] -> 3D, the way Wrap stores them."""
-    out = np.empty((len(pts), 3))
-    for k, (ti, u, v) in enumerate(pts):
-        a, b, c = V[F[int(ti)]]
-        out[k] = (1.0 - u - v) * a + u * b + v * c
-    return out
+    """Barycentric picks [(triangle, u, v), ...] -> 3D, the way Wrap stores them.
+
+    Thin wrapper over wrap_barycentric, which carries the convention and the
+    reason it is easy to get backwards.
+    """
+    pts = np.asarray(pts, float)
+    if len(pts) == 0:
+        return np.empty((0, 3))
+    return wrap_barycentric(V, F, pts[:, 0].astype(int), pts[:, 1], pts[:, 2])
 
 
 def edges_of(F):
@@ -101,32 +130,6 @@ def vertex_normals(V, F):
         np.add.at(N, F[:, c], tn)
     n = np.linalg.norm(N, axis=1, keepdims=True)
     return N / np.where(n > 0, n, 1.0)
-
-
-# Wrap's barycentric convention: the stored (u, v) weight the SECOND and THIRD
-# corners is WRONG -- they weight the FIRST and SECOND, and the implied third
-# weight 1-u-v goes on the LAST corner. P = u*a + v*b + (1-u-v)*c.
-#
-# Getting this wrong displaces every point by up to one triangle, about 1.3 mm
-# on this template. That is invisible on a long segment and invisible to a
-# surface check, because the point is still exactly on the mesh -- but where
-# two landmarks are a few mm apart it swings the angle between them wildly. It
-# manufactured five to six "kinks" in every set of marks this project audited,
-# and sent a person back to re-place points that were correct. Established by
-# testing all six corner assignments against three independently eye-checked
-# projects: this one gives 0 flagged turns on all three, the others 1 to 6.
-def wrap_barycentric(V, F, tri, u, v):
-    """A Wrap SelectPoints entry -> xyz. Scalars or arrays."""
-    c = V[F[np.asarray(tri, int)]]
-    u, v = np.asarray(u, float), np.asarray(v, float)
-    w = np.stack([u, v, 1.0 - u - v], axis=-1)[..., None]
-    return (w * c).sum(axis=-2)
-
-
-def wrap_barycentric_inverse(V, F, tri, bary):
-    """trimesh barycentric (b0, b1, b2) -> the (u, v) Wrap wants to store."""
-    bary = np.asarray(bary, float)
-    return bary[..., 0], bary[..., 1]
 
 
 def boundary_points(P, N, k=30, gap_deg=120.0):

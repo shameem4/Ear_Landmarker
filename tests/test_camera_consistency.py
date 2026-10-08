@@ -655,10 +655,22 @@ def test_edges_of_counts_each_edge_once():
 
 
 def test_bary_to_xyz_matches_the_corners():
-    """Wrap stores picks as (triangle, u, v); (0,0) must be the FIRST corner, or
-    every anchor read out of a project lands on the wrong vertex."""
-    from ear3d.wrap import bary_to_xyz
+    """Wrap stores P = u*a + v*b + (1-u-v)*c, so (1,0) is the FIRST corner and
+    (0,0) is the THIRD.
+
+    This test previously asserted the opposite, and so locked in a bug rather
+    than catching it. Reading a project the wrong way round displaces every
+    point by up to one triangle -- still exactly on the surface, so no
+    off-surface or chain-length check notices, but enough to invent large
+    turning angles between landmarks that sit close together. It produced five
+    or six phantom "kinks" in every set of marks audited.
+    """
+    from ear3d.wrap import bary_to_xyz, wrap_barycentric
     V = np.array([[0.0, 0, 0], [1.0, 0, 0], [0.0, 1, 0]])
     F = np.array([[0, 1, 2]])
-    got = bary_to_xyz(V, F, [(0, 0.0, 0.0), (0, 1.0, 0.0), (0, 0.0, 1.0)])
+    got = bary_to_xyz(V, F, [(0, 1.0, 0.0), (0, 0.0, 1.0), (0, 0.0, 0.0)])
     assert np.allclose(got, V)
+    # and the centroid, which is the one point every convention agrees on
+    mid = bary_to_xyz(V, F, [(0, 1 / 3, 1 / 3)])
+    assert np.allclose(mid, V.mean(0))
+    assert np.allclose(wrap_barycentric(V, F, 0, 1.0, 0.0), V[0])
