@@ -30,6 +30,7 @@ import pathlib
 import sys
 
 import numpy as np
+from scipy.spatial import cKDTree
 import open3d as o3d
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -59,6 +60,19 @@ assert np.linalg.det(_Y180) > 0
 assert np.linalg.det(R_LEFT) > 0 and np.linalg.det(R_RIGHT) > 0
 
 
+def _affine(A, b):
+    """The 4x4 taking cut coordinates back to the source mesh's frame: Ax + b.
+
+    Saved beside every cut, because nothing downstream can recover it -- see the
+    note in cut_hutubs -- and verified against the source on the way out, since
+    a mis-composed transform still produces a tidy-looking matrix.
+    """
+    M = np.eye(4)
+    M[:3, :3] = A
+    M[:3, 3] = np.asarray(b)
+    return M
+
+
 def _largest_piece(mesh, keep_idx):
     """Keep the chosen vertices, then the biggest connected shell of what is left.
 
@@ -75,6 +89,11 @@ def _largest_piece(mesh, keep_idx):
     g.remove_unreferenced_vertices()
     g.compute_vertex_normals()
     return g
+
+
+def _sonicom_vertices(path):
+    import trimesh
+    return np.asarray(trimesh.load(path).vertices)
 
 
 def ear_centre_by_density(V, cell=20.0, top=6):
@@ -98,10 +117,12 @@ def cut_sonicom(path, side, half=(30.0, 52.0, 42.0)):
     m = trimesh.load(path)          # process=True welds the STL triangle soup
     V, F = np.asarray(m.vertices), np.asarray(m.faces)
     R = R_LEFT if side == "left" else R_RIGHT
-    W = (V - ear_centre_by_density(V)) @ R.T
+    c = ear_centre_by_density(V)
+    W = (V - c) @ R.T
     mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(W),
                                      o3d.utility.Vector3iVector(F))
-    return _largest_piece(mesh, np.all(np.abs(W) < np.array(half), axis=1))
+    g = _largest_piece(mesh, np.all(np.abs(W) < np.array(half), axis=1))
+    return g, _affine(R.T, c)          # cut -> the scan's own coordinates
 
 
 def cut_hutubs(mesh, C, front, vert, sep):
@@ -119,11 +140,21 @@ def cut_hutubs(mesh, C, front, vert, sep):
     keep = (np.all(np.abs(V[:, :2] - c[:2]) < half[:2], axis=1)
             & (V[:, 2] > c[2] - half[2]))
     e = _largest_piece(g, keep)
-    W = np.asarray(e.vertices) - np.asarray(e.vertices).mean(0)
+    m = np.asarray(e.vertices).mean(0)
+    W = np.asarray(e.vertices) - m
     W = np.stack([-W[:, 2], W[:, 1], W[:, 0]], axis=1)      # into the ear frame
     e.vertices = o3d.utility.Vector3dVector(W)
     e.compute_vertex_normals()
-    return e
+    # cut -> the mesh load_head handed us. The ear frame is an axis PERMUTATION,
+    # a 90 degree rotation, which is why trying to recover this afterwards by
+    # ICP fails: every sensible initialisation starts a quarter turn out and ICP
+    # cannot cross that.
+    # x_cut = P (R (x_norm - C) - m), so the way back is
+    #   x_norm = R.T (P.T x_cut + m) + C = (R.T P.T) x_cut + (R.T m + C).
+    # The recentre belongs AFTER the permutation is undone, not before it; the
+    # other order looks just as reasonable and lands 15% of the scan away.
+    P = np.array([[0., 0., -1.], [0., 1., 0.], [1., 0., 0.]])
+    return e, _affine(R.T @ P.T, np.asarray(C) + R.T @ m)
 
 
 def pose_by_transfer(mesh, ref_path, cfg, iters=60):
@@ -179,6 +210,14 @@ def main():
     p.add_argument("--only", nargs="*", default=None,
                    help="restrict to these subject names")
     p.add_argument("--tile", type=int, default=300)
+    p.add_argument("--transforms", default=None,
+                   help="directory for the cut -> scan transform of every ear. "
+                        "Without it the cut is unmoored: the ear frame involves "
+                        "a 90 degree axis permutation and a per-ear recentring, "
+                        "and no amount of registration afterwards recovers them "
+                        "reliably -- measured, ICP settles 5 to 8 times the mesh "
+                        "resolution away and a free scale collapses the ear "
+                        "outright")
     p.add_argument("--force-transfer", action="store_true",
                    help="transfer the frame even when MediaPipe succeeds -- it "
                         "can find a face and still pose it badly, which shows up "
@@ -213,7 +252,7 @@ def main():
     for name, path, side in jobs:
         try:
             if a.dataset == "sonicom":
-                cuts = [(side, cut_sonicom(path, side))]
+                cuts = [(side, *cut_sonicom(path, side))]
             else:
                 mesh = load_head(path)
                 cfg["mesh"] = path
@@ -227,12 +266,30 @@ def main():
                           f"{100*gap:.2f}% of head size)")
                 lat, vert, tr_r, tr_l = pose
                 sep = float(np.linalg.norm(np.asarray(tr_l) - np.asarray(tr_r)))
-                cuts = [(s, cut_hutubs(mesh, C, fr, vert, sep)) for s, C, fr in
+                cuts = [(s, *cut_hutubs(mesh, C, fr, vert, sep)) for s, C, fr in
                         (("left", tr_l, lat), ("right", tr_r, -lat))]
-            for s, g in cuts:
+            for s, g, M in cuts:
                 V = np.asarray(g.vertices)
                 if len(V) < 1000:
                     raise RuntimeError(f"only {len(V)} vertices survived the cut")
+                # VERIFY THE TRANSFORM AGAINST THE SOURCE, here, every time. The
+                # cut is a subset of the source's vertices, so mapping it back
+                # must land exactly on them -- a wrong composition shows up as a
+                # gap rather than as a plausible-looking fit nobody rechecks.
+                if a.transforms:
+                    src = (np.asarray(load_head(path).vertices)
+                           if a.dataset == "hutubs" else _sonicom_vertices(path))
+                    back = V @ M[:3, :3].T + M[:3, 3]
+                    gap = float(np.median(cKDTree(src).query(back)[0]))
+                    scale = float(np.ptp(src, axis=0).max())
+                    if gap > 1e-6 * scale:
+                        raise RuntimeError(
+                            f"the saved transform does not invert the cut: "
+                            f"{gap:.2e} = {100 * gap / scale:.4f}% of the scan")
+                    td = pathlib.Path(a.transforms)
+                    td.mkdir(parents=True, exist_ok=True)
+                    np.savez(td / f"{name}_{s}.npz", matrix=M, source=str(path),
+                             dataset=a.dataset, verified_gap=gap)
                 if out:
                     o3d.io.write_triangle_mesh(str(out / f"{name}_{s}.obj"), g)
                 if a.sheet:
