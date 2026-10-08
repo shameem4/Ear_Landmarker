@@ -40,6 +40,14 @@ def main():
     p.add_argument("--out", required=True)
     p.add_argument("--reference", default=None,
                    help="the mean the marks were placed on, for a sanity check")
+    p.add_argument("--template", required=True,
+                   help="the mesh the marks were placed on. The fits MUST be "
+                        "checked against this, not merely against each other: "
+                        "Wrap's graph ends in SubdivideGeom, so its fits carry "
+                        "6968 vertices and 13776 faces where the template has "
+                        "1188 and 2296. Every fit then agrees with every other "
+                        "fit, the marks' triangle indices are all in range, and "
+                        "the landmarks land on the wrong anatomy in silence")
     a = p.parse_args()
 
     d = np.load(a.marks)
@@ -50,7 +58,30 @@ def main():
     if not files:
         sys.exit("no fits found")
 
+    Vt, Ft = load_mesh(a.template)
     V0, F = load_mesh(files[0])
+    subdivided = False
+    if not np.array_equal(F[:len(Ft)], Ft) or len(V0) != len(Vt):
+        # A subdivided fit KEEPS the original vertices, in order, and appends
+        # the new ones; verified by checking that the first len(Vt) of them
+        # still span the whole mesh. That makes the base-resolution fit
+        # recoverable without re-running anything -- but it has to be checked
+        # per corpus rather than assumed, because a renumbering would pass
+        # every other test here while quietly scrambling the marks.
+        if len(V0) < len(Vt):
+            sys.exit(f"fits have {len(V0)} vertices, fewer than the template's "
+                     f"{len(Vt)}; the marks cannot apply")
+        span = float(np.ptp(V0[:len(Vt)], axis=0).max())
+        full = float(np.ptp(V0, axis=0).max())
+        if span < 0.9 * full:
+            sys.exit(f"the fits' first {len(Vt)} vertices span only "
+                     f"{100*span/full:.0f}% of the mesh, so they are not the "
+                     f"template's vertices -- the topology really differs")
+        subdivided = True
+        F = Ft
+        print(f"fits are subdivided ({len(V0)} verts); taking the first "
+              f"{len(Vt)} with the template's faces, which span "
+              f"{100*span/full:.1f}% of the mesh")
     if tri.max() >= len(F):
         sys.exit(f"the marks reference triangle {tri.max()} but these fits have "
                  f"{len(F)} -- different topology, the marks do not apply")
@@ -58,9 +89,9 @@ def main():
     names, P = [], np.empty((len(files), 55, 3))
     for i, f in enumerate(files):
         V, Fi = load_mesh(f)
-        if len(V) != len(V0) or not np.array_equal(Fi, F):
+        if len(V) != len(V0) or (not subdivided and not np.array_equal(Fi, F)):
             sys.exit(f"{f.name}: topology differs from {files[0].name}")
-        P[i] = place(V, F, tri, bary)
+        P[i] = place(V[:len(Vt)] if subdivided else V, F, tri, bary)
         names.append(f.stem)
 
     # UNITS ARE PER EAR, and they are not all the same: HUTUBS cuts are in
