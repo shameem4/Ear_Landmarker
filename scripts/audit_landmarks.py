@@ -33,7 +33,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from ear3d.scheme import STRIPS, STRIP_NAMES, group_of  # noqa: E402
-from ear3d.wrap import load_mesh                    # noqa: E402
+from ear3d.wrap import load_mesh, wrap_barycentric  # noqa: E402
 
 
 def points_from_project(path, V, F):
@@ -44,9 +44,8 @@ def points_from_project(path, V, F):
     pts = sel[0]["params"]["points"]["value"]
     P = np.zeros((len(pts), 3))
     for k, q in pts.items():
-        a, b, c = V[F[int(q["triangleInd"])]]
-        u, v = float(q["u"]), float(q["v"])
-        P[int(k[:2])] = (1 - u - v) * a + u * b + v * c
+        P[int(k[:2])] = wrap_barycentric(V, F, int(q["triangleInd"]),
+                                         float(q["u"]), float(q["v"]))
     return P
 
 

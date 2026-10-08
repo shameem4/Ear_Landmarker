@@ -33,7 +33,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from ear3d.scheme import STRIPS, STRIP_NAMES, group_of  # noqa: E402
-from ear3d.wrap import load_mesh                      # noqa: E402
+from ear3d.wrap import load_mesh, wrap_barycentric    # noqa: E402
 
 
 def points_from_project(path, V, F):
@@ -44,9 +44,8 @@ def points_from_project(path, V, F):
     pts = sel[0]["params"]["points"]["value"]
     P = np.zeros((len(pts), 3))
     for k, q in pts.items():
-        a, b, c = V[F[int(q["triangleInd"])]]
-        u, v = float(q["u"]), float(q["v"])
-        P[int(k[:2])] = (1 - u - v) * a + u * b + v * c
+        P[int(k[:2])] = wrap_barycentric(V, F, int(q["triangleInd"]),
+                                         float(q["u"]), float(q["v"]))
     return P
 
 
@@ -274,7 +273,7 @@ def main():
             V[F[t]][None], New[j][None])[0]
         q = pts[key[j]]
         q["triangleInd"] = t
-        q["u"], q["v"] = float(bary[1]), float(bary[2])
+        q["u"], q["v"] = float(bary[0]), float(bary[1])   # see wrap_barycentric
     json.dump(d, open(a.out, "w"), indent=4)
     print(f"\nwrote {a.out} -- open it in Wrap, the other {len(keep)} points "
           f"are untouched")

@@ -86,7 +86,10 @@ def main():
     Vt, Ft = load_mesh(a.template)
     idx = spread_vertices(Vt, a.points)
     corner = corner_barycentric(Ft)
-    uv = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]
+    # Wrap reads P = u*a + v*b + (1-u-v)*c, so corner a is (1,0), b is (0,1)
+    # and c is (0,0). The obvious-looking [(0,0),(1,0),(0,1)] puts every
+    # control point on the WRONG CORNER of its triangle; see wrap_barycentric.
+    uv = [(1.0, 0.0), (0.0, 1.0), (0.0, 0.0)]
     left = [[int(corner[v][0]), *map(float, uv[corner[v][1]])] for v in idx]
 
     fits = sorted(pathlib.Path(a.fits).glob("*.obj"))
@@ -110,7 +113,7 @@ def main():
             mesh = trimesh.Trimesh(vertices=Vs, faces=Fs, process=False)
             close, dist, stri = trimesh.proximity.closest_point(mesh, Vf[idx])
             sb = trimesh.triangles.points_to_barycentric(Vs[Fs[stri]], close)
-            right = [[int(stri[j]), float(sb[j][1]), float(sb[j][2])]
+            right = [[int(stri[j]), float(sb[j][0]), float(sb[j][1])]
                      for j in range(len(idx))]
 
             # one working scale for every ear, so the absolute limits inside
