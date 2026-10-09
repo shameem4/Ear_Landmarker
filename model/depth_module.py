@@ -256,3 +256,68 @@ class EarFeatureLifter3DModule(EarLifter3DModule):
         return {"loss": loss, "nme": nme, "z_mae": z_mae, "z_base": z_base,
                 "z_skill": 1.0 - z_mae / z_base.clamp_min(1e-9),
                 "per_point_err": torch.zeros_like(zp)}
+
+
+class EarShapeFeat3DModule(EarDepth3DModule):
+    """Head 4: head 1's landmarks and depth, plus a mesh read off local features.
+
+    The landmark branch is supervised DIRECTLY, exactly as in head 1, and the
+    shape branch hangs off it through detached samples. That is the whole point:
+    head 2 pays for its mesh with NME 0.03284 against head 1's 0.01064, because
+    there the landmarks exist only as a projection of the fitted shape and
+    inherit every limit of the basis. Here nothing the mesh wants can move them.
+    """
+
+    def __init__(self, *args, basis: str = "", n_modes: int = 40,
+                 coeff_sup: float = 1.0, refine_steps: int = 2,
+                 width: int = 256, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        if not basis:
+            raise ValueError("head 4 needs --basis")
+        from model.shape_feat_head import EarShapeFeatLandmarker
+        self.save_hyperparameters({"basis": basis, "n_modes": n_modes,
+                                   "coeff_sup": coeff_sup,
+                                   "refine_steps": refine_steps})
+        self.model = EarShapeFeatLandmarker(
+            basis, num_landmarks=self.hparams.num_landmarks,
+            backbone=self.hparams.backbone, width_mult=self.hparams.width_mult,
+            tau=self.hparams.tau, n_modes=n_modes, width=width,
+            refine_steps=refine_steps)
+
+    def _shared_step(self, batch):
+        k = self.hparams.num_landmarks
+        lm, sp = self.model.forward_all(batch["image"])
+        t = batch["landmarks"].view(-1, k, 3)
+        visible = batch.get("visible")
+        m = torch.ones_like(lm[:, :, 0]) if visible is None else visible
+        den = m.sum().clamp_min(1.0)
+
+        xy_loss = self.criterion(lm[:, :, :2].reshape(len(lm), -1),
+                                 t[:, :, :2].reshape(len(t), -1), visible)
+        z_loss = (F.smooth_l1_loss(lm[:, :, 2], t[:, :, 2],
+                                   beta=self.hparams.z_beta,
+                                   reduction="none") * m).sum() / den
+        loss = xy_loss + self.hparams.z_weight * z_loss
+
+        c = sp[:, :self.model.n_modes]
+        if self.hparams.coeff_sup > 0 and "coeffs" in batch:
+            tgt = batch["coeffs"][:, :self.model.n_modes]
+            w = batch["has_coeffs"][:, None]
+            loss = loss + self.hparams.coeff_sup * (
+                ((c - tgt) ** 2 * w).sum() / w.sum().clamp_min(1) / c.shape[1])
+
+        with torch.no_grad():
+            err = torch.norm(lm[:, :, :2] - t[:, :, :2], dim=-1)
+            nme = (err * m).sum() / den
+            z_mae = ((lm[:, :, 2] - t[:, :, 2]).abs() * m).sum() / den
+            z_base = (t[:, :, 2].abs() * m).sum() / den
+            out = {"loss": loss, "nme": nme, "z_mae": z_mae, "z_base": z_base,
+                   "z_skill": 1.0 - z_mae / z_base.clamp_min(1e-9),
+                   "per_point_err": err}
+            if "coeffs" in batch:
+                tgt = batch["coeffs"][:, :self.model.n_modes]
+                out["mesh_err"] = torch.einsum(
+                    "bm,mkj->bkj", c - tgt, self.model.lm_basis).norm(dim=-1).mean()
+                out["mesh_base"] = torch.einsum(
+                    "bm,mkj->bkj", tgt, self.model.lm_basis).norm(dim=-1).mean()
+        return out

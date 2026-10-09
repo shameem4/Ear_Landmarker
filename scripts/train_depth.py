@@ -19,7 +19,8 @@ sys.path.insert(0, str(ROOT))
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data", default="data/depth3d")
-    p.add_argument("--head", choices=["z", "shape", "lifter", "feat"], default="z",
+    p.add_argument("--head", choices=["z", "shape", "lifter", "feat", "shapefeat"],
+                   default="z",
                    help="z: per-landmark depth off the heatmap. shape: shape "
                         "coefficients and pose, landmarks follow. lifter: a "
                         "separate network from 55 (x,y) to 55 z. feat: "
@@ -31,6 +32,7 @@ def main():
     p.add_argument("--n-modes", type=int, default=40)
     p.add_argument("--shape-head", default="spatial", choices=["spatial", "gap"])
     p.add_argument("--coeffs", default="", help="gt_coeffs npz, for --coeff-sup")
+    p.add_argument("--refine-steps", type=int, default=2)
     p.add_argument("--coeff-sup", type=float, default=0.0,
                    help="weight on supervising the shape coefficients directly")
     p.add_argument("--out", default=None)
@@ -56,7 +58,8 @@ def main():
     from data.dataset import AugmentationParams
     from data.depth_dataset import EarDepthDataset
     from model.depth_module import (EarDepth3DModule, EarFeatureLifter3DModule,
-                                    EarLifter3DModule, EarShape3DModule)
+                                    EarLifter3DModule, EarShape3DModule,
+                                    EarShapeFeat3DModule)
 
     pl.seed_everything(a.seed, workers=True)
     d = pathlib.Path(a.data)
@@ -89,6 +92,13 @@ def main():
         model = EarShape3DModule(basis=a.basis, n_modes=a.n_modes,
                                  shape_head=a.shape_head,
                                  coeff_sup=a.coeff_sup, **common)
+    elif a.head == "shapefeat":
+        if not a.basis:
+            sys.exit("--head shapefeat needs --basis")
+        model = EarShapeFeat3DModule(basis=a.basis, n_modes=a.n_modes,
+                                     coeff_sup=a.coeff_sup,
+                                     refine_steps=a.refine_steps,
+                                     width=a.width, **common)
     elif a.head == "lifter":
         model = EarLifter3DModule(width=a.width, **common)
     else:
