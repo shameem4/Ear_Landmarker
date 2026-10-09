@@ -38,5 +38,9 @@
 # research data we deliberately do not redistribute. Rebuild with
 # scripts/ingest_render3d.py; the source meshes live in ../clean_3d_data.
 /data/render3d/
-data/depth3d/
+# Every depth corpus variant, not just the first one. `data/depth3d/` alone
+# let data/depth3d_v5 into a commit: a version-specific rule stops matching
+# the moment the corpus is regenerated under a new name.
+data/depth3d*/
+/data/depth3d*/
 .venv_da3/

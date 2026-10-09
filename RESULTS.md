@@ -773,17 +773,29 @@ INCISURE, the LOBE surface (only its border is marked) and the CONCHA FLOOR are
 all smooth shaded hollows with no crisp edge -- which is exactly why a scheme
 built for photographs has no points there.
 
-**CORRECTION.** This section first named the SCAPHOID FOSSA as the largest gap.
-That was substantially an artefact of the template being a CUT-OUT ear: vertex
-variance within a few mm of the cut boundary is dominated by where each ear was
-separated from its head, which differs per subject and is not anatomy.
-Measured, uncertainty correlates **-0.507** with distance to that boundary, and
-the top-decile uncertain vertices sit a median **0.9 mm** from it against 7.4
-mm for the rest. Scoring the whole template rewards points that pin down the
-cut. With the objective restricted to surface at least 5 mm inside the
-boundary, the scaphoid fossa is the WEAKEST of the regions a hand placement
-targeted, not the strongest. `scripts/validate_marks.py --margin` controls
-this and defaults to excluding it.
+**A CORRECTION, THEN A CORRECTION OF THE CORRECTION.** This section first
+named the SCAPHOID FOSSA as the largest gap. I then called that an artefact of
+the template being a CUT-OUT ear, on the grounds that uncertainty correlates
+**-0.512** with distance to the cut boundary. That correlation is real but it
+was read wrong, and separating the two quantities settles it:
+
+| | correlation with distance to the boundary | within 5 mm | beyond |
+|---|---|---|---|
+| PRIOR variance, how much the ear really varies | **-0.040** | 2.66% | 2.55% |
+| POSTERIOR variance, what the 55 points leave | **-0.512** | 1.30% | 0.99% |
+
+The ear varies just as much near the boundary as anywhere; what is missing
+there is LANDMARKS. A boundary vertex is 7.8 mm from the nearest of the 55
+against 4.9 mm for an interior one. So the elevated uncertainty is sparse
+coverage, which is a reason to put points there, not an artefact to exclude.
+
+Two things followed from the wrong reading and are withdrawn. Excluding a
+5 mm band was removing exactly the region that most needs landmarks, so
+`validate_marks.py --margin` now defaults to 0. And re-wrapping the template
+to the UNCROPPED HEAD, which was supposed to remove the artefact, was measured
+over 24 ears and changes nothing: boundary-to-interior variance ratio 1.17
+with the cut target against 1.14 with the whole head. The template's free rim
+moves because it is free, not because of where the head was cut.
 
 Returns diminish fast: the first two additions buy 8.9% and 9.0% of total
 uncertainty, the tenth buys 2.5%. About six points capture most of what is

@@ -81,11 +81,17 @@ def main():
     p.add_argument("--pca", default=str(TPL / "ear_pca_v4_all.npz"))
     p.add_argument("--mesh", default=str(TPL / "ear_mean_v2.obj"))
     p.add_argument("--sigma", type=float, default=0.0106)
-    p.add_argument("--margin", type=float, default=5.0,
-                   help="mm from the CUT BOUNDARY to exclude from the "
-                        "objective; where the ear was cut off the head "
-                        "varies between subjects, and that variance is not "
-                        "anatomy. 0 scores the whole template.")
+    p.add_argument("--margin", type=float, default=0.0,
+                   help="mm from the template boundary to exclude from the "
+                        "objective. DEFAULTS TO 0, i.e. score everything. An "
+                        "earlier version excluded 5 mm, on the wrong belief "
+                        "that variance near the boundary was a cutting "
+                        "artefact; measured, PRIOR variance correlates -0.040 "
+                        "with distance to the boundary while POSTERIOR "
+                        "variance correlates -0.512, so the ear varies there "
+                        "just as much and it is landmark coverage that is "
+                        "missing. Excluding it hid the region most in need of "
+                        "points.")
     p.add_argument("--out", default="runs/marks_validation.png")
     a = p.parse_args()
 
