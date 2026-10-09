@@ -159,9 +159,9 @@ def main():
     print("\nlandmark basis and coefficients")
     run(["scripts/build_landmark_basis.py", "--pca",
          str(TPL / "ear_pca_v5_all_mm.npz"), "--marks", a.marks,
-         "--template", a.template, "--out", str(TPL / "lm_basis_v5_mm.npz")])
-    zb = np.load(TPL / "lm_basis_v5_mm.npz", allow_pickle=True)
-    print(f"  lm_basis_v5_mm.npz  {zb['components'].shape}, "
+         "--template", a.template, "--out", str(TPL / "lm_basis_v5_95_unitheight.npz")])
+    zb = np.load(TPL / "lm_basis_v5_95_unitheight.npz", allow_pickle=True)
+    print(f"  lm_basis_v5_95_unitheight.npz  {zb['components'].shape}, "
           f"ear_size {float(zb['ear_size']):.1f} mm")
 
     # ---- retire the mixed-unit originals ----------------------------------

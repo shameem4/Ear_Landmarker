@@ -1369,11 +1369,39 @@ For production on photographs today, the fit wins and needs no depth network.
 Cost is not the discriminator: the fit is a 55x3 least squares plus a 2x3 SVD,
 **0.053 ms per ear on CPU**, on top of 2D that is already being computed.
 
-### A naming hazard worth fixing
+### A naming hazard, now closed
 
-`lm_basis_v6_55_mm.npz` is **not in mm**: its mean ear spans [0.22, 1.00,
+`lm_basis_v6_55_mm.npz` was **not in mm**: its mean ear spans [0.22, 1.00,
 0.53] because `build_landmark_basis.py` divides by ear size on purpose and
-stores `ear_size` so the scale is recoverable. Nothing is numerically wrong
-and the `_mm` means "built from mm inputs". But a file suffixed `_mm` holding
-unit-height data is the exact trap the canonicalisation work existed to
-remove, and it should be renamed.
+stores `ear_size` so the scale is recoverable. Nothing was numerically wrong
+and the `_mm` meant "built from mm inputs" -- which is why it survived. But a
+file suffixed `_mm` holding unit-height data is a factor of 65 waiting for
+whoever trusts the name, and it is the exact trap the canonicalisation work
+existed to remove.
+
+Fixed in four parts, because renaming alone would not stop it recurring:
+
+- the four files are now `lm_basis_v{5,6}_{55,95}_unitheight.npz`. No live
+  code or checkpoint referenced them -- all 36 checkpoints carrying a basis
+  path point at the already-retired `lm_basis_v4.npz` -- so the rename was
+  free. The v6 95-point file was then rebuilt from the recorded command and
+  reproduces bit-exactly, so what is on disk is verifiably what the script
+  writes.
+- `build_landmark_basis.py` **refuses** an `--out` name claiming millimetres.
+  Making the wrong name impossible is cheaper than documenting it.
+- each file carries a `units` string, so an npz opened on its own answers the
+  question.
+- `templates/UNITS.md` tabulates every artefact's real units, each one
+  measured from the file's own mean geometry rather than assumed.
+
+A second instance of the same hazard turned up while checking:
+`ear_pca_v5_canonical.npz` was identical to `ear_pca_v5_all_mm.npz` in every
+array and differed only in a note string. Two names for one artefact means a
+result gets credited to "the canonical model" with no way to tell which bytes
+produced it, so it is retired to `archive_duplicates/`. Moved, not deleted --
+a missing path fails loudly where a shadow copy does not.
+
+A stale comment in the builder was also asserting the wrong thing: it said the
+source PCA was in "HUTUBS normalised head units, not millimetres". True of v4,
+false since the canonical rebuild. The division is still correct, but for a
+different reason than the comment gave -- the pose solver already owns scale.
