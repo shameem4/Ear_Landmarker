@@ -586,3 +586,102 @@ is oily and wet, not because of its curvature -- being concave, curvature-driven
 gloss makes it MATTE, which is backwards. Fixing it needs an anatomy-based gloss
 mask and a small bright light; whether that is worth doing is unproven, since
 appearance effects cancel between models in any paired comparison.
+
+# v4: depth
+
+Labels are geometric, not model-derived: 55 marks placed by hand on the corpus
+mean, propagated through 476 template fits, carried back onto the original head
+meshes by the transform `cut_ears` records, and projected through a known
+camera. 9,123 rendered views, split by SUBJECT -- 21 poses per ear and two ears
+per person would otherwise put near-copies on both sides.
+
+Depth is root-relative and in the same units as x and y (fractions of the crop
+width), because a crop fixes no absolute distance. Every depth number below is
+quoted against the **flat predictor** that outputs z = 0 everywhere and scores
+0.07043 on the test split; `skill` is the fraction of that error removed.
+
+## Four heads, 35 held-out subjects
+
+| head | z MAE | skill | NME | mesh skill |
+|------|-------|-------|-----|------------|
+| **1: depth as an integral over the heatmap** | **0.01233** | **0.825** | **0.01064** | -- |
+| 2: shape coefficients + pose, with coefficient supervision | 0.02907 | 0.587 | 0.03284 | **0.154** |
+| 3b: lifter + features sampled at the landmarks | 0.01507 | 0.786 | -- | -- |
+| 3a: lifter from 55 (x, y) alone, no pixels | 0.02027 | 0.712 | -- | -- |
+| the 40-mode shape basis fitted directly to the labels | 0.01194 | 0.827 | -- | -- |
+| Depth Anything 3, zero-shot, global affine | 0.06397 | 0.056 | -- | -- |
+
+Head 1 wins, and that survived being challenged. Across three seeds the spread
+is 0.00012-0.00032 while the gaps between heads are 0.00168-0.00209, five to
+seventeen times larger; paired over resampled test subjects every pair is
+separated; and a learning-rate sweep helped only head 1, widening the gap. At
+150 epochs and lr 1e-2 it passes the basis ceiling, which only ever bound
+head 2.
+
+## Most of the depth is in the 2D configuration
+
+A lifter that never sees a pixel reaches skill 0.712, **88% of head 1's**. The
+image is worth about 0.11 of skill on top. The 5x-capacity control earns its
+place here: a 964k-parameter lifter scores 0.02002 against 189k's 0.02027, so
+head 3b's advantage over 3a is the image features and not the weights.
+
+## The mesh is unobtainable from landmarks, by any route
+
+Head 2 exists for the mesh, and judged on landmark depth alone it is actively
+misleading. Trained only through the 55 projected points it predicts
+coefficients of the right MAGNITUDE -- 0.838 sd against a true 0.773 -- and
+correlation **0.017** with the truth. Its mesh sits further from the subject's
+ear than the MEAN ear does: skill **-0.468**, while its z MAE of 0.01742 was
+the best of the variants tried.
+
+The cause is a gauge freedom: shape and pose are not uniquely separable, so a
+loss on projected points constrains only their product. Any decomposition that
+reprojects correctly satisfies it equally.
+
+This is not a quirk of training. Fitting shape and pose OFFLINE to head 1's
+predicted landmarks -- no network, 1500 iterations to convergence -- gives mesh
+skill **-1.037** and coefficient correlation 0.065. Fifty-five projected points
+simply do not determine the shape.
+
+Supervising the coefficients directly is the only thing that works: correlation
+0.017 -> 0.304, mesh skill -0.468 -> +0.154, at the cost of NME 0.01064 ->
+0.03284. So the two heads are run together or not at all.
+
+What the mesh is worth: about 15% of each ear's deviation from the average.
+Mode 1 is recovered at 0.77 correlation and seven modes exceed 0.5, but the
+tail is noise, and predictions are shrunk (0.444 against a true 0.773) because
+that is what least squares does under uncertainty. It is a mildly personalised
+ear-shaped mesh, not a reconstruction.
+
+## Two hypotheses that failed, and one metric that lied
+
+Replacing head 2's global average pool with a head that keeps the 6x6 grid was
+the obvious fix -- pose is about position and pooling destroys position. Three
+times the parameters bought 0.8% (0.01731 -> 0.01718).
+
+Projecting head 1's output onto the shape manifold degrades it by 17.9%. The
+first run of that test reported 77% and was simply under-converged at 300
+iterations; the direction was right and the magnitude was nonsense.
+
+Averaging head 1 and head 3b gives 0.01287 against head 1's 0.01315 at equal
+weights -- about 2%, for 2.7x the parameters and two forward passes. The best
+weight found, 0.70, was selected on the test set and is not a real number.
+
+## An outside opinion on the annotations
+
+Every other check in this project measures our landmarks against other
+annotations from the same corpus, and when they agree they can still be jointly
+wrong -- which happened when a barycentric bug manufactured kinks in three
+successive hand-corrected sets and every statistic endorsed them.
+
+SAM 2.1 knows nothing about this project. Prompted with a padded box, so the
+contour is its own, its ear silhouette sits **0.006 of ear size** from the outer
+helix across 150 images, while the inner helix -- which should not be on a
+silhouette -- sits at 0.050. The worst outer-helix points are 0 and 1, the
+attachment end where there is no edge to lie on.
+
+## Caveat on all of the above
+
+These are synthetic renders. The production 2D model scores 4.26% error on them
+against 1.47% on real photographs, so the renders are harder than production
+and these are relative rankings, not real-photo accuracy.
