@@ -745,3 +745,52 @@ collapsed from validation to test. It had not; the two splits agree to within
 0.01. Head 4's mesh is not overfitted, it is simply weak, consistently, on both
 splits. `final_eval.py` prints both splits and `mesh_base` beside every skill
 so that neither mistake is available again.
+
+## Where the 55-point scheme runs out, measured
+
+The iBUG scheme was designed for FRONTAL PHOTOGRAPHS, so every one of its 55
+points sits on a ridge or a border and none samples a surface. With a 476-ear
+shape model in dense correspondence, "which features should it gain" stops
+being a question of anatomical taste and becomes optimal sensor placement.
+
+Landmarks are L = A b under the linear shape model, so observing them with
+isotropic noise sigma gives a Gaussian posterior on the coefficients and every
+vertex an expected squared reconstruction error. At sigma = 0.0106 of ear size
+-- head 1's measured NME on the renders:
+
+| state | surface uncertainty, % of ear size |
+|---|---|
+| knowing nothing | 2.67 |
+| knowing all 55 points | **1.18** |
+| after 10 greedily chosen additions | **0.95** |
+
+So the 55 points remove 56% of the surface uncertainty and the worst remaining
+region sits at 2.80% -- as uncertain as knowing nothing at all.
+
+**The gaps are the fossae and the lobe, and that is not a coincidence.** The
+largest is the SCAPHOID FOSSA, the groove between helix and antihelix: strips 0
+and 1 bracket it and nothing samples it. Then the TRIANGULAR FOSSA between the
+crura, the LOBE surface (only its border is marked) and the CONCHA FLOOR. Every
+one is a smooth shaded hollow with no crisp edge -- which is exactly why a
+scheme built for photographs has no points there.
+
+Returns diminish fast: the first two additions buy 8.9% and 9.0% of total
+uncertainty, the tenth buys 2.5%. About six points capture most of what is
+available.
+
+**The catch is that informative is not the same as annotatable.** A point in
+the middle of the scaphoid fossa cannot be placed reliably by eye on a
+photograph. The fix is to add CHAINS along the valley lines rather than
+isolated points, the way the inner helix is already traced -- a groove's
+deepest line is followable even where a single point on it is not.
+
+`scripts/where_to_add_landmarks.py` reports and plots this.
+
+### A stored field that is wrong
+
+`ear_pca_*.npz` records `ear_size` in each dataset's NATIVE units: SONICOM in
+mm (median 59.9) and HUTUBS in metres (median 0.372), a factor of 160. The
+model itself is unaffected, because the Procrustes step removes scale before
+the decomposition -- but anything that uses `ear_size` to put size back will be
+wrong for one of the two datasets. The PCA's own mean extent (0.4269) is the
+only scale that matches `components`.
