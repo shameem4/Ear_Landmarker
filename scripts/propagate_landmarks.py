@@ -110,8 +110,15 @@ def main():
                         triangle=tri, barycentric=bary, strips=np.array(STRIPS),
                         point_names=d["names"] if "names" in d else np.array([]))
     print(f"{len(files)} ears x {k_marks} landmarks -> {a.out}")
-    print(f"  ear size spans {own.min():.3f} to {own.max():.1f} -- MIXED UNITS, "
-          f"see landmarks_scalefree for a comparable set")
+    # Only warn when the sizes really ARE inconsistent. This message used to
+    # fire unconditionally, so it kept crying mixed units on a corpus that had
+    # been converted -- a warning that is always on teaches people to ignore it.
+    if own.max() / max(own.min(), 1e-9) > 3.0:
+        print(f"  ear size spans {own.min():.3f} to {own.max():.1f} -- MIXED "
+              f"UNITS, see landmarks_scalefree for a comparable set")
+    else:
+        print(f"  ear size {own.min():.1f} to {own.max():.1f} "
+              f"(mean {own.mean():.1f}) -- consistent units")
 
     # Sanity, not accuracy: the spread of each strip should look like an ear,
     # and a landmark should sit on the surface of the mesh it was placed on.
