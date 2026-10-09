@@ -42,6 +42,10 @@ from ear3d.config import DEFAULTS                               # noqa: E402
 from ear3d.frames import load_head                              # noqa: E402
 from ear3d.render import MATERIAL, light_scene                  # noqa: E402
 from ear3d.scheme import STRIPS                                 # noqa: E402
+
+# sun intensity x skin luminance, calibrated so a mid tone lands near the
+# 0.33 mean image brightness the old fixed-tone corpus had
+EXPOSURE = 14000.0
 from ear3d.wrap import base_topology, load_mesh                 # noqa: E402
 
 
@@ -92,6 +96,10 @@ def main():
     p.add_argument("--resume", action="store_true",
                    help="keep the ears already in the output and carry on")
     p.add_argument("--quality", type=int, default=95)
+    p.add_argument("--vary-light", action="store_true",
+                   help="draw sun direction, colour, intensity and background "
+                        "per view instead of the single fixed setup the old "
+                        "corpus used")
     p.add_argument("--random-tone", action="store_true",
                    help="draw a Fitzpatrick I-VI tone per ear instead of the "
                         "single fixed config tone the old corpus used")
@@ -240,6 +248,17 @@ def main():
         tone = (None if a.random_tone else cfg["tone"])
         apply_skin(g, seed=int(rng.integers(1 << 30)), tone=tone,
                    ao_strength=cfg["ao_strength"], n_rays=cfg["ao_rays"])
+        # AUTO-EXPOSE, so image brightness does not encode skin tone. The old
+        # corpus rendered every ear at tone 10, luminance 0.099, under a fixed
+        # 95000 sun. Drawing tones from the Fitzpatrick I-VI pool, mean
+        # luminance 0.549, left the same sun 5.5x too strong: measured, the
+        # mean image went from 0.332 to 0.708. A camera would not do that --
+        # it meters the scene -- and a corpus where pale skin is bright and
+        # dark skin is dim teaches brightness as a feature of the subject.
+        skin_lum = (float((np.asarray(g.vertex_colors)
+                           @ [0.2126, 0.7152, 0.0722]).mean())
+                    if len(g.vertex_colors) else 0.5)
+        sun = EXPOSURE / max(skin_lum, 0.05)
 
         # ONE RENDERER PER EAR, not per view. Filament holds a GPU context per
         # engine, and creating 9996 of them leaked until the driver refused --
@@ -251,6 +270,29 @@ def main():
         light_scene(r.scene, (0.5, 0.5, 0.5))
         for yaw in a.yaws:
             for pitch in a.pitches:
+                # LIGHT VARIES PER VIEW. light_scene is documented as "the one
+                # lighting setup", and it was: one sun direction, one colour,
+                # one intensity, one background for every image in the corpus.
+                # That matters more for depth than for anything else, because
+                # SHADING IS A DEPTH CUE -- under a single fixed light a model
+                # can learn "this gradient means this z", which is true of the
+                # corpus and not of a photograph. Nothing in the labels
+                # depends on it: they come from geometry, and `visible` is
+                # read from the depth buffer.
+                if a.vary_light:
+                    v = rng.normal(size=3)
+                    v[2] = -abs(v[2]) - 0.25        # keep the sun in front
+                    v /= np.linalg.norm(v)
+                    warm = rng.uniform(0.90, 1.0, 3)
+                    warm[rng.integers(3)] = 1.0
+                    r.scene.scene.set_sun_light(
+                        list(v), list(warm),
+                        float(sun * rng.uniform(0.65, 1.5)))
+                    bg = float(rng.uniform(0.30, 0.70))
+                    r.scene.set_background([bg, bg, bg, 1.0])
+                elif a.random_tone:
+                    r.scene.scene.set_sun_light(
+                        [-0.3, -0.4, -0.9], [1.0, 1.0, 1.0], float(sun))
                 E = orbit_extrinsic(yaw, pitch, cfg)
                 K, E = camera_ke(a.render_size, cfg, E)
                 r.setup_camera(K, E, a.render_size, a.render_size)
