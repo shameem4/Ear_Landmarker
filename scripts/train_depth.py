@@ -26,6 +26,10 @@ def main():
                    help="use the first N landmarks only. The corpus carries "
                         "95; 55 is the original iBUG scheme, which is what "
                         "every earlier number on this project was measured on")
+    p.add_argument("--photo-aug", type=float, default=0.0,
+                   help="strength of the render-to-photograph augmentation "
+                        "(data/photo_aug). 1.0 matches the measured photo "
+                        "statistics; 0 disables it")
     p.add_argument("--balance-sampler", action="store_true",
                    help="sample so each source contributes equally per epoch. "
                         "Needs a 'source' column in the train csv")
@@ -82,7 +86,7 @@ def main():
     train = EarDepthDataset(d / f"{a.split_prefix}train.csv", d,
                             augmentation=None if lifting else aug,
                             with_pred=lifting, coeffs=a.coeffs,
-                            n_points=a.n_points)
+                            n_points=a.n_points, photo_aug=a.photo_aug)
     val = EarDepthDataset(d / f"{a.split_prefix}val.csv", d, augmentation=None,
                           with_pred=lifting, coeffs=a.coeffs,
                           n_points=a.n_points)

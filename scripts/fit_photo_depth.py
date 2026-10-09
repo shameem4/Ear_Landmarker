@@ -123,6 +123,10 @@ def main():
                         "pose and cannot tell a good 3D model from a bad one")
     p.add_argument("--build", default="",
                    help="write the AudioEar3D photo depth benchmark here")
+    p.add_argument("--onnx", default="docs/EarLandmarker_web.onnx",
+                   help="second, independent 2D source. Averaging it with "
+                        "the hand annotation halves the part of the label "
+                        "error that is independent between them")
     p.add_argument("--render-data", default="data/depth3d_v5")
     p.add_argument("--photo-data", default="data/preprocessed")
     p.add_argument("--lm3d-render", default=str(TPL / "lm3d_v6_all_mm.npz"))
@@ -232,7 +236,26 @@ def main():
         z3 = np.load(a.lm3d_photo, allow_pickle=True)
         lut = {str(n): i for i, n in enumerate(z3["names"])}
         X3 = z3["landmarks"]
+        # TWO 2D SOURCES, AVERAGED. The hand annotation and the shipped 2D
+        # model disagree enough that the depth labels they produce differ by
+        # 0.0204 (42% of the signal), so neither alone is the truth. The
+        # model is genuinely independent here: it was trained on data/manual
+        # and has never seen an AudioEar3D photograph. Averaging cancels the
+        # part of their error that is independent; what it cannot touch is
+        # the part they share, and the floor below reports the total either
+        # way rather than the flattering half.
+        import onnxruntime as ort
+        from PIL import Image
+        sess = ort.InferenceSession(a.onnx, providers=["CPUExecutionProvider"])
+
+        def predict_2d(path):
+            im = Image.open(path).convert("RGB")
+            t = np.asarray(im.resize((192, 192), Image.BILINEAR),
+                           np.float32).transpose(2, 0, 1)[None] / 255.0
+            return sess.run(None, {"image": ((t - 0.5) / 0.5).astype(np.float32)})[0][0]
+
         out_idx, out_z, out_name, out_res, out_s = [], [], [], [], []
+        disagree = []
         for r in rows:
             # 'AudioEar3D.zip::001/left.json' -> '001_left'
             tail = r["original_path"].split("::")[-1].replace(".json", "")
@@ -243,7 +266,11 @@ def main():
             if not np.isfinite(xy).all():
                 continue
             X = np.asarray(X3[lut[name]][:K], float)
-            z, s, _, rr = weak_perspective(X, xy)
+            mod = predict_2d(d / r["image_file"])[:K]
+            zh = weak_perspective(X, xy)[0]
+            zm = weak_perspective(X, mod)[0]
+            disagree.append(float(np.abs(zh - zm).mean()))
+            z, s, _, rr = weak_perspective(X, 0.5 * (xy + mod))
             out_idx.append(int(r["idx"]))
             out_z.append(z)
             out_name.append(name)
@@ -260,6 +287,27 @@ def main():
         print(f"  2D reprojection residual: median "
               f"{np.median(out_res):.5f}, p90 "
               f"{np.percentile(out_res, 90):.5f} of crop width")
+        dis = float(np.mean(disagree))
+        indep = dis / np.sqrt(2)                 # per-source independent part
+        # Total label error is NOT the independent part. Measured on renders
+        # driven to this same fit residual, where true depth is known, it is
+        # 0.0242 -- the shared systematic dominates and no amount of
+        # averaging removes it. Quote the total.
+        total = 0.0242
+        base = float(np.abs(Z).mean())
+        print(f"\n  LABEL NOISE FLOOR, which anyone using this must quote:")
+        print(f"    two 2D sources disagree           {dis:.4f}")
+        print(f"    -> independent part each          {indep:.4f}")
+        print(f"    total label error (from renders)  {total:.4f}"
+              f"  = {total / base:.0%} of the signal")
+        print(f"    => z_skill on this set is CAPPED near "
+              f"{1 - total / base:.2f}; a perfect model cannot score above it")
+        print(f"    => useless for a model already good to ~0.014, usable for")
+        print(f"       one in the 0.05-0.09 range, which is where head 1 sits")
+        np.savez(a.build, idx=np.asarray(out_idx), z=Z,
+                 names=np.asarray(out_name), resid=np.asarray(out_res),
+                 scale=np.asarray(out_s), label_error=total,
+                 two_source_disagreement=dis, zbase=base)
 
 
 if __name__ == "__main__":

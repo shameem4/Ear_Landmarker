@@ -1187,3 +1187,73 @@ distortion: head 1's prediction against the same prediction with z zeroed.
 Depth **helps** on renders (+0.294) and **hurts** on photographs (-0.119).
 That is camera-free, needs no annotation, and says the depth head is not
 merely weak off-domain but actively wrong there.
+
+## Correction: the photo depth benchmark CAN be built, and head 1 fails it
+
+The section above concluded that AudioEar3D could not yield a real-photo
+depth benchmark. **That was wrong, and the error was mine.** It is built, it
+works, and it produces the first measurement of depth on real photographs in
+this project.
+
+### The mistake
+
+The identity test asks whether the 2D data can tell you WHICH ear it is. A
+stranger's ear fit a photograph as well as the subject's own, so I concluded
+the label would be a generic ear.
+
+That conflates two different things. **We never needed the 2D to identify the
+ear -- the dataset already tells us the pairing.** What is needed is an
+accurate POSE; project this ear's own 3D under it and the depth that comes
+out is this ear's, whether or not a stranger would also have fitted. A big
+residual is grounds for suspecting the pose, not for concluding it is wrong,
+and I stopped at the suspicion instead of measuring.
+
+### Measuring it properly
+
+Two measurements, neither of which needs the identity test:
+
+| | |
+|---|---|
+| label error on renders, driven to the photos' observed fit residual | **0.0242** |
+| two independent 2D sources, disagreement of the labels they produce | **0.0204** |
+
+They corroborate. The label is not exact and it is not junk: it carries about
+0.024 of error against a 0.0443 signal. That is hopeless for grading a model
+already accurate to 0.014, and perfectly serviceable for one in the
+0.05-0.09 range -- which is exactly where a render-trained head lands on
+photographs. The benchmark was rejected for being imprecise without ever
+asking imprecise *relative to what*.
+
+`scripts/fit_photo_depth.py --build` writes it: 112 photographs, 2D taken as
+the average of the hand annotation and the shipped model's prediction, which
+is genuinely independent (trained on data/manual, never shown an AudioEar3D
+photo). Averaging removes the part of their error that is independent; the
+part they share it cannot touch, so the floor quoted is the total from the
+render measurement, not the flattering half.
+
+**z_skill on this set is capped near 0.45.** A score at or above that would
+mean the label noise is being fitted rather than the ear, and anyone quoting
+a number from this set should quote the cap beside it.
+
+### What it says
+
+| model | z MAE | z skill | beats flat z |
+|---|---|---|---|
+| predict z = 0 | 0.0443 | 0.000 | — |
+| **head 1, render-trained** | **0.0526** | **−0.188** | 43% |
+
+**Head 1's depth is worse than useless on real photographs.** The same
+checkpoint scores +0.80 on renders. Correcting for the label floor, its true
+error is sqrt(0.0526^2 - 0.0242^2) = 0.0467 and its true skill about -0.05 --
+so the honest statement is that the depth head contributes nothing on a
+photograph, rather than that it actively harms.
+
+This independently confirms the one camera-free comparison that survived
+earlier, where zeroing the predicted z IMPROVED agreement with the scan on
+photographs (-0.119) while helping on renders (+0.294). Two unrelated
+methods, built on different assumptions, agree.
+
+**What this benchmark is for.** It is now the target metric for Route C and
+anything after it. The 2D side of the domain gap was already measurable
+against data/manual; the depth side was not, and that was the gap that
+mattered, since depth is the whole reason head 1 exists.

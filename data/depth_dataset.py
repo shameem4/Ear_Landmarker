@@ -48,10 +48,16 @@ class EarDepthDataset(EarLandmarkDataset):
         with_pred: bool = False,
         coeffs: str = "",
         n_points: int = 0,
+        photo_aug: float = 0.0,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.image_size = image_size
         self.augmentation = augmentation
+        # Renders are separable from photographs by a logistic probe on seven
+        # plain image statistics 93.4% of the time, and head 1 is 5.1x the
+        # achievable floor on real photographs as a result. This closes the
+        # statistics; see data/photo_aug.
+        self.photo_aug = float(photo_aug)
         with open(split_csv, encoding="utf-8") as f:
             self.samples = list(csv.DictReader(f))
         self.landmarks = np.load(self.data_dir / landmarks_file, mmap_mode="r")
@@ -128,6 +134,14 @@ class EarDepthDataset(EarLandmarkDataset):
 
         if self.augmentation:
             image, xy, z = self._geo_augment(image, xy, z)
+        if self.photo_aug:
+            # AFTER the geometric stage and before the tensor, so it composes
+            # with the existing recipe instead of replacing any of it. Nothing
+            # here moves a pixel, so the landmarks are untouched.
+            from data.photo_aug import photo_realism
+            image = photo_realism(
+                image, np.random.default_rng(np.random.randint(1 << 31)),
+                self.photo_aug)
 
         tensor_img = TF.to_tensor(image)
         if self.color_jitter_fast:
