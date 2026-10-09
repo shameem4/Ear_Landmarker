@@ -1120,3 +1120,70 @@ ships the capture camera. One useful thing did come out of looking: unlike
 AudioEar2D, **the AudioEar3D photographs include surrounding head and hair**,
 so they are not pre-cropped and would suit the framing question from the
 previous section.
+
+### Would better annotations rescue it? No, and the arithmetic says why
+
+The obvious next move is to annotate the 112 photographs properly. It was
+costed before doing it, and it does not work.
+
+**The 3D ears are not mute.** They predict an identity signal of 0.0060 of
+crop width on the photographs against 0.0095 on renders -- 63% as strong, so
+the scans do carry individual shape. The problem is what sits on top of it:
+the miss is 0.0340, **5.6x the signal**, against 1.3x on renders.
+
+**Decomposing that miss settles the question.** Two independent 2D sources
+are available for these photographs -- AudioEar3D's own hand annotation and
+the shipped 2D model -- and they disagree by 0.0220. If they err about
+equally that is 0.0156 each, or 3.0 px on a 187 px image. But the miss is
+0.0340, so
+
+    systematic part = sqrt(0.0340^2 - 0.0156^2) = 0.0303   (5.8 px)
+
+**The systematic part is twice the annotation part**, and it is 5.0x the
+identity signal. A flawless annotator removes the 0.0156 and leaves the
+residual ratio at **1.02**, against the ~1.50 a usable label needs and the
+1.00 measured now. Annotation is not the binding constraint; something
+systematic between an AudioEar3D scan and its own photograph is.
+
+For completeness, the accuracy that WOULD be needed is 0.007 of crop width,
+about **1.3 px on a 187x186 image** -- and 187x186 is AudioEar3D's native
+resolution, not a crop of something larger. That is 0.7% of image width on a
+photograph soft enough to have laplacian variance 63. No annotator reaches
+it, and averaging independent annotators to get there would take about 25 of
+them.
+
+**Nor does annotating all 95 points instead of 55 help**, which was the
+natural follow-up since the 40 extensions were chosen precisely to catch
+shape the 55 miss:
+
+| points | 2D noise | own ear | stranger | ratio | identity signal |
+|---|---|---|---|---|---|
+| 55 | 0 | 0.00660 | 0.01361 | **2.06** | 0.00924 |
+| 95 | 0 | 0.00697 | 0.01353 | 1.94 | 0.00884 |
+| 55 | 0.0156 | 0.02006 | 0.02353 | 1.17 | 0.00940 |
+| 95 | 0.0156 | 0.02050 | 0.02351 | 1.15 | 0.00889 |
+
+Slightly WORSE, and the identity signal slightly lower. The extensions are
+derived from the same template surface, so they carry no shape information
+independent of the 55 for the purposes of a rigid fit that 55 points already
+over-determines many times over. Worth knowing before commissioning
+annotation at twice the price. (The photo side is stuck at 55 regardless:
+AudioEar3D and AudioEar2D both ship the iBUG 55, and the extensions have
+never been annotated on a photograph by anyone.)
+
+### A camera-free metric was tried and is invalid
+
+If the camera is the problem, compare shapes without one: Procrustes-align
+head 1's predicted 3D point set to the subject's scan, pose and scale free.
+The control kills it. On renders the **TRUE** landmarks score 0.1205 against
+0.0754 for simply predicting the mean ear -- perfect ground truth loses to a
+constant. Head 1's output lives in a perspective-distorted camera space (x, y
+projected, z divided by the crop's world width) and the 3D ear does not, and
+a similarity transform cannot absorb the difference. Any photo number from
+this metric would have been meaningless, and none is reported.
+
+One comparison inside it does survive, because both sides share the identical
+distortion: head 1's prediction against the same prediction with z zeroed.
+Depth **helps** on renders (+0.294) and **hurts** on photographs (-0.119).
+That is camera-free, needs no annotation, and says the depth head is not
+merely weak off-domain but actively wrong there.
