@@ -92,6 +92,14 @@ def main():
     p.add_argument("--resume", action="store_true",
                    help="keep the ears already in the output and carry on")
     p.add_argument("--quality", type=int, default=95)
+    p.add_argument("--random-tone", action="store_true",
+                   help="draw a Fitzpatrick I-VI tone per ear instead of the "
+                        "single fixed config tone the old corpus used")
+    p.add_argument("--subdiv-to", type=int, default=0,
+                   help="midpoint-subdivide every head until it has at least "
+                        "this many faces, so vertex-colour texture is sampled "
+                        "at the same rate whatever the source; 300000 brings "
+                        "SONICOM up to HUTUBS")
     a = p.parse_args()
 
     import open3d as o3d
@@ -156,6 +164,47 @@ def main():
             head = o3d_.io.read_triangle_mesh(src)
             if len(head.vertices):
                 head.compute_vertex_normals()
+
+        # EQUALISE THE TWO SOURCES' MESH RESOLUTION, or the renders announce
+        # which dataset they came from. Measured on the previous corpus, a
+        # logistic regression on eleven global image statistics identified the
+        # source at 87% on a subject-disjoint split, driven by gradient mean at
+        # d = 1.24. HUTUBS heads carry ~337k faces against SONICOM's ~36k, a 9x
+        # difference in surface detail that blur does not touch (0.887 -> 0.884
+        # at sigma <= 0.8) and that merging SONICOM's unshared STL vertices
+        # makes WORSE, not better (0.870 -> 0.996): smooth-shading a coarse
+        # mesh only widens the gap. The resolution itself has to go.
+        #
+        # Both sources get the SAME treatment -- merge, decimate to a common
+        # target, recompute normals -- so neither is processed in a way the
+        # other is not. SONICOM is already near the target, so it is close to
+        # a no-op there; the detail being discarded is detail SONICOM never
+        # had, and the renders carry synthetic skin texture anyway.
+        # EQUALISE THE TEXTURE SAMPLING RATE, not the geometry. skin.py paints
+        # grain as VERTEX COLOURS, so the finest texture a mesh can carry is
+        # set by its vertex density -- HUTUBS heads have ~337k faces and
+        # SONICOM ~36k, so the same grain is resolved by one and aliased away
+        # by the other. Measured, that let a logistic regression on eleven
+        # global image statistics name the source at 87% on a subject-disjoint
+        # split.
+        #
+        # Three things that did NOT fix it, all measured: blur (0.887 ->
+        # 0.884), decimating both to a common face count (0.870 -> 0.903, and
+        # it visibly smears the skin), and merging SONICOM's unshared STL
+        # vertices to match HUTUBS' shading (0.870 -> 0.996).
+        #
+        # MIDPOINT subdivision is used, not Loop: it inserts vertices at edge
+        # midpoints and leaves the surface exactly where it was, so this
+        # raises the sampling rate for texture without inventing geometry.
+        if a.subdiv_to and head is not None and len(head.vertices):
+            head = head.remove_duplicated_vertices()
+            head = head.remove_duplicated_triangles()
+            head = head.remove_degenerate_triangles()
+            guard = 0
+            while len(head.triangles) < a.subdiv_to and guard < 4:
+                head = head.subdivide_midpoint(1)
+                guard += 1
+            head.compute_vertex_normals()
         if head is None or not len(head.vertices):
             skipped.append((f.stem, "the source mesh would not load"))
             continue
@@ -179,7 +228,17 @@ def main():
         g = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(Vh),
                                       head.triangles)
         g.compute_vertex_normals()
-        apply_skin(g, seed=int(rng.integers(1 << 30)), tone=cfg["tone"],
+        # TONE IS DRAWN PER EAR, not held at the config default. The whole
+        # previous corpus was rendered at tone=10 -- a single fixed value, and
+        # one that skin.py itself documents as "deeper than Fitzpatrick VI,
+        # i.e. past real skin ... not for training images". A corpus with no
+        # skin-colour variation is its own artefact: the model never sees any,
+        # and the renders are already the weak link against real photographs
+        # (4.26% error on them against 1.47% on real). Here it costs nothing,
+        # because these labels come from GEOMETRY -- marks carried through the
+        # cut transform -- so no label depends on what colour the skin is.
+        tone = (None if a.random_tone else cfg["tone"])
+        apply_skin(g, seed=int(rng.integers(1 << 30)), tone=tone,
                    ao_strength=cfg["ao_strength"], n_rays=cfg["ao_rays"])
 
         # ONE RENDERER PER EAR, not per view. Filament holds a GPU context per

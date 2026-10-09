@@ -125,7 +125,33 @@ def apply_skin(mesh, seed: int = 0, tone: int | None = None,
         ph = rng.random(3) * 2 * np.pi
         blotch += a * np.sin(P[:, 0] * f + ph[0]) * np.sin(P[:, 1] * f + ph[1]) \
                     * np.sin(P[:, 2] * f + ph[2])
-    grain = rng.normal(0, 0.012, len(V))                  # fine surface noise
+    # FINE GRAIN IS A FUNCTION OF POSITION, NOT OF VERTEX INDEX. This used to
+    # be rng.normal(0, 0.012, len(V)) -- one independent draw per vertex -- so
+    # its spatial frequency was whatever the mesh tessellation happened to be.
+    # HUTUBS heads carry ~337k faces and SONICOM ~36k, so the same line gave
+    # one source fine speckle and the other coarse mottling, and a logistic
+    # regression on eleven global image statistics then identified the source
+    # at 87% on a subject-disjoint split. That is a dataset fingerprint baked
+    # into the pixels; it survived blur, survived decimating both to a common
+    # face count, and got WORSE when the shading was matched, because none of
+    # those touch the cause.
+    #
+    # The replacement samples noise at P, in units of ear size, so the grain
+    # has a fixed frequency in millimetres whatever the tessellation.
+    # DIRECTIONS ARE RANDOM, NOT AXIS-ALIGNED PRODUCTS: a first attempt used
+    # sin(x)*sin(y)*sin(z), which is separable and tiles, and it printed a
+    # visible cross-hatch weave over the skin. Summing plane waves over
+    # directions drawn uniformly on the sphere is isotropic and does not
+    # repeat at this scale, and with enough terms the sum is gaussian by the
+    # central limit theorem -- which is what the per-vertex draw was, minus
+    # the dependence on the mesh.
+    n_wave = 96
+    w = rng.normal(size=(n_wave, 3))
+    w /= np.linalg.norm(w, axis=1, keepdims=True)
+    freq = rng.uniform(60.0, 400.0, n_wave)[:, None]      # cycles per ear size
+    ph = rng.random(n_wave) * 2 * np.pi
+    grain = (np.sin(P @ (w * freq).T + ph).sum(axis=1)
+             * 0.012 * np.sqrt(2.0 / n_wave))             # sd ~ the old 0.012
 
     col = base[None, :] * shade * warm + (blotch + grain)[:, None]
     mesh.vertex_colors = o3d.utility.Vector3dVector(np.clip(col, 0, 1))
