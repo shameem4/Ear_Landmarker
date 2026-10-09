@@ -611,6 +611,9 @@ quoted against the **flat predictor** that outputs z = 0 everywhere and scores
 | the 40-mode shape basis fitted directly to the labels | 0.01194 | 0.827 | -- | -- |
 | Depth Anything 3, zero-shot, global affine | 0.06397 | 0.056 | -- | -- |
 
+Head 2 here is the 60-epoch run. Trained for 150 epochs its mesh skill
+reaches 0.171; see the head 4 section for the final numbers on both splits.
+
 Head 1 wins, and that survived being challenged. Across three seeds the spread
 is 0.00012-0.00032 while the gaps between heads are 0.00168-0.00209, five to
 seventeen times larger; paired over resampled test subjects every pair is
@@ -644,7 +647,7 @@ skill **-1.037** and coefficient correlation 0.065. Fifty-five projected points
 simply do not determine the shape.
 
 Supervising the coefficients directly is the only thing that works: correlation
-0.017 -> 0.304, mesh skill -0.468 -> +0.154, at the cost of NME 0.01064 ->
+0.017 -> 0.304, mesh skill -0.468 -> +0.171, at the cost of NME 0.01064 ->
 0.03284. So the two heads are run together or not at all.
 
 What the mesh is worth: about 15% of each ear's deviation from the average.
@@ -685,3 +688,60 @@ attachment end where there is no edge to lie on.
 These are synthetic renders. The production 2D model scores 4.26% error on them
 against 1.47% on real photographs, so the renders are harder than production
 and these are relative rankings, not real-photo accuracy.
+
+## Head 4: one network for landmarks, depth and a mesh
+
+The question was whether head 2's mesh could be had without head 2's cost to
+the landmarks -- by hanging the shape branch off head 1 rather than replacing
+it. Head 4 samples the decoder's features at the predicted landmark positions
+(detached, so nothing the mesh wants can move a landmark) and regresses the
+coefficients from those local samples plus the template's current fit, fed back
+for `refine_steps` iterations.
+
+Scored by `scripts/final_eval.py` on both splits, with the same ground-truth
+coefficients and the same mean-ear denominator:
+
+| model | z MAE | z skill | NME | mesh skill (val) | mesh skill (test) | params |
+|---|---|---|---|---|---|---|
+| head 1 | 0.01233 | **0.825** | **0.01064** | -- | -- | 345,502 |
+| head 2, coeff sup | 0.02893 | 0.589 | 0.03289 | **0.178** | **0.171** | 906,817 |
+| head 4, refine 1 | 0.01382 | 0.804 | 0.01241 | 0.057 | 0.059 | 879,567 |
+| head 4, refine 2 | 0.01362 | 0.807 | 0.01182 | 0.051 | 0.048 | 879,567 |
+
+It loses on both counts. The mesh is a third of head 2's, and the landmarks are
+11-17% worse than head 1's despite 2.5x the parameters -- so detaching the
+samples did not fully insulate the landmark branch either. Feeding the template
+fit back a second time changes nothing: refine 2 is marginally BEHIND refine 1
+on mesh on both splits, which is the signature of no effect.
+
+Head 2's own mesh improved with the longer schedule, 0.156 at 60 epochs to
+0.171 at 150. That is the only thing this round bought.
+
+So the conclusion from before head 4 existed stands: run head 1 for landmarks
+and depth, head 2 with `--coeff-sup 1.0` for the mesh. Two networks or no mesh.
+
+### Why feature locality worked for the lifter and not for shape
+
+Head 3b reads local features and gets 88% of head 1's depth, so sampling at
+landmark positions is not the problem. The difference is what is being asked
+for. Depth at a point is a local property and a local feature can carry it. A
+shape coefficient is a global property of the whole ear -- mode 1 is overall
+size and curl -- and 55 local samples do not aggregate into it any better than
+the pooled vector head 2 already uses. The gauge-freedom result says the same
+thing from the other side: the information is missing from a single view, and
+no amount of rearranging where the network reads from puts it back.
+
+### A number I reported that was wrong
+
+Mid-training I quoted head 4's validation mesh skill as 0.103 (refine 1) and
+0.122 (refine 2) and said the template-as-input was "showing up positively".
+Neither figure is reproducible -- `final_eval.py` gives 0.057 and 0.051 on the
+same split and the same checkpoints, and the training logs agree with the
+script. The 0.12 came from my own arithmetic against the wrong denominator,
+and the ordering it implied was never real.
+
+Correcting it, I then claimed the opposite error -- that mesh skill had
+collapsed from validation to test. It had not; the two splits agree to within
+0.01. Head 4's mesh is not overfitted, it is simply weak, consistently, on both
+splits. `final_eval.py` prints both splits and `mesh_base` beside every skill
+so that neither mistake is available again.
