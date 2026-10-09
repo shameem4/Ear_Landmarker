@@ -1018,3 +1018,105 @@ Two alternatives were checked and rejected. The **York 3D Ear Dataset** (500
 same category as Aachen and IIT Indore. **HUTUBS** is CC BY 4.0 but ships
 meshes and HRTFs, not photographs -- the ear images in the literature on it
 are rendered from its meshes, which is what this project already does.
+
+## The real-photo depth benchmark cannot be built from AudioEar3D
+
+The plan was to turn AudioEar3D's 112 photograph-plus-scan pairs into the
+project's first real-photo depth labels: recover each photo's camera, project
+that ear's own 3D landmarks, read off z. **It does not work, and the reason is
+specific and measured.** No benchmark was shipped.
+
+### The method itself is sound, and validated
+
+`scripts/fit_photo_depth.py` solves pose by scaled orthography rather than
+full PnP, and that is a choice rather than a shortcut. Full PnP with unknown
+focal is badly conditioned on something as shallow as an ear -- a long lens
+far away and a short lens close by fit almost equally well. But the corpus
+defines depth as `zn = (zc - zbar) * fx / (s_crop * zbar)`, which depends on
+fx and zbar ONLY through their ratio, the pixels-per-millimetre scale. That
+ratio is exactly what a scaled-orthographic fit observes. The ambiguity
+cancels out of the quantity being measured.
+
+Against 1171 renders whose true z is known, the solver recovers depth to
+**0.0120 mean, 0.0091 median**, and it degrades gracefully with noise on the
+2D input: 0.0144 at noise 0.01, 0.0198 at 0.02. Using v6 landmarks against v5
+renders raises the error to 0.0127 and the residual with it, which is a
+pleasing independent check that the version pairing is wired correctly.
+
+### Scaled orthography needs the depth sign, and two plausible rules were wrong
+
+Orthography cannot tell a shape from its mirror in depth. Rules tried:
+
+| disambiguator | correct on true render depths |
+|---|---|
+| the concha is farther than the helix | 76% |
+| the canal is the farthest point | 89% |
+| the ear's plane normal, oriented by the canal being innermost | inverted 14% of EARS |
+
+The first two are corpus statistics, so enforcing either would have corrupted
+one label in ten while appearing to fix things. The third is the instructive
+failure: the plane normal was fine, it was the CANAL TEST orienting it that
+flipped, and because that flips per ear rather than per view it survived
+every per-view quality filter at a constant 17.9% -- residual-based gating
+did not move it at all.
+
+The fix is that no per-ear estimate was needed. Canonicalisation has already
+put every ear in one frame, so the outward direction is a CONSTANT: over 588
+ears the landmark surface normal agrees with a single axis to within 7.6
+degrees worst case and 0.6 on average, left and right alike. Only the overall
+sign needed settling, one bit, fixed once against the renders. **0.0% flipped
+after that**, against 17.9% before.
+
+### The test that killed it
+
+A depth label is only worth having if it describes THIS ear. So: fit each 2D
+set to its own 3D ear, and to a stranger's, and compare the residual.
+
+| | own ear | a stranger's | ratio |
+|---|---|---|---|
+| renders | 0.00660 | 0.01361 | **2.06** |
+| AudioEar3D photographs | 0.03364 | 0.03369 | **1.00** |
+
+On renders the individual ear carries the fit and using the wrong one costs
+167% more depth error. On the photographs **a stranger's ear fits exactly as
+well as the subject's own**. A label built from that is a generic ear under a
+recovered pose, and could not tell a good 3D model from one that predicts the
+mean ear -- which is the entire thing a depth benchmark exists to do.
+
+### Which of the three suspects it is, and which it is not
+
+- **Not the 3D fits.** The AudioEar3D ears carry 82% of the main corpus'
+  shape variance, 11.07 mm of relief against 10.49, and 49 of 55 landmarks
+  sit within 2 mm of an actual cloud point (median 0.99 mm). The "40 of 55
+  supported" note in my own memory was pessimistic.
+- **Not the pairing.** Pairing each photo with the subject's OTHER ear scores
+  1.00 as well, so this is not an off-by-one in the name mapping; nothing
+  fits better than anything else.
+- **Not perspective.** Full perspective PnP swept from 0.8 to 20 crop-widths
+  of focal never beats weak perspective (0.0360 at best against 0.0336) and
+  never lifts the ratio above 1.04.
+- **Mostly the 2D annotations, but not only.** The photo residual of 0.0336
+  at ratio 1.00 lands exactly where renders land at ~0.03 of 2D noise (0.0369
+  at ratio 1.06), so AudioEar3D's hand annotations carry roughly 3% of crop
+  width of error, about 5.7 px on a 190 px image. But substituting the
+  shipped 2D model's own predictions -- which disagree with those annotations
+  by NME 0.0220 -- only moves the residual to 0.0305 and the ratio to 1.02.
+  A better 2D source barely helps, so a floor of about 3% of crop width is
+  left that no rigid camera model and no 2D source removes.
+
+### What would be needed
+
+AudioEar3D ships no camera parameters -- the per-ear `.json` is a LabelMe file
+of 55 2D points and nothing more -- and the clouds are textured from a
+different capture than the photographs (cloud RGB mean [154, 99, 94] against
+the photo's [113, 82, 74]), which is why the SIFT route in
+`pnp_camera_recovery.py` finds 8 RANSAC inliers of 307 and calls itself WEAK.
+
+So the blocker is not the camera solver. It is that nothing in this dataset
+pins a photograph to its own scan accurately enough. Getting a real-photo
+depth benchmark needs either 2D landmarks on these 112 photos that are
+several times more accurate than either source available, or a dataset that
+ships the capture camera. One useful thing did come out of looking: unlike
+AudioEar2D, **the AudioEar3D photographs include surrounding head and hair**,
+so they are not pre-cropped and would suit the framing question from the
+previous section.
