@@ -1257,3 +1257,123 @@ methods, built on different assumptions, agree.
 anything after it. The 2D side of the domain gap was already measurable
 against data/manual; the depth side was not, and that was the gap that
 mattered, since depth is the whole reason head 1 exists.
+
+## Route C: making renders look like photographs fixes x, y and not depth
+
+The render-to-photo gap is a domain gap, so the cheapest attack is to close
+it at the source. `scripts/render_vs_photo.py` measures which image
+statistics separate the two populations and a logistic probe on seven of them
+says how separable they are overall.
+
+**Measurement corrected two things I had backwards before any code was
+written.** Renders are SIX TIMES LESS sharp than the photographs (laplacian
+variance 28.9 against 191.2), not more -- real ears come with hair, pores and
+scene edges while a render is smooth skin with Nyquist-limited vertex colour.
+And there is no backdrop to replace: background covers 5.9% of the average
+crop and 0% of most, so "background sd" is skin being too evenly lit, not a
+grey backdrop. Compositing scenery behind the ear, which was the plan, would
+have fixed nothing. Everything needed turned out to be photometric, so it is
+augmentation (`data/photo_aug.py`) and **no re-render was required**.
+
+| | probe |
+|---|---|
+| render as-is | 0.934 |
+| one strength knob at 1.0 | 0.855 |
+| separate knobs, fitted to the photo statistics | 0.753 |
+| + 1/f texture spectrum | **0.740** |
+
+One knob could not work: the setting matching photo noise and sharpness left
+contrast at 26 against 48, and the setting fixing contrast overshot laplacian
+variance **11x**. Skin needs far more shading than grain. White-noise texture
+matched sharpness while putting 24% too much energy high, because real skin
+and real optics roll off as 1/f.
+
+### The result, and why the depth benchmark earned its keep
+
+| | photo x,y NME | photo z skill | render z skill |
+|---|---|---|---|
+| no aug (control) | 0.1045 (7.3x floor) | −0.188 | 0.8015 |
+| aug, shading 1.0 | **0.0749 (5.2x)** | −0.280 | 0.7984 |
+| aug, shading 0.3 | 0.0733 (5.1x) | −0.366 | 0.7964 |
+| **aug, shading 0.0** | 0.0768 (5.4x) | **−0.049** | 0.7971 |
+
+x, y on real photographs improves **26-30%** whichever way shading is set,
+and in-domain render depth never moves. But full-strength augmentation made
+photo DEPTH worse, and only the new benchmark caught it -- without it this
+would have been reported as a 28% win.
+
+The suspect was local shading: a random multiplicative brightness field is
+precisely the shape-from-shading cue a depth head reads, so randomising it
+teaches invariance to the signal depth depends on. Turning it off while
+keeping texture, noise, occluders, defocus and JPEG:
+
+| paired bootstrap over the same 112 ears | skill gain | 95% CI | P(better) |
+|---|---|---|---|
+| shading 0.0 vs no augmentation | **+0.138** | [+0.033, +0.249] | 0.99 |
+| shading 0.0 vs shading 1.0 | **+0.229** | [+0.131, +0.323] | 1.00 |
+
+Confirmed. The pairing matters -- per-ear variance dominates the unpaired
+intervals, and the 0.3 run scoring below the 1.0 run is inside that noise
+rather than a real inversion.
+
+**But read the absolute number.** shading 0.0 sits at −0.049, CI [−0.149,
++0.047], which straddles zero. Route C removed the harm and did not make
+depth useful: on a photograph head 1's depth is still indistinguishable from
+predicting z = 0. The recipe to keep is augmentation with shading off, worth
+26% of x, y error and nothing on depth.
+
+## Regressing depth loses to fitting a model, as MediaPipe already knew
+
+MediaPipe FaceMesh outputs z "with the depth at center of the head being the
+origin" and "roughly the same scale as x" -- the same convention this project
+uses. The difference is what is done with it: MediaPipe's metric 3D comes
+from its Face Transform module fitting a canonical model to the screen-space
+landmarks by Procrustes under a perspective camera, **not** from the
+network's z. This project ships the network's z as the product.
+
+Tested on the photo benchmark with label and prediction taking DISJOINT 2D
+sources, so no pose error is shared:
+
+| method | photo z skill |
+|---|---|
+| predict z = 0 | 0.000 |
+| head 1 network z | **−0.171** |
+| fit mean ear to shipped-model 2D, label from human | **+0.217** |
+| fit mean ear to human 2D, label from shipped model | **+0.264** |
+
+A mean ear and a pose, with no per-subject 3D and no depth network at all,
+beats the depth network by about 0.4 skill on real photographs.
+
+### Where each one's limit is
+
+| | renders | real photos |
+|---|---|---|
+| predict z = 0 | 0.000 | 0.000 |
+| head 1 network z | **0.804** | −0.171 |
+| fit mean ear to 2D | 0.589 | +0.217 / +0.264 |
+| fit mean ear to GROUND-TRUTH 2D | 0.584 | — |
+| fit THIS EAR's true 3D to gt 2D | **0.827** | — |
+
+Two things fall out. **The fit's limit is the mean ear, not the landmarks** --
+perfect 2D scores 0.584, no better than head 1's own. And **head 1 nearly
+reaches the ceiling in domain**: 0.804 against the 0.827 available from
+knowing the subject's actual 3D ear, so it really is reading individual shape
+out of pixels. It simply does not transfer.
+
+They fail in opposite directions. head 1 has the capability and no geometric
+constraint; the fit has the constraint and no individual shape. The synthesis
+is a head that predicts shape coefficients and solves pose geometrically,
+which is head 2's existing architecture and MediaPipe's division of labour.
+For production on photographs today, the fit wins and needs no depth network.
+
+Cost is not the discriminator: the fit is a 55x3 least squares plus a 2x3 SVD,
+**0.053 ms per ear on CPU**, on top of 2D that is already being computed.
+
+### A naming hazard worth fixing
+
+`lm_basis_v6_55_mm.npz` is **not in mm**: its mean ear spans [0.22, 1.00,
+0.53] because `build_landmark_basis.py` divides by ear size on purpose and
+stores `ear_size` so the scale is recoverable. Nothing is numerically wrong
+and the `_mm` means "built from mm inputs". But a file suffixed `_mm` holding
+unit-height data is the exact trap the canonicalisation work existed to
+remove, and it should be renamed.

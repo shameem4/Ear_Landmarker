@@ -49,6 +49,7 @@ class EarDepthDataset(EarLandmarkDataset):
         coeffs: str = "",
         n_points: int = 0,
         photo_aug: float = 0.0,
+        photo_aug_shading: float = 1.0,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.image_size = image_size
@@ -58,6 +59,13 @@ class EarDepthDataset(EarLandmarkDataset):
         # achievable floor on real photographs as a result. This closes the
         # statistics; see data/photo_aug.
         self.photo_aug = float(photo_aug)
+        # Shading is separable from the rest because it is the one component
+        # that may be ACTIVELY HARMFUL to depth: a random multiplicative
+        # brightness field is exactly the shape-from-shading cue a depth head
+        # reads, so randomising it teaches invariance to the signal. Measured:
+        # photo-aug at full strength cut photo x,y error 28% and made photo
+        # depth WORSE (-0.188 -> -0.280).
+        self.photo_aug_shading = float(photo_aug_shading)
         with open(split_csv, encoding="utf-8") as f:
             self.samples = list(csv.DictReader(f))
         self.landmarks = np.load(self.data_dir / landmarks_file, mmap_mode="r")
@@ -141,7 +149,7 @@ class EarDepthDataset(EarLandmarkDataset):
             from data.photo_aug import photo_realism
             image = photo_realism(
                 image, np.random.default_rng(np.random.randint(1 << 31)),
-                self.photo_aug)
+                self.photo_aug, shading=self.photo_aug_shading)
 
         tensor_img = TF.to_tensor(image)
         if self.color_jitter_fast:

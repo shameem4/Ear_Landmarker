@@ -30,6 +30,10 @@ def main():
                    help="strength of the render-to-photograph augmentation "
                         "(data/photo_aug). 1.0 matches the measured photo "
                         "statistics; 0 disables it")
+    p.add_argument("--photo-aug-shading", type=float, default=1.0,
+                   help="scale the local-shading part of --photo-aug on its "
+                        "own. 0 keeps texture, noise, occluders and JPEG "
+                        "while leaving the shape-from-shading cue intact")
     p.add_argument("--balance-sampler", action="store_true",
                    help="sample so each source contributes equally per epoch. "
                         "Needs a 'source' column in the train csv")
@@ -86,7 +90,8 @@ def main():
     train = EarDepthDataset(d / f"{a.split_prefix}train.csv", d,
                             augmentation=None if lifting else aug,
                             with_pred=lifting, coeffs=a.coeffs,
-                            n_points=a.n_points, photo_aug=a.photo_aug)
+                            n_points=a.n_points, photo_aug=a.photo_aug,
+                            photo_aug_shading=a.photo_aug_shading)
     val = EarDepthDataset(d / f"{a.split_prefix}val.csv", d, augmentation=None,
                           with_pred=lifting, coeffs=a.coeffs,
                           n_points=a.n_points)
