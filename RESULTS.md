@@ -768,11 +768,22 @@ So the 55 points remove 56% of the surface uncertainty and the worst remaining
 region sits at 2.80% -- as uncertain as knowing nothing at all.
 
 **The gaps are the fossae and the lobe, and that is not a coincidence.** The
-largest is the SCAPHOID FOSSA, the groove between helix and antihelix: strips 0
-and 1 bracket it and nothing samples it. Then the TRIANGULAR FOSSA between the
-crura, the LOBE surface (only its border is marked) and the CONCHA FLOOR. Every
-one is a smooth shaded hollow with no crisp edge -- which is exactly why a
-scheme built for photographs has no points there.
+TRIANGULAR FOSSA between the crura, the CRUS OF THE HELIX, the INTERTRAGIC
+INCISURE, the LOBE surface (only its border is marked) and the CONCHA FLOOR are
+all smooth shaded hollows with no crisp edge -- which is exactly why a scheme
+built for photographs has no points there.
+
+**CORRECTION.** This section first named the SCAPHOID FOSSA as the largest gap.
+That was substantially an artefact of the template being a CUT-OUT ear: vertex
+variance within a few mm of the cut boundary is dominated by where each ear was
+separated from its head, which differs per subject and is not anatomy.
+Measured, uncertainty correlates **-0.507** with distance to that boundary, and
+the top-decile uncertain vertices sit a median **0.9 mm** from it against 7.4
+mm for the rest. Scoring the whole template rewards points that pin down the
+cut. With the objective restricted to surface at least 5 mm inside the
+boundary, the scaphoid fossa is the WEAKEST of the regions a hand placement
+targeted, not the strongest. `scripts/validate_marks.py --margin` controls
+this and defaults to excluding it.
 
 Returns diminish fast: the first two additions buy 8.9% and 9.0% of total
 uncertainty, the tenth buys 2.5%. About six points capture most of what is

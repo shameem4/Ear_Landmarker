@@ -81,6 +81,11 @@ def main():
     p.add_argument("--pca", default=str(TPL / "ear_pca_v4_all.npz"))
     p.add_argument("--mesh", default=str(TPL / "ear_mean_v2.obj"))
     p.add_argument("--sigma", type=float, default=0.0106)
+    p.add_argument("--margin", type=float, default=5.0,
+                   help="mm from the CUT BOUNDARY to exclude from the "
+                        "objective; where the ear was cut off the head "
+                        "varies between subjects, and that variance is not "
+                        "anatomy. 0 scores the whole template.")
     p.add_argument("--out", default="runs/marks_validation.png")
     a = p.parse_args()
 
@@ -96,7 +101,27 @@ def main():
     tpl_ear = float(np.ptp(V, axis=0).max())
     sigma = a.sigma * ear
     Cf = np.ascontiguousarray(C.transpose(1, 2, 0))
-    M = np.einsum("vam,van->mn", Cf, Cf)
+    # The objective counts only surface we actually care about. Vertex
+    # variance within a few mm of the template's open boundary is dominated by
+    # WHERE EACH EAR WAS CUT off its head, which differs per subject and is not
+    # a property of the ear: measured, uncertainty correlates -0.507 with
+    # distance to that boundary and the top decile sits 0.9 mm from it against
+    # 7.4 mm for the rest. Scoring it rewards points that pin down the cut.
+    import collections as _c
+    ec = _c.Counter()
+    for f in F:
+        for x, y in ((f[0], f[1]), (f[1], f[2]), (f[2], f[0])):
+            ec[(min(x, y), max(x, y))] += 1
+    bnd = sorted({x for (x, y), n in ec.items() if n == 1 for x in (x, y)})
+    from scipy.spatial import cKDTree as _KD
+    d2b = _KD(V[bnd]).query(V)[0]
+    keep = d2b >= a.margin
+    if not keep.any():
+        sys.exit(f"--margin {a.margin} excludes the whole template")
+    print(f"objective over {keep.sum()}/{len(V)} vertices "
+          f"(>= {a.margin:.0f} mm from the cut boundary)\n")
+    M = np.einsum("vam,van->mn", Cf[keep], Cf[keep])
+    nv_obj = int(keep.sum())
 
     idx, keys, items, P = read_points(a.project, V, F)
     bidx, _, bitems, BP = read_points(a.base, V, F)
@@ -169,7 +194,7 @@ def main():
     prior = float(np.trace(np.diag(var) @ M))
 
     def pct(t):
-        return 100 * np.sqrt(t / nv) / ear
+        return 100 * np.sqrt(t / nv_obj) / ear
 
     print(f"\nSURFACE UNCERTAINTY, % of ear size")
     print(f"  knowing nothing      {pct(prior):.3f}")
