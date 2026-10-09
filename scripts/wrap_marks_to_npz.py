@@ -38,8 +38,14 @@ def main():
     n = len(pts)
     tri = np.zeros(n, int)
     bary = np.zeros((n, 3))
+    # Names are carried through because an extended scheme's new points are
+    # not covered by STRIPS, which describes the original 55 only. The key is
+    # the only record of what a new point MEANS, so losing it here would leave
+    # every downstream file with anonymous coordinates.
+    names = [""] * n
     for k, q in pts.items():
         j = int(k[:2])
+        names[j] = k
         u, v = float(q["u"]), float(q["v"])
         tri[j] = int(q["triangleInd"])
         bary[j] = (u, v, 1.0 - u - v)      # the order wrap_barycentric applies
@@ -52,8 +58,10 @@ def main():
     if err > 1e-9:
         sys.exit(f"disagrees with wrap_barycentric by {err:.2e} mm")
 
+    if "" in names:
+        sys.exit("point indices are not contiguous from 00")
     np.savez(a.out, xyz=xyz, triangle=tri, barycentric=bary,
-             strips=np.array(STRIPS))
+             strips=np.array(STRIPS), names=np.array(names))
     print(f"{n} marks from {pathlib.Path(a.project).name} -> {a.out}")
     print(f"  spanning {np.ptp(xyz, axis=0).round(1)} mm, "
           f"weights in [{bary.min():.3f}, {bary.max():.3f}]")

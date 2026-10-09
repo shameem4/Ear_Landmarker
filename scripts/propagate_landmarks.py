@@ -29,7 +29,7 @@ from ear3d.wrap import base_topology, load_mesh       # noqa: E402
 
 def place(V, F, tri, bary):
     """(triangle, barycentric) -> xyz on this particular mesh."""
-    corners = V[F[tri]]                                # (55, 3, 3)
+    corners = V[F[tri]]                                # (k, 3, 3)
     return np.einsum("ij,ijk->ik", bary, corners)
 
 
@@ -86,7 +86,10 @@ def main():
         sys.exit(f"the marks reference triangle {tri.max()} but these fits have "
                  f"{len(F)} -- different topology, the marks do not apply")
 
-    names, P = [], np.empty((len(files), 55, 3))
+    # NOT hardcoded 55: the scheme is extensible and an extended marks file
+    # silently truncated here would propagate the first 55 and drop the rest.
+    k_marks = len(tri)
+    names, P = [], np.empty((len(files), k_marks, 3))
     for i, f in enumerate(files):
         V, Fi = load_mesh(f)
         if len(V) != len(V0) or (not subdivided and not np.array_equal(Fi, F)):
@@ -104,18 +107,28 @@ def main():
     Pn = (P - P.mean(axis=1, keepdims=True)) / own[:, None, None]
     np.savez_compressed(a.out, landmarks=P, landmarks_scalefree=Pn,
                         ear_size=own, names=np.array(names),
-                        triangle=tri, barycentric=bary, strips=np.array(STRIPS))
-    print(f"{len(files)} ears x 55 landmarks -> {a.out}")
+                        triangle=tri, barycentric=bary, strips=np.array(STRIPS),
+                        point_names=d["names"] if "names" in d else np.array([]))
+    print(f"{len(files)} ears x {k_marks} landmarks -> {a.out}")
     print(f"  ear size spans {own.min():.3f} to {own.max():.1f} -- MIXED UNITS, "
           f"see landmarks_scalefree for a comparable set")
 
     # Sanity, not accuracy: the spread of each strip should look like an ear,
     # and a landmark should sit on the surface of the mesh it was placed on.
-    for i, (lo, hi) in enumerate(STRIPS):
+    groups = [(lo, hi, STRIP_NAMES[i]) for i, (lo, hi) in enumerate(STRIPS)]
+    if k_marks > STRIPS[-1][1] and "names" in d:
+        # extended points are grouped by the suffix of their Wrap key
+        import itertools
+        tail = [str(x) for x in d["names"][STRIPS[-1][1]:]]
+        base = STRIPS[-1][1]
+        for nm, run in itertools.groupby(enumerate(tail),
+                                         key=lambda z: z[1][3:]):
+            run = list(run)
+            groups.append((base + run[0][0], base + run[-1][0] + 1, nm))
+    for lo, hi, nm in groups:
         span = np.ptp(Pn[:, lo:hi], axis=1)          # scale-free, so comparable
-        print(f"  {STRIP_NAMES[i]:<14s} span as a fraction of ear size: "
-              f"median {np.median(span, axis=0).round(3)} "
-              f"(sd {np.std(span, axis=0).round(3)})")
+        print(f"  {nm:<26s} [{lo:2d}:{hi:2d}] span as a fraction of ear size: "
+              f"median {np.median(span, axis=0).round(3)}")
     if a.reference:
         Vm, Fm = load_mesh(a.reference)
         ref = place(Vm, Fm, tri, bary)
