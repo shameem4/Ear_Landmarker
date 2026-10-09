@@ -221,6 +221,7 @@ def main():
                      ear_extent_mm=ear_extent, cut_to_scan=M,
                      anchor_err_frac=anchor_err,
                      head_faces=len(Fh), out_verts=len(Vo),
+                     frame="cut frame, left form, millimetres",
                      template=str(pathlib.Path(a.template).resolve()),
                      project_dist=a.project_dist * a.work_size)
             rows.append(dict(name=name, dataset=ds, ear_mm=ear_extent,

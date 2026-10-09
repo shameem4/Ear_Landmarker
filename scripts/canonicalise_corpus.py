@@ -55,8 +55,10 @@ SOURCES = {"sonicom": "faceform2_sonicom", "hutubs": "faceform2_hutubs",
            "audioear": "ae3d_fits"}
 
 
-def to_mm_scale(dataset, name, tf_dir, cache):
+def to_mm_scale(dataset, name, tf_dir, cache, assume_mm=False):
     """Factor taking this fit's stored coordinates to millimetres."""
+    if assume_mm:
+        return 1.0, "already mm"
     if dataset != "hutubs":
         return 1.0, ""
     f = tf_dir / f"{name}.npz"
@@ -88,18 +90,26 @@ def main():
     p.add_argument("--template", default=str(TPL / "ear_mean_v2.obj"))
     p.add_argument("--out-root", default=str(CORPUS / "canonical"))
     p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--assume-mm", action="store_true",
+                   help="inputs are already in millimetres, e.g. the fits "
+                        "from wrap_batch_head.py; skip the per-subject "
+                        "HUTUBS recovery")
+    p.add_argument("--sources", nargs="*", default=None,
+                   help="dataset=dir pairs, overriding the defaults")
     p.add_argument("--tol", type=float, default=1e-6,
                    help="max round-trip error in mm before an ear is rejected")
     a = p.parse_args()
 
+    sources = (dict(s.split("=", 1) for s in a.sources) if a.sources
+               else SOURCES)
     Vt, Ft = load_mesh(a.template)
     mirrors = {"z": np.diag([1.0, 1.0, -1.0]), "x": np.diag([-1.0, 1.0, 1.0])}
     out_root = pathlib.Path(a.out_root)
     out_root.mkdir(parents=True, exist_ok=True)
     rows, bad, cache = [], [], {}
 
-    for dataset, sub in SOURCES.items():
-        d = CORPUS / sub
+    for dataset, sub in sources.items():
+        d = pathlib.Path(sub) if '/' in sub else CORPUS / sub
         tf_dir = CORPUS / f"tf_{dataset}"
         files = sorted(d.glob("*.obj"))
         if a.limit:
@@ -115,7 +125,8 @@ def main():
             except ValueError as e:
                 bad.append((name, str(e)))
                 continue
-            k, note = to_mm_scale(dataset, name, tf_dir, cache)
+            k, note = to_mm_scale(dataset, name, tf_dir, cache,
+                                  a.assume_mm)
             if k is None:
                 bad.append((name, note))
                 continue
@@ -162,7 +173,7 @@ def main():
     for (side, mir), n in sorted(collections.Counter(
             (r["side"], r["mirror"]) for r in rows).items()):
         print(f"  {side:6s} -> {mir:5s} {n:4d}")
-    for ds in SOURCES:
+    for ds in sources:
         e = np.array([r["ear_mm"] for r in rows if r["dataset"] == ds])
         q = np.array([r["align_resid_mm"] for r in rows if r["dataset"] == ds])
         if len(e):

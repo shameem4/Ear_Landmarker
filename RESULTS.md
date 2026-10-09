@@ -817,3 +817,47 @@ model itself is unaffected, because the Procrustes step removes scale before
 the decomposition -- but anything that uses `ear_size` to put size back will be
 wrong for one of the two datasets. The PCA's own mean extent (0.4269) is the
 only scale that matches `components`.
+
+## The shape model knows which dataset an ear came from
+
+Re-wrapping the template to UNCROPPED HEADS was done to remove the last
+dataset-specific rule from the pipeline -- SONICOM ears were cut with a fixed
+(30, 52, 42) mm box and HUTUBS with (0.30, 0.42, 0.50) x tragion separation,
+so the template's free rim could only ever land on a boundary defined
+differently for the two sources. All 476 ears re-wrapped, zero failures.
+
+**It changed nothing measurable, three times over.** Boundary-to-interior
+variance ratio 1.13 against 1.11. Source separability 0.945 against 0.939.
+And the fits themselves moved 0.55% of ear size on average, 0.33 mm, which is
+below the 2D landmarker's own 1.1% error. The crop was inert: the 14 control
+points and the projection limit were already pinning the wrap. Kept anyway,
+because one less dataset-specific rule is worth having, but it is hygiene and
+not an improvement, and `data/depth3d_v5` was NOT re-rendered for it.
+
+**What the exercise did find is worse than what it was looking for.** From 40
+scale-free shape coefficients, a logistic regression tells SONICOM from HUTUBS
+on a held-out SUBJECT **93.9%** of the time:
+
+| modes | 1 | 2 | 5 | 10 | 20 | 40 |
+|---|---|---|---|---|---|---|
+| source accuracy | 0.756 | 0.775 | 0.746 | 0.800 | **0.939** | 0.939 |
+
+It is not one bad mode. Mode 11 separates at d = 1.50 and carries most of it,
+but accuracy is already 0.76 from mode 1 alone and climbs steadily -- the
+signal is spread through the basis. An earlier estimate of 0.60 came from 24
+ears and 12 modes and badly understated it.
+
+This is not the crop and it is not the units, since neither the re-wrap nor
+canonicalisation moved it. The likely cause is the source geometry itself:
+SONICOM ships BEM ACOUSTIC SIMPLIFICATIONS while HUTUBS ships raw scans, so
+the pinna surface really is different before anything here touches it. That
+would also explain `ccby_plus`, where HUTUBS and AudioEar3D separate at
+d = 2.01 and survived every correction.
+
+**What follows.** A pooled shape model mixes two distinguishable
+distributions, and any model trained on the pooled corpus can learn the source
+instead of the ear -- the depth corpus is 76% SONICOM and its splits are
+subject-disjoint but not source-balanced. This cannot be cleaned away
+upstream; it has to be handled where it bites: source-balanced splits, and
+per-source metrics reported beside the pooled number so a source shortcut
+shows up instead of averaging away.
