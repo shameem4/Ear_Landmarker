@@ -953,25 +953,68 @@ set 55 degrees about the vertical and it is still a recognisable ear: the
 concha floor, the helix standing off the head, the lobe. That survives only if
 the depths are jointly right, so it is a stronger statement than the MAE.
 
-On real photographs it does not. Against human x, y annotations on
-AudioEar2D the NME is 0.044–0.088, against 0.011 on renders, and roughly
-twice the error the shipped 2D model makes on the same kind of image. The
-turned view degenerates into a smear.
+On real photographs it does not, and the gap is now measured rather than
+eyeballed. **300 held-out AudioEar2D photographs**, scored against the human
+annotation, with the SHIPPED 2D ONNX on the same images as the reference --
+without a floor, head 1's number has nothing to be bad relative to:
 
-**The obvious confound was checked and is not the explanation.** The two
-corpora frame the ear very differently -- renders put it at 0.354 x 0.677 of
-the crop, the real-photo pipeline at 0.835 x 0.827, so the model was being
-shown ears 2.4x too wide. Re-cropping to the render framing did not help and
-was slightly worse.
+| model, on the same 300 photographs | NME | vs floor |
+|---|---|---|
+| shipped 2D ONNX, image as stored (the floor) | 0.01726 | 1.00x |
+| head 1, image as stored | 0.09286 | 5.38x |
+| head 1, re-cropped to the render framing | 0.08842 | 5.12x |
 
-**That re-test is not clean either**, and the honest position is that the
-magnitude is unknown. AudioEar2D ships ear crops with no surrounding head, so
-re-cropping pads with black rather than revealing real pixels, and the
-background is then off-distribution instead of the scale. A clean measurement
-needs uncropped source images, which this corpus does not have.
+**Head 1 is 5.1x worse than what is achievable on these images.** An earlier
+pass through this section quoted 0.044-0.088 from six hand-picked panels and
+called the magnitude unknown; over 300 images it is 0.088, and the floor makes
+it interpretable. Both of those earlier statements are superseded.
 
-What can be said without a caveat is the thing that was never checked before:
-**head 1 is trained entirely on renders and has no validation on a real
-photograph at all.** Every depth number in this document, including the
-source-balance result above, is a statement about rendered ears. That is a
-larger open question than the source shortcut turned out to be.
+**Framing explains almost none of it, and the control says so twice.** The
+two corpora frame the ear very differently -- renders at 0.354 x 0.677 of the
+crop, the real-photo pipeline at 0.835 x 0.827 -- so the model was being shown
+ears 2.4x too wide. Correcting it moves 5.38x to 5.12x and no further.
+
+The second check is the one worth keeping, because it nearly overturned the
+result. The re-crop is not a free operation: AudioEar2D ships ear crops with
+no surrounding head, so cropping outward pads with black instead of revealing
+pixels. Run that same round trip on RENDERS, where ground truth exists
+(`scripts/eval_crop_degradation.py`, 400 held-out views):
+
+| condition | NME | z skill |
+|---|---|---|
+| as rendered, in domain | 0.01178 | 0.8025 |
+| tight-cropped to the photo framing | 0.01447 | 0.6673 |
+| then back out to the render framing, black padded | 0.01853 | 0.5837 |
+
+So the crop step IS damaging -- 1.6x on NME and a quarter of the depth skill
+-- and the honest baseline for the photo number is 0.0185, not 0.0118. The
+domain gap on top of that is 4.8x rather than the 7.5x a naive comparison
+gives. Either way it dwarfs the framing. Worth noting separately how brittle
+depth is to context: z skill falls 0.80 to 0.58 from cropping alone, on
+images that are otherwise perfectly in domain.
+
+**The x, y half is now measured; the DEPTH half on a real photograph still is
+not**, because no depth label exists for a photograph anywhere in this
+project. Every z number in this document, including the source-balance result
+above, is a statement about rendered ears.
+
+### The paired data to fix that is already on disk
+
+AudioEar3D is **CC BY 4.0** and ships 112 ears from 56 subjects as RGB
+photographs AND point-cloud scans OF THE SAME EAR. Both are local, and
+`lm3d_v5_audioear_mm.npz` already carries all 95 landmarks for all 112 ears
+with no missing points. What is absent is the camera: a depth label for a
+photograph needs the 3D landmarks expressed in that photograph's frame.
+
+`scripts/pnp_camera_recovery.py` was written for exactly this -- feature
+matching plus RANSAC PnP with a focal sweep, exploiting the fact that the
+AudioEar3D clouds carry per-point RGB sampled from the very photo being
+localised -- but it has never been run to completion, has no saved output and
+appears nowhere in this document. Finishing it would turn 112 real
+photographs into the project's first real-photo depth benchmark.
+
+Two alternatives were checked and rejected. The **York 3D Ear Dataset** (500
+3D ears, York Ear Model) is non-commercial research and education only, the
+same category as Aachen and IIT Indore. **HUTUBS** is CC BY 4.0 but ships
+meshes and HRTFs, not photographs -- the ear images in the literature on it
+are rendered from its meshes, which is what this project already does.
