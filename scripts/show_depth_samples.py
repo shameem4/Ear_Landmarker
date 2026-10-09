@@ -34,6 +34,12 @@ def main():
     p.add_argument("--ckpt",
                    default="runs/final_z/ckpt/epoch=139-val_z_mae=0.0117.ckpt")
     p.add_argument("--per-split", type=int, default=4)
+    p.add_argument("--splits", nargs="+",
+                   default=["train.csv", "val.csv", "test.csv"])
+    p.add_argument("--n-points", type=int, default=0,
+                   help="first N landmarks; must match what the model was "
+                        "trained on, and z is re-centred on them exactly as "
+                        "data/depth_dataset does it")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="runs/depth_samples.png")
     a = p.parse_args()
@@ -57,7 +63,14 @@ def main():
     mean = [0.5, 0.5, 0.5]
     std = [0.5, 0.5, 0.5]
 
-    splits = ["train.csv", "val.csv", "test.csv"]
+    splits = a.splits
+    # MUST MATCH THE DATASET, or the picture lies. The corpus stores z centred
+    # on all 95 points; a model trained on the first 55 was fed z re-centred
+    # on those 55. Plotting the stored z against such a model's output would
+    # add a per-view offset of about -0.027 crop widths and draw a depth bias
+    # that does not exist. One line, and it has to be the same line.
+    k = a.n_points or L.shape[1]
+    recentre = k < L.shape[1]
     rng = np.random.default_rng(a.seed)
     cols = a.per_split
     fig, ax = plt.subplots(2 * len(splits), cols,
@@ -70,8 +83,10 @@ def main():
             gi = int(r["idx"])
             im = Image.open(d / r["image_file"]).convert("RGB")
             W, H = im.size
-            gt = np.asarray(L[gi], float)
-            vis = np.asarray(V[gi]).astype(bool)
+            gt = np.asarray(L[gi][:k], float)
+            vis = np.asarray(V[gi][:k]).astype(bool)
+            if recentre:
+                gt[:, 2] -= gt[:, 2].mean()
 
             x = torch.from_numpy(
                 np.asarray(im.resize((size, size), Image.BILINEAR),
@@ -111,7 +126,8 @@ def main():
             t.tick_params(labelsize=5)
             t.grid(alpha=.25)
 
-    fig.suptitle("head 1: labels in GREEN, prediction in MAGENTA.  "
+    fig.suptitle(f"head 1, {k} landmarks: labels in GREEN, prediction in "
+                 "MAGENTA.  "
                  "Upper row of each pair = image (x, y); lower = seen from "
                  "above (x, z), same scale.", fontsize=10)
     fig.tight_layout(rect=[0, 0, 1, 0.985])

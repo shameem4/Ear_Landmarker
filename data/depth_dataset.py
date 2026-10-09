@@ -1,4 +1,4 @@
-"""Dataset for the rendered depth corpus: 55 landmarks with x, y AND z.
+"""Dataset for the rendered depth corpus: K landmarks with x, y AND z.
 
 Subclasses EarLandmarkDataset so the augmentation is literally the same code,
 which is the point -- a second copy would drift, and the one thing that must
@@ -34,7 +34,7 @@ from data.dataset import AugmentationParams, EarLandmarkDataset
 
 
 class EarDepthDataset(EarLandmarkDataset):
-    """(image, 55x3 landmarks, visibility) from scripts/ingest_depth3d.py."""
+    """(image, Kx3 landmarks, visibility) from scripts/ingest_depth3d.py."""
 
     def __init__(
         self,
@@ -47,6 +47,7 @@ class EarDepthDataset(EarLandmarkDataset):
         visible_file: str = "visible.npy",
         with_pred: bool = False,
         coeffs: str = "",
+        n_points: int = 0,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.image_size = image_size
@@ -56,8 +57,26 @@ class EarDepthDataset(EarLandmarkDataset):
         self.landmarks = np.load(self.data_dir / landmarks_file, mmap_mode="r")
         if self.landmarks.shape[-1] != 3:
             raise ValueError(f"{landmarks_file} is {self.landmarks.shape}, "
-                             f"expected (N, 55, 3) -- this is the depth corpus")
+                             f"expected (N, K, 3) -- this is the depth corpus")
         self.rendered_visible = np.load(self.data_dir / visible_file, mmap_mode="r")
+        # The corpus carries the 95-point scheme; points 0..54 are the
+        # original iBUG 55 unchanged and 55..94 are the extensions, so a
+        # leading slice is exactly the old scheme and nothing else. Kept as a
+        # slice rather than a separate file so the two cannot drift apart.
+        self.n_points = int(n_points) or self.landmarks.shape[1]
+        if self.n_points > self.landmarks.shape[1]:
+            raise ValueError(f"n_points={self.n_points} but {landmarks_file} "
+                             f"holds {self.landmarks.shape[1]}")
+        # AND z IS RE-CENTRED ON WHAT IS KEPT. z is root-relative, measured
+        # from the mean depth OF THE POINTS IN USE -- the whole module docs
+        # that as an invariant. The stored labels are centred on all 95, so a
+        # bare slice breaks it: the retained 55 then carry a per-view offset
+        # (mean -0.027, sd 0.015 of crop width) that the model has to predict
+        # as a nuisance, and mean|z| rises 0.0702 -> 0.0747. That is the
+        # z_skill DENOMINATOR, so leaving it would have flattered every skill
+        # number by about 6% for no reason. A no-op when nothing is sliced
+        # off, where the stored mean is already zero to 1e-11.
+        self._recentre_z = self.n_points < self.landmarks.shape[1]
         # The 2D model's OWN output on these images, if it has been precomputed.
         # A lifter is fed this at test time, so it should be trained on it; the
         # alternative, ground truth plus isotropic noise, gets the error
@@ -98,9 +117,13 @@ class EarDepthDataset(EarLandmarkDataset):
         image = Image.open(self.data_dir / sample["image_file"]).convert("RGB")
         image = image.resize((self.image_size, self.image_size), Image.BILINEAR)
 
-        lm = torch.tensor(np.asarray(self.landmarks[gi]), dtype=torch.float32)
+        k = self.n_points
+        lm = torch.tensor(np.asarray(self.landmarks[gi][:k]), dtype=torch.float32)
         xy, z = lm[:, :2].clone(), lm[:, 2].clone()
-        seen = torch.tensor(np.asarray(self.rendered_visible[gi]), dtype=torch.bool)
+        if self._recentre_z:
+            z -= z.mean()
+        seen = torch.tensor(np.asarray(self.rendered_visible[gi][:k]),
+                            dtype=torch.bool)
         out_of_crop = ((xy <= 0.0) | (xy >= 1.0)).any(dim=1)
 
         if self.augmentation:
@@ -132,13 +155,13 @@ class EarDepthDataset(EarLandmarkDataset):
             # belong with an unaugmented one. A lifter trained on them must
             # therefore run without geometric augmentation, which is why
             # train_depth turns it off for the lifter heads.
-            out["pred_xy"] = torch.tensor(np.asarray(self.pred_xy[gi]),
+            out["pred_xy"] = torch.tensor(np.asarray(self.pred_xy[gi][:k]),
                                           dtype=torch.float32).view(-1)
-            out["pred_conf"] = torch.tensor(np.asarray(self.pred_conf[gi]),
+            out["pred_conf"] = torch.tensor(np.asarray(self.pred_conf[gi][:k]),
                                             dtype=torch.float32)
             if self.pred_feat is not None:
                 out["pred_feat"] = torch.tensor(
-                    np.asarray(self.pred_feat[gi]), dtype=torch.float32)
+                    np.asarray(self.pred_feat[gi][:k]), dtype=torch.float32)
         if self.coeffs is not None:
             out["coeffs"] = out_c
             out["has_coeffs"] = torch.tensor(

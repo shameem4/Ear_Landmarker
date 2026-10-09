@@ -861,3 +861,117 @@ subject-disjoint but not source-balanced. This cannot be cleaned away
 upstream; it has to be handled where it bites: source-balanced splits, and
 per-source metrics reported beside the pooled number so a source shortcut
 shows up instead of averaging away.
+
+## The source shortcut is real, and the depth head does not use it
+
+The previous section left a loaded gun: 40 shape coefficients identify a
+held-out subject's source 93.9% of the time, the depth corpus is 76% SONICOM,
+so some of head 1's skill might be "this is SONICOM and SONICOM ears look like
+this" rather than "this is the ear in front of me". This measures it.
+
+**Three recipes, one yardstick.** 14 HUTUBS and 14 SONICOM subjects were
+carved out first, on their own seed, before any split was made, and trained on
+by nothing. All numbers below are on those same 1171 views.
+
+| | train | differs from A by |
+|---|---|---|
+| **A** proportional | 6148 views, 148 SONICOM + 30 HUTUBS subjects | — |
+| **B** balanced | **the same 6148 rows**, sampler weighting the sources equally | sampling only |
+| **C** leave-one-source-out | 6144 views, SONICOM only | no HUTUBS ear at all |
+
+A and C match to 0.07% on training-set size, so C is not merely a smaller run,
+and C's checkpoint is chosen on a SONICOM validation set -- it never sees a
+HUTUBS ear, at any point, for any purpose.
+
+**Three seeds each for A and C**, because the claim being made here is a
+null, and a null needs the same error bar as a difference or it only means
+"one run, and I did not look twice".
+
+| | A (HUTUBS in train) | C (never saw HUTUBS) | A − C | ranks separate? |
+|---|---|---|---|---|
+| **HUTUBS** z-skill | 0.7886  [0.7848, 0.7935] | 0.7815  [0.7764, 0.7849] | +0.0070 (+0.90%) | no, ranges overlap |
+| **SONICOM** z-skill | 0.8193  [0.8148, 0.8219] | 0.8261  [0.8237, 0.8279] | −0.0068 (−0.82%) | yes |
+| **pooled** z-skill | 0.8044  [0.8015, 0.8082] | 0.8045  [0.8008, 0.8065] | −0.0001 | no |
+
+Seed sd is 0.0045 (HUTUBS) and 0.0032 (SONICOM); the two differences are 1.9
+and 2.6 standard errors. This project's pre-registered bar is complete rank
+separation across three seeds AND >1% relative, and **neither side clears
+it**.
+
+**So: deleting an entire source from training costs 0.7% skill on that
+source and buys 0.8% on the one that remains.** A small, symmetric
+specialisation, in the direction anyone would guess, under 1% either way, and
+invisible in the pooled number. The 93.9% separability is real but IDLE --
+the information is sitting there in every render and the depth head is not
+leaning on it. Balanced sampling (B, seed 0: 0.7886 HUTUBS / 0.8127 SONICOM)
+lands on top of A, which says the same thing from the other direction.
+
+HUTUBS scores about 0.03 below SONICOM in every run **including C**, which
+never trained on HUTUBS, so that gap is not training composition. It is partly
+that HUTUBS is harder in absolute terms (z MAE 0.0149 against 0.0127) and
+partly a smaller skill denominator (z base 0.0689 against 0.0740). Both push
+the same way, which is why the per-source evaluator prints the baseline beside
+the skill.
+
+**What this does NOT license.** It is a statement about depth, on renders.
+See the next section.
+
+### Three bugs, each of which produced believable numbers
+
+Worth recording because none announced itself:
+
+- **Every recipe held out its own test subjects.** No two of the three test
+  sets shared a subject that all three had kept out of training, so every
+  difference would have been part model and part test set. The first version
+  of this experiment was discarded and `--holdout` added, which now refuses to
+  run if a second invocation would compute a different yardstick.
+- **z was re-centred on the wrong points.** The corpus stores z relative to
+  the mean of all 95 landmarks; slicing to the iBUG 55 left a per-view offset
+  (mean −0.027, sd 0.015 crop widths) and inflated the skill denominator from
+  0.0702 to 0.0747, flattering every number by ~6%. Caught before the compute
+  landed.
+- **Stale checkpoints won a glob.** `ls runs/*/ckpt/epoch=*.ckpt | head -1`
+  picked `epoch=0` files left by an interrupted run, and scored three models
+  at epoch 0 into a complete, plausible table (z-skill 0.35–0.47).
+  `train_depth.py` now refuses to start in a directory that already holds
+  checkpoints.
+
+## Head 1 has never been validated on a photograph
+
+`runs/` is not tracked, so the two figures this section describes are made
+with:
+
+    python scripts/demo_3d.py --data data/depth3d_v5 --split common_test.csv \
+        --n-points 55 --out runs/demo_3d_renders.png \
+        --ckpt runs/sb_a_prop/ckpt/epoch=132-val_z_mae=0.0140.ckpt
+    python scripts/demo_3d.py --data data/preprocessed --split manifest.csv \
+        --sources audioear2d --n-points 55 --match-framing 0.354 0.677 \
+        --out runs/demo_3d_photos.png --ckpt <same>
+
+On held-out renders it does what it was built to do. Turn the predicted point
+set 55 degrees about the vertical and it is still a recognisable ear: the
+concha floor, the helix standing off the head, the lobe. That survives only if
+the depths are jointly right, so it is a stronger statement than the MAE.
+
+On real photographs it does not. Against human x, y annotations on
+AudioEar2D the NME is 0.044–0.088, against 0.011 on renders, and roughly
+twice the error the shipped 2D model makes on the same kind of image. The
+turned view degenerates into a smear.
+
+**The obvious confound was checked and is not the explanation.** The two
+corpora frame the ear very differently -- renders put it at 0.354 x 0.677 of
+the crop, the real-photo pipeline at 0.835 x 0.827, so the model was being
+shown ears 2.4x too wide. Re-cropping to the render framing did not help and
+was slightly worse.
+
+**That re-test is not clean either**, and the honest position is that the
+magnitude is unknown. AudioEar2D ships ear crops with no surrounding head, so
+re-cropping pads with black rather than revealing real pixels, and the
+background is then off-distribution instead of the scale. A clean measurement
+needs uncropped source images, which this corpus does not have.
+
+What can be said without a caveat is the thing that was never checked before:
+**head 1 is trained entirely on renders and has no validation on a real
+photograph at all.** Every depth number in this document, including the
+source-balance result above, is a statement about rendered ears. That is a
+larger open question than the source shortcut turned out to be.
