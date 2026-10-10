@@ -85,6 +85,56 @@ def ransac_point(P, tol):
     return c, int(bestn), spread
 
 
+def coord_median(P):
+    """Per-axis median. Robust and trivial, but NOT rotation-equivariant:
+    it is computed in the scan's axes, so turning the scan would move the
+    answer. Kept because it is the obvious meaning of "median" and, on this
+    data, is barely distinguishable from the estimator that does not have
+    that flaw -- which is worth knowing rather than assuming."""
+    ok = np.isfinite(P).all(1)
+    return (np.median(P[ok], axis=0) if ok.any() else None)
+
+
+def geometric_median(P, iters=128, eps=1e-9):
+    """The point minimising the sum of distances -- the real L1 centre.
+
+    Rotation-equivariant, unlike a per-axis median, and the right robust
+    centre for 3D points. Weiszfeld's iteration, started from the per-axis
+    median so a handful of steps suffice; the eps guard is for the case where
+    the iterate lands exactly on a sample, where the weight would divide by
+    zero.
+    """
+    ok = np.isfinite(P).all(1)
+    X = P[ok]
+    if len(X) == 0:
+        return None
+    if len(X) <= 2:
+        return X.mean(0)
+    c = np.median(X, axis=0)
+    for _ in range(iters):
+        w = 1.0 / np.maximum(np.linalg.norm(X - c, axis=1), eps)
+        nc = (w[:, None] * X).sum(0) / w.sum()
+        if np.linalg.norm(nc - c) < 1e-7:
+            break
+        c = nc
+    return c
+
+
+def support(P, c, tol):
+    """How many views sit within tol of an estimate, and their spread.
+
+    A median gives no inlier set, so this is what replaces RANSAC's count as
+    the per-landmark confidence. It is the same question asked of whatever
+    centre was chosen, so the three estimators stay comparable.
+    """
+    if c is None or not np.isfinite(c).all():
+        return 0, np.nan
+    d = np.linalg.norm(P - c, axis=1)
+    ok = np.isfinite(d)
+    inl = ok & (d <= tol)
+    return int(inl.sum()), (float(np.median(d[inl])) if inl.any() else np.nan)
+
+
 def locate_and_frame(mesh, cfg, pipe, ear, scalp_tol):
     """The pinna frame, exactly as scan_depth_check derives it."""
     pose = head_pose(mesh, cfg)
@@ -179,6 +229,10 @@ def main():
     p.add_argument("--fill", type=float, default=0.55)
     p.add_argument("--n-points", type=int, default=55)
     p.add_argument("--scalp-tol", type=float, default=0.25)
+    p.add_argument("--consensus", default="median",
+                   choices=["median", "geomedian", "ransac"],
+                   help="which robust centre to export. All three are "
+                        "computed and compared either way")
     p.add_argument("--tol", type=float, default=2.0,
                    help="RANSAC inlier distance in scan units (mm here). The "
                         "failure being rejected is a scalp read, which sits a "
@@ -320,13 +374,22 @@ def main():
         sys.exit("no views had a depth map; run moge_infer first")
     print(f"\n{len(kept)} views combined: {', '.join(kept)}")
 
-    cons = np.full((K, 3), np.nan)
-    nin = np.zeros(K, int)
-    spr = np.full(K, np.nan)
-    for k in range(K):
-        c, n, s = ransac_point(est[:, k, :], a.tol)
-        if c is not None:
-            cons[k], nin[k], spr[k] = c, n, s
+    # all three estimators, always, because they cost nothing next to the
+    # renders and the depth maps, and the comparison is the point
+    ests = {}
+    for name, fn in (("ransac", lambda P: ransac_point(P, a.tol)[0]),
+                     ("median", coord_median),
+                     ("geomedian", geometric_median)):
+        C = np.full((K, 3), np.nan)
+        N = np.zeros(K, int)
+        S = np.full(K, np.nan)
+        for k in range(K):
+            c = fn(est[:, k, :])
+            if c is not None:
+                C[k] = c
+                N[k], S[k] = support(est[:, k, :], c, a.tol)
+        ests[name] = (C, N, S)
+    cons, nin, spr = ests[a.consensus]
 
     def dist_to_surface(P):
         ok = np.isfinite(P).all(1)
@@ -347,8 +410,17 @@ def main():
     for vi, tag in enumerate(kept):
         row(f"single view {tag}", dist_to_surface(est[tags.index(tag)]))
     row("mean over views", dist_to_surface(np.nanmean(est, axis=0)))
-    row("RANSAC consensus", dc)
-    print(f"\ninlier views per landmark: median {np.median(nin):.0f} of "
+    for name in ("ransac", "median", "geomedian"):
+        row(("-> " if name == a.consensus else "   ") + name,
+            dist_to_surface(ests[name][0]))
+    # how far the two medians actually differ, which is the only thing that
+    # decides whether the rotation-equivariance argument matters here
+    dm = np.linalg.norm(ests["median"][0] - ests["geomedian"][0], axis=1)
+    fm = np.isfinite(dm)
+    print(f"\ncoord median vs geometric median: median "
+          f"{np.median(dm[fm]):.3f} mm apart, max {dm[fm].max():.3f}")
+    print(f"\nsupport per landmark ({a.consensus}): median "
+          f"{np.median(nin):.0f} of "
           f"{len(kept)}, {(nin >= 3).sum()}/{K} with 3 or more, "
           f"{(nin <= 1).sum()} with 1 or none")
     print(f"agreement within the consensus set: median {np.nanmedian(spr):.2f} "
@@ -358,15 +430,20 @@ def main():
         print(f"landmarks the views do NOT agree on: {list(lone)}")
 
     np.savez(out / "consensus.npz", cons=cons, nin=nin, spread=spr,
-             est=est, tags=np.asarray(kept), dist=dc)
+             est=est, tags=np.asarray(kept), dist=dc,
+             estimator=a.consensus,
+             **{f"cons_{n}": v[0] for n, v in ests.items()})
     if a.export_obj:
         col = {True: (0.20, 0.95, 0.65), False: (1.00, 0.45, 0.10)}
+        # named for the estimator ACTUALLY used, so an obj cannot claim to be
+        # a RANSAC result when --consensus asked for a median
         sets = {
-            "moge_ransac": (col[True],
-                            [cons[k] if nin[k] >= 3 else None for k in range(K)]),
-            "moge_ransac_WEAK": (col[False],
-                                 [cons[k] if nin[k] < 3 else None
-                                  for k in range(K)]),
+            f"moge_{a.consensus}": (
+                col[True],
+                [cons[k] if nin[k] >= 3 else None for k in range(K)]),
+            f"moge_{a.consensus}_WEAK": (
+                col[False],
+                [cons[k] if nin[k] < 3 else None for k in range(K)]),
         }
         oo, mm, tt = write_review_obj(
             a.export_obj, src, sets, a.sphere * ear_h_scan(s0),
