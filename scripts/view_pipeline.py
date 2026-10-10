@@ -148,8 +148,15 @@ def load(mv, mesh_path):
         surf[ok] = sc.compute_closest_points(
             o3d.core.Tensor(cons[ok].astype(np.float32)))["points"].numpy()
     dist = np.linalg.norm(cons - surf, axis=1)
+    # WHICH ESTIMATOR AND WHICH TOLERANCE, from the file rather than assumed.
+    # The combine step can export a median, a geometric median or a RANSAC
+    # consensus, and a viewer that hard-codes one of those names will happily
+    # label a median "RANSAC" -- which it did until this was read through.
+    est_name = str(C["estimator"]) if "estimator" in C.files else "unknown"
+    tol = float(C["tol"]) if "tol" in C.files else 2.0
     return dict(views=views, cons=cons, nin=nin, est=est, surf=surf,
-                dist=dist, mesh=m, K=len(cons), spread=C["spread"])
+                dist=dist, mesh=m, K=len(cons), spread=C["spread"],
+                est_name=est_name, tol=tol)
 
 
 def main():
@@ -160,6 +167,10 @@ def main():
     p.add_argument("--radius", type=float, default=0.55,
                    help="sphere radius in scan units (mm on these scans)")
     p.add_argument("--size", type=int, default=1100)
+    p.add_argument("--stage", type=int, default=1, choices=[1, 2, 3, 4, 5],
+                   help="which stage to open on")
+    p.add_argument("--landmark", type=int, default=0,
+                   help="which landmark stage 3 opens on")
     p.add_argument("--selftest", action="store_true",
                    help="build every stage's geometry and exit without "
                         "opening a window, so the logic can be checked where "
@@ -172,8 +183,9 @@ def main():
     print(f"{nv} views, {K} landmarks, mesh "
           f"{len(D['mesh'].vertices):,} verts")
     f = np.isfinite(D["dist"])
-    print(f"consensus: median {np.median(D['dist'][f]):.2f} mm to the "
-          f"surface, {(D['nin'] >= 3).sum()}/{K} with 3+ inlier views")
+    print(f"consensus ({D['est_name']}, tol {D['tol']:.1f} mm): median "
+          f"{np.median(D['dist'][f]):.2f} mm to the surface, "
+          f"{(D['nin'] >= 3).sum()}/{K} with 3+ supporting views")
 
     # ---- geometry for every stage, all of it up front --------------------
     g = {}
@@ -203,7 +215,7 @@ def main():
         # consensus it ended up with. Recomputed rather than stored so the
         # picture cannot disagree with the number beside it.
         inl = (np.isfinite(pts).all(1)
-               & (np.linalg.norm(pts - c, axis=1) <= 2.0)
+               & (np.linalg.norm(pts - c, axis=1) <= D["tol"])
                ) if np.isfinite(c).all() else np.zeros(len(pts), bool)
         cl = [view_colour(j, nv) if inl[j] else (0.25, 0.25, 0.25)
               for j in range(nv)]
@@ -256,7 +268,8 @@ def main():
     win.add_child(panel)
     win.add_child(img_w)
 
-    st = {"stage": 1, "view": 0, "lmk": 0, "mesh": True, "drawn": []}
+    st = {"stage": a.stage, "view": 0, "lmk": a.landmark % max(K, 1),
+          "mesh": True, "drawn": []}
 
     def on_layout(ctx):
         r = win.content_rect
@@ -264,11 +277,17 @@ def main():
         pref = panel.calc_preferred_size(ctx, gui.Widget.Constraints())
         panel.frame = gui.Rect(r.x, r.y, min(r.width, pref.width),
                                min(r.height, pref.height))
-        # the 2D render, bottom-right, only while stage 1 is showing
+        # The 2D render sits bottom-right while stage 1 is showing. HIDDEN
+        # with .visible, not collapsed to a 1x1 rect: the rect trick left a
+        # degenerate primitive in the scene, and Filament then reported
+        # "missing required attributes (0xd), declared=0x5" on the first
+        # stage change -- one line, no crash, and nothing to say which
+        # geometry it meant. A hidden widget is not submitted at all.
         side = int(min(r.width, r.height) * 0.42)
-        img_w.frame = (gui.Rect(r.get_right() - side - 8,
-                                r.get_bottom() - side - 8, side, side)
-                       if st["stage"] == 1 else gui.Rect(0, 0, 1, 1))
+        img_w.visible = st["stage"] == 1
+        if img_w.visible:
+            img_w.frame = gui.Rect(r.get_right() - side - 8,
+                                   r.get_bottom() - side - 8, side, side)
     win.set_on_layout(on_layout)
 
     def show(keys):
@@ -304,19 +323,21 @@ def main():
             show([f"lmk{k}_fan", f"lmk{k}_est", f"lmk{k}_cons"])
             txt = (f"STAGE 3  one landmark's views\n"
                    f"landmark {k}  ({STRIP_NAMES[strip_of(k)]})\n"
-                   f"{int(nin[k])}/{nv} views agree   spread "
-                   f"{D['spread'][k]:.2f} mm\n"
-                   f"grey spheres are outliers, big green is the consensus\n"
+                   f"{int(nin[k])}/{nv} views within {D['tol']:.1f} mm   "
+                   f"spread {D['spread'][k]:.2f} mm\n"
+                   f"grey spheres are outside it, big green is the "
+                   f"{D['est_name']}\n"
                    f"UP/DOWN change landmark")
         elif s == 4:
             show(["cons"])
-            txt = (f"STAGE 4  RANSAC consensus\n"
-                   f"green = 3 or more views agree ({(nin >= 3).sum()}/{K})\n"
+            txt = (f"STAGE 4  consensus ({D['est_name']})\n"
+                   f"green = 3 or more views within {D['tol']:.1f} mm "
+                   f"({(nin >= 3).sum()}/{K})\n"
                    f"orange = fewer ({(nin < 3).sum()}/{K})")
         else:
             show(["cons", "truth", "sticks"])
             d = D["dist"][np.isfinite(D["dist"])]
-            txt = (f"STAGE 5  consensus against the scan\n"
+            txt = (f"STAGE 5  {D['est_name']} against the scan\n"
                    f"blue = nearest surface point, amber = the error\n"
                    f"median {np.median(d):.2f} mm   p90 "
                    f"{np.percentile(d, 90):.2f}   max {d.max():.2f}")

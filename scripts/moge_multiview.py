@@ -431,7 +431,7 @@ def main():
 
     np.savez(out / "consensus.npz", cons=cons, nin=nin, spread=spr,
              est=est, tags=np.asarray(kept), dist=dc,
-             estimator=a.consensus,
+             estimator=a.consensus, tol=a.tol,
              **{f"cons_{n}": v[0] for n, v in ests.items()})
     if a.export_obj:
         col = {True: (0.20, 0.95, 0.65), False: (1.00, 0.45, 0.10)}
