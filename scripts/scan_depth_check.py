@@ -232,6 +232,20 @@ def main():
                         "--mesh when that is itself an .obj")
     p.add_argument("--sphere", type=float, default=0.012,
                    help="sphere radius as a fraction of ear height")
+    p.add_argument("--moge-npz", default="",
+                   help="a monocular depth map from scripts/moge_infer.py, "
+                        "scored as the depth source at the SHIPPED 2D "
+                        "model's own landmark pixels -- no learned depth "
+                        "head anywhere in that path. The map may be of the "
+                        "full render or of the corpus crop; a crop's map is "
+                        "put back on the render grid first")
+    p.add_argument("--dump-render", default="",
+                   help="write the render, the corpus crop, the EXACT depth "
+                        "buffer, this camera and the shipped 2D to a "
+                        "directory, so another depth source can be scored on "
+                        "the identical pixels without reproducing any of the "
+                        "locating and framing above. Analysis only -- nothing "
+                        "in this script reads it back")
     p.add_argument("--out", default="supersecret/out",
                    help="LOCAL ONLY: a gitignored directory")
     a = p.parse_args()
@@ -341,6 +355,25 @@ def main():
     print(f"frame:  ear fills {(bx1 - bx0) / side:.3f} of crop width, "
           f"{(by1 - by0) / side:.3f} of height (corpus 0.354 x 0.677)")
 
+    if a.dump_render:
+        # EVERYTHING A SECOND DEPTH SOURCE NEEDS, and nothing it would have to
+        # re-derive. The point is that a monocular depth model can be scored
+        # against this scan on the SAME pixels this harness scores a depth
+        # head on -- same locate, same pinna frame, same corpus framing --
+        # so the two numbers are comparable and no framing difference can be
+        # blamed for a gap. depth2 is the renderer's own float32 view-space
+        # buffer, i.e. exact truth for these pixels, not an estimate.
+        dr = pathlib.Path(a.dump_render)
+        dr.mkdir(parents=True, exist_ok=True)
+        _I.fromarray(img2).save(dr / "render_full.png")
+        _I.fromarray(img_c).save(dr / "render_crop.png")
+        np.savez_compressed(
+            dr / "frame.npz", depth_full=depth2.astype(np.float32),
+            crop_box=np.asarray(crop_box), side=side, lm2=lm2,
+            fx=cam2.fx, fy=cam2.fy, cx=cam2.cx, cy=cam2.cy,
+            R=cam2.R, t=cam2.t, ear=a.ear, mesh=str(a.mesh))
+        print(f"dump:   {dr}/render_full.png, render_crop.png, frame.npz")
+
     m = EarDepth3DModule.load_from_checkpoint(
         a.ckpt, map_location="cuda" if torch.cuda.is_available() else "cpu").eval()
     dev = next(m.parameters()).device
@@ -382,6 +415,38 @@ def main():
 
     methods = [("head1_depth", (0.95, 0.18, 0.58), uv, z_pred,
                 "head 1: regressed depth")]
+
+    if a.moge_npz:
+        # THE SHIPPED 2D, LIFTED BY A GENERAL DEPTH MODEL. x and y are
+        # uv_pipe, i.e. the 0.0149-NME model that actually ships; z is read
+        # off the depth map at those same pixels. Nothing here was trained on
+        # ears, and nothing is fitted to this scan: corpus z is invariant to a
+        # global scale on the map, and a metric point map carries no unknown
+        # shift, so the raw depth is usable as it stands.
+        Mz = np.load(a.moge_npz)
+        mgd = Mz["depth"].astype(float)
+        # fx from the width of the image MoGe ACTUALLY RAN ON. The crop is
+        # saved at its native size, so that width is already in render
+        # pixels and the fx/side ratio corpus_z needs stays consistent.
+        fx_m = float(Mz["intrinsics"][0, 0]) * mgd.shape[1]
+        if mgd.shape != depth2.shape:
+            fullm = np.full(depth2.shape, np.nan)
+            fullm[crop_box[1]:crop_box[3], crop_box[0]:crop_box[2]] = (
+                np.asarray(_I.fromarray(mgd).resize(
+                    (crop_box[2] - crop_box[0], crop_box[3] - crop_box[1]),
+                    _I.NEAREST)))
+            mgd = fullm
+        # NEAREST, not bilinear: a bilinear tap across the silhouette blends
+        # the pinna with whatever is behind it and returns a depth that is on
+        # neither surface.
+        ix = np.clip(np.rint(uv_pipe[:, 0]).astype(int), 0, mgd.shape[1] - 1)
+        iy = np.clip(np.rint(uv_pipe[:, 1]).astype(int), 0, mgd.shape[0] - 1)
+        zm = mgd[iy, ix]
+        if not np.isfinite(zm).all():
+            zm = np.where(np.isfinite(zm), zm, np.nanmedian(zm))
+        z_moge = corpus_z(zm, fx_m, size)
+        methods += [("moge_lift", (0.20, 0.95, 0.65), uv_pipe, z_moge,
+                     "shipped 2D + MoGe-2 depth map (no ear training)")]
     if a.compare_flip:
         # same pixels, so the same rays and the same zbar: the two sets differ
         # ONLY in the sign of the predicted depth

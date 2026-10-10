@@ -1610,3 +1610,92 @@ in domain to 1.008 and its optimal rescale out of domain is 0.42, so there is
 no range pathology to fix either. It is that a learned depth mapping does not
 survive the render-to-photo gap in any form tried, while a geometric one needs
 no transfer because it was never fitted to a domain.
+
+## A general depth model beats every ear-specific depth head we trained
+
+The route: take x and y from the shipped 2D landmarker (0.0149 NME), read z
+off a general monocular depth map at those same pixels, and let the head scan
+grade the result. No learned ear depth head anywhere in the path, and nothing
+in the path has ever seen an ear label.
+
+The model is MoGe-2 (ViT-L), chosen over a disparity model because it emits a
+metric POINT MAP: `points[...,2]` is directly comparable with a renderer's
+view-space z, with no inversion and no affine fit to discover first.
+
+Scored on BJ002 through `scan_depth_check.py`, so the locate, the pinna frame
+and the corpus framing are identical to every depth head measured here, and
+head 1 reproduces its 0.277 on the same dump:
+
+| ear | source | z_skill | corr |
+|---|---|---|---|
+| left  | shipped 2D + MoGe-2 | **+0.381** | 0.655 |
+| left  | head 1 (regressed depth) | +0.277 | 0.641 |
+| left  | mean ear + solved pose | −0.101 | 0.237 |
+| right | shipped 2D + MoGe-2 | **+0.153** | 0.539 |
+| right | head 1 | −0.051 | 0.245 |
+| right | mean ear + solved pose | −0.297 | 0.206 |
+
+It wins on both ears, and on the right ear it is the first thing in this
+project to score positively at all.
+
+NOTHING IS FITTED TO THE SCAN in those numbers. Corpus z is exactly invariant
+to a global scale on the depth map -- the factor cancels in
+`(a*z - a*zbar)/(a*zbar)`, verified to 1e-16 -- and a metric point map carries
+no unknown shift, so the raw output is usable as it stands. This is the
+deployable configuration, not an oracle-assisted one.
+
+### The relief is really there, and the dense test had to be fixed to show it
+
+`moge_lift_check.py` scores the depth map densely against the renderer's own
+float32 depth buffer, with the global affine solved on the pixels OUTSIDE the
+ear and applied to the ear unchanged -- normalising on the ear would fit the
+very relief being measured.
+
+The first version of that test scored the whole landmark BOX and reported
+truth's relief as 11.32 mm, against this scan's measured 3.69 mm of pinna
+relief. The box also contains scalp and background a full ear-depth behind the
+pinna, so the 0.971 correlation it produced was one easy step edge: any model
+that knows an ear protrudes scores above 0.95 without resolving anything.
+Narrowed to the depth band the on-pinna landmarks occupy, truth reads 3.62 mm
+-- which independently reproduces the 3.69 mm measured earlier by a different
+route, and is the check that validates the whole chain.
+
+| ear, map | truth relief | MoGe relief | ratio | dense corr |
+|---|---|---|---|---|
+| left, crop | 3.62 mm | 2.92 mm | 0.807 | +0.886 |
+| left, full render | 3.62 mm | 2.83 mm | 0.781 | +0.849 |
+| right, crop | 2.93 mm | 2.03 mm | 0.692 | +0.810 |
+| right, full render | 2.93 mm | 2.00 mm | 0.681 | +0.705 |
+
+For contrast, HSRD-100's full-body photogrammetry reached 0.49 of this scan's
+relief and was rejected for it. A general depth model, with no ear training,
+recovers 0.68 to 0.81.
+
+### The crop beats the whole head, which is the opposite of the prediction
+
+A monocular model was expected to want the head for scene context. It does
+not: framing the ear large is worth +0.17 z_skill on the left ear (+0.512 vs
++0.339 by the dense scorer) and +0.07 on the right. The model has a fixed
+token budget, so context costs resolution, and on something 3 mm deep the
+resolution is what matters.
+
+### Two scorers, same conclusion, and the gap is not hidden
+
+`moge_lift_check.py` reads +0.512 / +0.290 (left / right, crop) where
+`scan_depth_check.py` reads +0.381 / +0.153 on the same maps. The two differ
+in how truth is sampled -- nearest-neighbour on the depth buffer against
+back-projection with silhouette snapping -- and in which points each counts
+as usable. Both beat head 1 on both ears by a clear margin; the absolute
+level is scorer-dependent to about 0.13 and should not be quoted tighter
+than that.
+
+### What this does not establish
+
+n = 2 ears, one subject, so there is no interval here and this is not a
+benchmark result. The input is a RENDER of the scan graded against that same
+scan -- though note the domain shift runs the favourable way for once: MoGe
+was trained on real photographs, so a render is its hard case, where for
+every head we trained the render was the easy case. The open question is
+amplitude, not direction: the relief ratios sit at 0.68-0.81 and the oracle
+amplitude row barely improves on the raw one, so MoGe is slightly flattening
+the pinna rather than mis-shaping it.
