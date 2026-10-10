@@ -6,6 +6,8 @@ the Camera works in, so nothing here crops or maps coordinates itself."""
 
 from __future__ import annotations
 
+import sys
+
 import numpy as np
 
 from .backproject import backproject_snapped

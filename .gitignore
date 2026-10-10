@@ -46,3 +46,9 @@ data/depth3d*/
 .venv_da3/
 /data/photo3d/
 data/photo3d/
+
+# A real person's head scan. NEVER commit, NEVER redistribute. Both spellings
+# because a rule anchored only at the root silently stops applying the moment
+# the folder is referenced from a subdirectory.
+/supersecret/
+supersecret/
