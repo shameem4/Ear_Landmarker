@@ -168,6 +168,12 @@ def main():
                         "fraction of the sampled span, is the scalp beside the "
                         "pinna rather than the ear")
     p.add_argument("--no-skin", action="store_true")
+    p.add_argument("--shape-ckpt", default="",
+                   help="a head 2 (shape) checkpoint. Lifted two ways: its "
+                        "own decoded x,y,z, and its COEFFICIENTS with pose "
+                        "solved from the shipped 2D -- which on photographs "
+                        "was worth +0.62 to +0.86 z_skill over the regressed "
+                        "pose, so the two are worth seeing side by side")
     p.add_argument("--export-obj", default="",
                    help="write a textured .obj of the head with a named "
                         "sphere at every landmark, for review in a 3D viewer")
@@ -298,38 +304,95 @@ def main():
     uv = np.stack([crop_box[0] + xy[:, 0] * side,
                    crop_box[1] + xy[:, 1] * side], axis=1)
 
-    P2, hit2 = backproject(depth2, uv, cam2)
-    zc, scalp = flag_scalp(P2, hit2, cam2, a.scalp_tol)
-    good = hit2 & ~scalp
-    print(f"sample: {int(hit2.sum())}/{K} landmarks hit the surface, "
-          f"{int(scalp.sum())} of those behind the pinna (scalp), "
-          f"{int(good.sum())} usable")
-    if good.sum() < 10:
-        sys.exit("too few usable landmarks to report a depth number")
+    def sample_surface(uvq):
+        """Where the scan's surface actually is, at these pixels."""
+        Pq, hitq = backproject(depth2, uvq, cam2)
+        zcq, scalpq = flag_scalp(Pq, hitq, cam2, a.scalp_tol)
+        return Pq, hitq, zcq, scalpq, (hitq & ~scalpq)
 
-    zt_g = corpus_z(zc[good], cam2.fx, size)
-    zt_g = zt_g - zt_g.mean()
-    zp = z_pred[good] - z_pred[good].mean()
-    mae = float(np.abs(zp - zt_g).mean())
-    base = float(np.abs(zt_g).mean())
-    zf_all = weak_perspective(
-        (lambda mu: mu - mu.mean(0))(
-            np.load(TPL / "lm_basis_v6_55_unitheight.npz",
-                    allow_pickle=True)["mean"][:K]), xy)[0]
+    def lift(uvq, zq, zbar):
+        """Pixel + PREDICTED z -> 3D. The ray comes from x,y; the distance
+        along it comes from z and nothing else. zbar only fixes the overall
+        scale, which a crop cannot determine and the model never claims."""
+        zcp = zbar * (1.0 + zq * side / cam2.fx)
+        pc = np.stack([(uvq[:, 0] - cam2.cx) / cam2.fx * zcp,
+                       (uvq[:, 1] - cam2.cy) / cam2.fy * zcp, zcp], axis=1)
+        return (pc - cam2.t) @ cam2.R
+
+    mu = np.load(TPL / "lm_basis_v6_55_unitheight.npz", allow_pickle=True)
+    mean_u = mu["mean"][:K] - mu["mean"][:K].mean(0)
+    comp_u = mu["components"][:, :K]
+
+    # The shipped pipeline's own 2D, in crop coordinates. This is the reliable
+    # half of the system (0.0149 NME) and it is what a deployed MediaPipe-style
+    # pipeline would feed the solver, so the fitted methods use it rather than
+    # a depth head's x,y.
+    uv_pipe = lm2.copy()
+    xy_pipe = (lm2 - np.array(crop_box[:2])) / side
+
+    methods = [("head1_depth", (0.95, 0.18, 0.58), uv, z_pred,
+                "head 1: regressed depth")]
+
+    if a.shape_ckpt:
+        from model.depth_module import EarShape3DModule
+        sm = EarShape3DModule.load_from_checkpoint(
+            a.shape_ckpt, map_location=dev).eval().to(dev)
+        with torch.no_grad():
+            prm = sm.model.parameters_from(
+                torch.from_numpy((t - 0.5) / 0.5).float().to(dev))
+            dec = sm.model.decode(prm).cpu().numpy()[0][:K]
+        coef = prm.cpu().numpy()[0][:sm.model.n_modes]
+        xy_s, z_s = dec[:, :2], dec[:, 2] - dec[:, 2].mean()
+        uv_s = np.stack([crop_box[0] + xy_s[:, 0] * side,
+                         crop_box[1] + xy_s[:, 1] * side], axis=1)
+        shp = mean_u + np.einsum("m,mkj->kj", coef, comp_u[:len(coef)])
+        shp = shp - shp.mean(0)
+        methods += [
+            ("shape_e2e", (1.00, 0.55, 0.10), uv_s, z_s,
+             "shape head: REGRESSED pose, its own x,y"),
+            ("shape_fit", (0.25, 0.55, 0.95), uv_pipe,
+             weak_perspective(shp, xy_pipe)[0],
+             "shape head: coefficients + SOLVED pose, shipped 2D"),
+        ]
+        print(f"shape head: predicted coefficient sd {coef.std():.3f} "
+              f"(gt is 1.0)")
+
+    methods += [("meanear_fit", (0.20, 0.85, 0.85), uv_pipe,
+                 weak_perspective(mean_u, xy_pipe)[0],
+                 "mean ear + SOLVED pose, shipped 2D")]
+
+    # ---- score each at ITS OWN pixels, then lift it ----------------------
+    print(f"\n{'method':<44s} {'usable':>7s} {'signal':>8s} {'z_skill':>8s}"
+          f" {'corr':>6s}")
+    sets, head1 = {}, None
+    for name, col, uvq, zq, label in methods:
+        _, hitq, zcq, scalpq, goodq = sample_surface(uvq)
+        if goodq.sum() < 10:
+            print(f"  {label:<42s} too few usable landmarks")
+            continue
+        ztq = corpus_z(zcq[goodq], cam2.fx, side)
+        ztq = ztq - ztq.mean()
+        zpq = zq[goodq] - zq[goodq].mean()
+        maeq = float(np.abs(zpq - ztq).mean())
+        baseq = float(np.abs(ztq).mean())
+        corrq = float(np.corrcoef(zpq, ztq)[0, 1])
+        print(f"  {label:<42s} {int(goodq.sum()):5d}/{K} {baseq:8.4f} "
+              f"{1 - maeq / baseq:8.3f} {corrq:6.3f}")
+        zbarq = float(np.mean(zcq[goodq]))
+        sets[name] = (col, [q for q in lift(uvq, zq, zbarq)])
+        if name == "head1_depth":
+            head1 = dict(uv=uvq, good=goodq, scalp=scalpq, zt=ztq, zp=zpq,
+                         mae=maeq, base=baseq, zc=zcq, P2=sample_surface(uvq)[0])
+    print(f"  {'predict z = 0':<42s} {'-':>5s}    {'-':>8s} {0.0:8.3f}"
+          f" {'-':>6s}")
+
+    # the surface reference, at head 1's pixels, for the figure and the export
+    P2, hit2, zc, scalp, good = sample_surface(uv)
+    zt_g, zp = head1["zt"], head1["zp"]
+    mae, base = head1["mae"], head1["base"]
+    zf_all = weak_perspective(mean_u, xy)[0]
     zf = zf_all[good] - zf_all[good].mean()
     mf = float(np.abs(zf - zt_g).mean())
-
-    print(f"\n{'quantity':<46s} {'value':>9s}")
-    print(f"  {'scan depth spread, mean |z| (the signal)':<44s} {base:9.4f}")
-    print(f"  {'head 1 error, mean |dz|':<44s} {mae:9.4f}")
-    print(f"  {'head 1 z_skill':<44s} {1 - mae / base:9.3f}")
-    print(f"  {'head 1 correlation with the scan':<44s} "
-          f"{np.corrcoef(zp, zt_g)[0, 1]:9.3f}")
-    print(f"  {'mean ear + solved pose, same landmarks':<44s} "
-          f"{1 - mf / base:9.3f}")
-    print(f"  {'mean ear correlation':<44s} "
-          f"{np.corrcoef(zf, zt_g)[0, 1]:9.3f}")
-    print(f"  {'predict z = 0':<44s} {0.0:9.3f}")
 
     np.savez(out / "scan_depth.npz", xy=xy, z_pred=z_pred, z_true_good=zt_g,
              good=good, hit=hit2, scalp=scalp, uv=uv, conf=conf,
@@ -352,43 +415,26 @@ def main():
         def to_scan(P2):
             return (((np.atleast_2d(P2) * scale) @ R2) + C2) * s0 + c0
 
-        # head 1's own 3D: undo the z normalisation, then unproject. zbar is
-        # taken from the surface samples -- a crop fixes no absolute depth, so
-        # the model cannot supply it and nothing here pretends otherwise.
-        zbar = float(np.mean(zc[good]))
-        zc_pred = zbar * (1.0 + z_pred * side / cam2.fx)
-        pc = np.stack([(uv[:, 0] - cam2.cx) / cam2.fx * zc_pred,
-                       (uv[:, 1] - cam2.cy) / cam2.fy * zc_pred,
-                       zc_pred], axis=1)
-        P_pred2 = (pc - cam2.t) @ cam2.R
-
         surf = [to_scan(P2[i])[0] if hit2[i] else None for i in range(K)]
-        pred = [to_scan(P_pred2[i])[0] for i in range(K)]
-        sets = {
-            "head1_depth": ((0.95, 0.18, 0.58),
-                            [p if not scalp[i] else p
-                             for i, p in enumerate(pred)]),
-            "scan_surface": ((0.18, 0.80, 0.44),
-                             [v if (hit2[i] and not scalp[i]) else None
-                              for i, v in enumerate(surf)]),
-            "scan_surface_SCALP": ((1.0, 1.0, 1.0),
-                                   [v if scalp[i] else None
-                                    for i, v in enumerate(surf)]),
-        }
+        osets = {k: (c, [to_scan(q)[0] for q in pts])
+                 for k, (c, pts) in sets.items()}
+        osets["scan_surface"] = ((0.18, 0.80, 0.44),
+                                 [v if (hit2[i] and not scalp[i]) else None
+                                  for i, v in enumerate(surf)])
+        osets["scan_surface_SCALP"] = ((1.0, 1.0, 1.0),
+                                       [v if scalp[i] else None
+                                        for i, v in enumerate(surf)])
         rad = a.sphere * ear_h * s0
-        oo, mm, tt = write_review_obj(a.export_obj, src, sets, rad,
+        oo, mm, tt = write_review_obj(a.export_obj, src, osets, rad,
                                       lambda i: next(n for (lo, hi), n
                                                      in zip(STRIPS, STRIP_NAMES)
                                                      if lo <= i < hi))
         print(f"\nreview mesh -> {oo}")
         print(f"  {mm.name}, texture {tt.name if tt else 'NONE'}")
-        print(f"  spheres r={rad:.2f} scan units: "
-              f"{sum(p is not None for p in sets['head1_depth'][1])} head1_depth "
-              f"(magenta), "
-              f"{sum(p is not None for p in sets['scan_surface'][1])} "
-              f"scan_surface (green), "
-              f"{sum(p is not None for p in sets['scan_surface_SCALP'][1])} "
-              f"scan_surface_SCALP (white)")
+        print(f"  spheres r={rad:.2f} scan units:")
+        for k, (c, pts) in osets.items():
+            print(f"    {k:<22s} {sum(q is not None for q in pts):3d}  "
+                  f"rgb {tuple(round(x, 2) for x in c)}")
 
     import matplotlib
     matplotlib.use("Agg")
