@@ -42,6 +42,12 @@ def main():
     from PIL import Image
     import open3d as o3d
 
+    # A 16k photogrammetry atlas is 268M pixels and PIL refuses anything over
+    # 179M as a possible decompression bomb. That guard is for untrusted
+    # input; these files are local scans whose size is known from their own
+    # metadata, so it is raised deliberately rather than by a blanket None.
+    Image.MAX_IMAGE_PIXELS = 400_000_000
+
     obj = pathlib.Path(a.obj)
     V, VT, faces = [], [], []
     for ln in open(obj, errors="ignore"):

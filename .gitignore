@@ -52,3 +52,7 @@ data/photo3d/
 # the folder is referenced from a subdirectory.
 /supersecret/
 supersecret/
+
+# HSRD-100 (CC BY 4.0). Permissively licensed, but data still stays local.
+/data/hsrd100/
+data/hsrd100/
