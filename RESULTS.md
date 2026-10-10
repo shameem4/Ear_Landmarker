@@ -1700,50 +1700,71 @@ amplitude, not direction: the relief ratios sit at 0.68-0.81 and the oracle
 amplitude row barely improves on the raw one, so MoGe is slightly flattening
 the pinna rather than mis-shaping it.
 
-## Surface distance cannot rank views; the wrap's own landmarks can
+## The wrap's landmarks are ground truth, and they cost two frame bugs to reach
 
-Every 3D number in this project so far was a distance to the nearest point on
-the scan. That metric has no idea *which* point a landmark should be on, so a
-landmark that slides along the ear -- or off it onto the scalp -- scores well.
+Every 3D number in this project before this was a distance to the nearest point
+on the scan, which has no idea *which* point a landmark should be on. The wrap
+gives a reference with correspondence: each landmark is a (triangle,
+barycentric) address, so point *i* can be compared with point *i*.
 
-The wrap gives a reference with correspondence. Each landmark is a (triangle,
-barycentric) address on the template, so a wrapped ear carries all 95 at known
-indices and point *i* can be compared with point *i*. On `hutubs pp10_right`,
-21 views:
+**The reference is the ear's own surface.** The wrap fits the cut ear to 0.002
+mm median (`corpus/fits2_hutubs.csv`, 0.003% of the ear) and the cut inverts
+onto the head's own vertices to 3e-05 mm, so once the frames compose correctly
+the landmarks sit **0.058 mm** from the scan. There is no residual to deduct --
+a number here is our error, not a budget shared with the reference.
 
-| estimator | paired vs wrap | surface |
-|---|---|---|
-| RANSAC | **7.11** mm | 1.69 mm |
-| coordinate median | 8.01 mm | 1.94 mm |
-| geometric median | 7.66 mm | 2.09 mm |
+`hutubs pp10_right`, 21 views, all 21 contributing to every landmark:
 
-The two metrics rank the 21 single views with a correlation of **+0.012**.
-Surface distance is not merely blind to scalp escapes -- it is uninformative.
-The view flagged by eye as broken, `y-16_p+0`, is the *worst* of the twenty-one
-by the paired metric (12.06 mm) while surface distance put it mid-pack at 2.33;
-`y+24_p+12` looks best by surface distance (0.96) and is mid-pack by GT.
+| estimator | median | mean | p90 | max | beats |
+|---|---|---|---|---|---|
+| plain mean | **5.98** | 6.54 | 10.95 | 15.03 | 20/21 |
+| RANSAC | 6.08 | **6.23** | **9.86** | **14.82** | 19/21 |
+| geometric median | 6.22 | 6.67 | 11.41 | 16.87 | 16/21 |
+| coordinate median | 6.28 | 6.77 | 11.61 | 17.74 | 14/21 |
 
-The consensus survives the better instrument: RANSAC beats 20 of 21 single
-views, the median 19 of 21. That claim previously rested only on the metric we
-now know says nothing.
+Single views run 5.80 to 11.09 mm. **The estimators are a wash within 0.3 mm,
+and the plain mean is not beaten on median error.** What robustness buys is the
+tail -- RANSAC's p90 is 9.86 against the mean's 10.95 -- not accuracy. The
+earlier claim that the robust estimators beat the mean was made on surface
+distance and does not survive a reference with correspondence.
 
-By strip, the outer helix is worst at 11.56 mm against 5.48 for concha and
-tragus -- independent agreement with the inter-view spread, which already put
-the weak landmarks at 2-5 and 16/17, all outer helix.
+By strip the outer helix is worst at 9.06 mm against 5.12 for concha and
+tragus, which independently agrees with the inter-view spread already putting
+the weak landmarks at 2-5 and 16/17, all outer helix. A best-fit rigid
+alignment of reference to estimate still removes 11.9 degrees of rotation and
+drops the median to 5.48, so a good part of what is left is systematic
+orientation rather than per-point noise -- worth chasing before anything else.
 
-**This is a ranking instrument, not an accuracy figure.** The wrap residual is
-~2 mm normal to the surface and the landmarks ride on the wrap, so the
-reference and our estimate both sit ~1.9 mm off the scan. The disagreement is
-therefore almost entirely tangential, the one direction the wrap residual does
-not constrain, and the 7-8 mm cannot be split between us and the reference. It
-is an upper bound, valid for comparing views against a fixed reference and for
-catching gross displacement.
+Surface distance and the paired metric rank the 21 views with a correlation of
+**+0.349**: weak, so surface distance carries some signal but little. The
+qualitative failure is still there -- `y-16_p+0`, flagged by eye as broken, is
+the worst of the twenty-one at 11.09 mm while surface distance puts it mid-pack
+at 2.33, and `y+24_p+12` is the best by surface distance (0.96) and eighth by
+GT. (An earlier version of this section reported +0.012 and called surface
+distance uninformative; that was measured against the mis-framed reference
+below and is withdrawn.)
 
-Two traps, both of which first produced plausible nonsense. The barycentrics
-index the *wrapped template* (1188 v, 2296 f), not the `faceform2` fit (13776
-f); applied to the fit, every point still lands on the fit surface -- 3.2 mm by
-surface distance, looking fine -- while actually scattering at random, which
-only showed up as a pairwise-distance correlation of 0.04 and 23 consecutive
--step jumps instead of 3. And a right ear is stored in left form, mirrored
-about z, which must be undone before the cut-to-head matrix. `scripts/gt_landmark_check.py`
-asserts the face count and runs the contour check so neither can recur quietly.
+**Three traps, all with the same signature:** the landmarks stay *on* the
+surface, so a surface-distance check passes while the answer is wrong.
+
+- The barycentrics address the **canonical** mesh. Applied to the `faceform2`
+  fit, every point still lands on that fit, reading 3.2 mm and looking like
+  ordinary error while scattering the landmarks at random. Only the structure
+  gave it away: pairwise-distance correlation 0.04 and 23 consecutive-step
+  jumps instead of 3.
+- **Each wrap generation pairs with its own cut generation.** `wrapped2_*` sits
+  on `ears_hutubs` at 0.002 mm and on `ears4_hutubs` at 0.856 mm; `wrapped3_*`
+  is the other way round. Crossing them looks exactly like a 0.9 mm wrap
+  residual, which is what I first reported it as.
+- **The cut frame is a normalised head.** `cut_ears.py` works on
+  `load_head`, which centres the mesh and divides by its largest centred
+  coordinate, so the saved matrix maps into *that* frame.
+  `corpus/tf_mm_*/matrix` rescales the translation but never adds the centroid
+  back -- 5.56 mm adrift on pp10, read as a 1.95 mm reference-to-scan gap, and
+  inflated every paired number by about 1.7 mm. `verified_gap: 5.7e-17` in
+  those files verifies the matrix inverts the cut, which it does; it says
+  nothing about the units it inverts into.
+
+`scripts/gt_landmark_check.py` composes the chain itself from `tf_*` plus the
+scan's own centroid and radius, and refuses to return a reference that lands
+more than 1 mm from the scan.
