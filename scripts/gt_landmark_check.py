@@ -33,9 +33,11 @@ surface-distance check passes while the answer is wrong.
   ears_hutubs at 0.002 mm and on ears4_hutubs at 0.856 mm; wrapped3_* is the
   other way round. Crossing them looks exactly like a 0.9 mm wrap residual.
 
-  THE CUT FRAME IS A NORMALISED HEAD. See _head_norm: corpus/tf_mm_*/matrix
-  omits the scan's centroid and is 5.56 mm adrift on pp10, which read as a
-  1.95 mm reference-to-scan gap and inflated every paired number by ~1.7 mm.
+  THE CUT FRAME IS A NORMALISED HEAD, per dataset -- hutubs cuts are relative
+  to a centred, unit-radius head and sonicom's to raw vertices.
+  corpus/tf_mm_*/matrix omits the scan's centroid and is 5.56 mm adrift on
+  pp10. This is why the chain is composed once in
+  scripts/canonical_to_scan.py and only read here.
 
 A right ear is additionally fitted and stored in LEFT form, mirrored about z,
 which must be undone before the cut's matrix.
@@ -63,41 +65,24 @@ STRIP_NAME = {0: "outer helix", 20: "inner helix", 35: "concha/tragus",
 SURFACE_TOL_MM = 1.0
 
 
-def _head_norm(path):
-    """load_head's normalisation, recovered: centre, then unit L-inf radius.
-
-    THE CUT FRAME IS A NORMALISED HEAD, NOT THE SCAN. cut_ears.py works on
-    ear3d.frames.load_head, which centres the mesh and divides by its largest
-    centred coordinate, so the matrix saved beside each cut maps the cut into
-    THAT frame. Undoing it needs the scan's own centroid and radius, and
-    nothing downstream stores them -- which is why corpus/tf_mm_*/matrix,
-    built by scaling the translation alone, is 5.56 mm adrift on pp10: it
-    rescales correctly and never adds the centroid back. Recomputed from the
-    scan here instead of trusted.
-    """
-    import open3d as o3d
-    head = o3d.io.read_triangle_mesh(str(path))
-    V = np.asarray(head.vertices)
-    mean = V.mean(0)
-    return head, mean, float(np.abs(V - mean).max())
-
-
 def gt_landmarks(dataset, subject, ear, n_points, verify=True):
     """The wrap's landmarks for one ear, in that scan's own frame, in mm.
 
-    The chain, every link of which is exact and checked on the way out:
+    ONE LOOKUP, NOT A COMPOSITION. corpus/canon2scan/<name>.npz holds a single
+    4x4 taking canonical millimetres to that scan's millimetres, built and
+    verified once by scripts/canonical_to_scan.py against the scan itself. All
+    476 ears land on their scan to 0.0 mm and the matrix is a pure rigid motion
+    (scale exactly 1, with a mirror for a right ear), because the canonical
+    corpus is already one frame at one scale.
 
-      stored landmarks   canonical frame, mm
-        -> to_original   the canonical npz's own matrix, into the fit's frame
-        -> mirror z      right ears are fitted and stored in LEFT form
-        -> tf matrix     the cut's saved inverse, into the NORMALISED head
-        -> x radius + centroid    into the scan's frame
+    Composing this by hand instead is what produced three separate bugs in an
+    afternoon -- the wrong mesh for the barycentrics, a crossed wrap/cut
+    generation, and corpus/tf_mm_* omitting the scan's centroid -- every one of
+    which left the landmarks ON the scan surface and so passed a
+    surface-distance check. Do not reintroduce it; read the matrix.
 
-    Do not substitute corpus/tf_mm_*; see _head_norm. And note the landmarks
-    are addressed on the CANONICAL mesh -- applying their (triangle,
-    barycentric) to a fit mesh of different topology scatters them across the
-    surface while leaving every one of them ON that surface, so it passes a
-    surface-distance check while being nonsense.
+    The landmarks are addressed on the CANONICAL mesh, so their (triangle,
+    barycentric) must not be applied to a fit of different topology.
     """
     name = f"{subject}_{ear}"
     z = np.load(WRAP / f"templates/lm3d_v5_{dataset}_mm.npz", allow_pickle=True)
@@ -106,73 +91,29 @@ def gt_landmarks(dataset, subject, ear, n_points, verify=True):
         sys.exit(f"{name} is not in lm3d_v5_{dataset}_mm.npz")
     L = z["landmarks"][names.index(name)]
 
-    cn = np.load(WRAP / f"corpus/canonical/{dataset}/{name}.npz",
-                 allow_pickle=True)
-    L = L @ cn["to_original"][:3, :3].T + cn["to_original"][:3, 3]
-    if ear == "right":
-        L = L * np.array([1.0, 1.0, -1.0])
-
-    tf = np.load(WRAP / f"corpus/tf_{dataset}/{name}.npz", allow_pickle=True)
-    M = tf["matrix"]
-    L = L @ M[:3, :3].T + M[:3, 3]
-    head, mean, s0 = _head_norm(str(tf["source"]))
-    L = L * s0 + mean
-    # metres or millimetres: no head is under 10 mm tall by any measure
-    Vh = np.asarray(head.vertices)
-    mm = 1000.0 if float(np.ptp(Vh, axis=0).max()) < 10.0 else 1.0
-    L = L * mm
+    tp = WRAP / f"corpus/canon2scan/{name}.npz"
+    if not tp.exists():
+        sys.exit(f"{tp} not found -- run scripts/canonical_to_scan.py")
+    t = np.load(tp, allow_pickle=True)
+    T = t["matrix"]
+    L = L @ T[:3, :3].T + T[:3, 3]
 
     if verify:
         import open3d as o3d
+        head = o3d.io.read_triangle_mesh(str(t["scan"]))
+        Vh = np.asarray(head.vertices)
+        Vh = Vh * (1000.0 if float(np.ptp(Vh, axis=0).max()) < 10.0 else 1.0)
         sc = o3d.t.geometry.RaycastingScene()
-        hm = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(Vh * mm),
-                                       head.triangles)
-        sc.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(hm))
+        sc.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(
+            o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(Vh),
+                                      head.triangles)))
         d = sc.compute_distance(o3d.core.Tensor(
             np.ascontiguousarray(L, np.float32))).numpy()
         if np.median(d) > SURFACE_TOL_MM:
             sys.exit(f"the reference lands {np.median(d):.3f} mm from "
-                     f"{tf['source']}, over the {SURFACE_TOL_MM} mm tolerance "
+                     f"{t['scan']}, over the {SURFACE_TOL_MM} mm tolerance "
                      f"-- a link in the chain is wrong, NOT the data")
-    return L[:n_points], z["strips"], str(tf["source"])
-
-
-# ONE FIXED RELABELLING, measured on pp10 and NOT fitted per ear: both helix
-# strips sit about 0.05 of their arc further along in our scheme than in the
-# wrap's hand-marked one -- on the 20-point outer helix that is exactly one
-# index step -- and our five lobe points span about 0.70 of the arc the wrap
-# gives the lobe. Confirmed on both ears of pp10 independently (outer helix
-# beta +0.053 right, +0.051 left; lobe alpha 0.752 right, 0.651 left) and
-# across 40 views lifted with oracle depth, where beta's spread between views
-# is 0.03-0.06 against offsets of 0.05.
-ARC_FIX = {0: (1.00, 0.05), 20: (1.00, 0.05), 35: (1.00, 0.00),
-           50: (0.70, 0.00)}
-
-
-def _arc(X):
-    d = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(X, axis=0), axis=1))]
-    return d / d[-1]
-
-
-def _resample(Gs, n, alpha, beta):
-    """The reference strip read at alpha*t+beta instead of at t."""
-    tg = _arc(Gs)
-    tt = np.clip(alpha * np.linspace(0, 1, n) + beta, 0, 1)
-    return np.stack([np.interp(tt, tg, Gs[:, k]) for k in range(3)], axis=1)
-
-
-def _reparam_fit(Gs, Ps):
-    """alpha, beta minimising the median paired distance, and that median."""
-    from scipy.optimize import minimize
-
-    def cost(q):
-        return float(np.median(np.linalg.norm(
-            Ps - _resample(Gs, len(Ps), q[0], q[1]), axis=1)))
-    best = min((minimize(cost, x0, method="Nelder-Mead",
-                         options=dict(xatol=1e-4, fatol=1e-4)).x
-                for x0 in ([1, 0], [1, 0.05], [0.9, 0.05], [1.1, -0.05])),
-               key=cost)
-    return cost(best), best
+    return L[:n_points], z["strips"], str(t["scan"])
 
 
 def contour_check(P, strips, label):
@@ -221,8 +162,8 @@ def main():
     print(f"{a.dataset} {a.subject}_{a.ear}, reference from the wrap")
     contour_check(G, strips, "reference")
     print(f"  reference sits {np.median(surf(G)):.2f} mm from the scan "
-          f"(the wrap residual -- our estimate cannot beat this normal to "
-          f"the surface)\n")
+          f"-- it IS the ear's surface, so what follows is our error with "
+          f"nothing to deduct\n")
 
     print(f"{'estimator':<16}{'GT med':>8}{'GT p90':>8}{'GT max':>8}"
           f"{'surf med':>10}")
