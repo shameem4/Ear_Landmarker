@@ -24,6 +24,17 @@ FIVE STAGES, cycled with the number keys:
   5  against truth   the consensus with the nearest surface point beside it
                      and a stick between them, which is the error with a
                      direction rather than a number.
+  7  against the wrap   the consensus against the wrap's OWN landmark for the
+                     same index -- the only reference here that has
+                     correspondence. Stage 5 cannot see a point that slides
+                     along the ear; this one can. [G] overlays the same
+                     landmarks on any other stage.
+
+STAGE 5 AND STAGE 7 DISAGREE, AND STAGE 7 IS THE ONE TO BELIEVE. Over 21
+views of hutubs pp10_right the two rank the views with a correlation of
++0.01. The reference carries its own ~2 mm wrap residual normal to the
+surface, so stage 7's number is an upper bound and not an accuracy, but it
+is measured against a FIXED reference and so ranks honestly.
 
 EVERY GEOMETRY IS BUILT BEFORE THE WINDOW OPENS. An OffscreenRenderer cannot
 be created while the GUI holds the Filament context -- it fails in the driver
@@ -71,6 +82,10 @@ CONSENSUS_C = (0.20, 0.95, 0.65)
 WEAK_C = (1.00, 0.45, 0.10)
 TRUTH_C = (0.15, 0.50, 1.00)
 STICK_C = (1.00, 0.75, 0.00)
+# The wrap's landmarks are NOT the blue nearest-surface point and must not
+# read as it: they are a different kind of claim about the same index.
+GT_C = (0.90, 0.25, 0.95)
+GT_STICK_C = (0.62, 0.12, 0.72)
 
 
 def view_colour(i, n):
@@ -260,8 +275,14 @@ def main():
                    help="sphere radius IN MILLIMETRES, converted to scan "
                         "units from the head's measured size")
     p.add_argument("--size", type=int, default=1100)
+    p.add_argument("--gt-subject", default="",
+                   help="e.g. pp10 -- enables stage 7 from that ear's wrap "
+                        "landmarks. --mesh must be the same head, in the "
+                        "head's own frame.")
+    p.add_argument("--gt-ear", default="right", choices=["left", "right"])
+    p.add_argument("--gt-dataset", default="hutubs")
     p.add_argument("--stage", type=int, default=1,
-                   choices=[1, 2, 3, 4, 5, 6],
+                   choices=[1, 2, 3, 4, 5, 6, 7],
                    help="which stage to open on")
     p.add_argument("--landmark", type=int, default=0,
                    help="which landmark stage 3 opens on")
@@ -310,6 +331,28 @@ def main():
                           for k in range(K)]), MATERIAL)
     g["truth"] = (spheres(surf, rad * 0.8, [TRUTH_C] * K), MATERIAL)
     g["sticks"] = (lineset(list(zip(cons, surf)), STICK_C), LINE_MATERIAL)
+
+    # ---- the wrap's own landmarks, when a subject is named ---------------
+    gt = gt_err = None
+    if a.gt_subject:
+        from gt_landmark_check import gt_landmarks
+        G_mm, _, gt_src = gt_landmarks(a.gt_dataset, a.gt_subject,
+                                       a.gt_ear, K)
+        # THE SAME HEAD, CHECKED. The wrap records which scan it was cut
+        # from, and comparing a consensus with a different person's ear
+        # would look like a plain accuracy failure rather than a mistake.
+        if pathlib.Path(gt_src).resolve() != pathlib.Path(a.mesh).resolve():
+            print(f"  WARNING the wrap was cut from {gt_src}\n"
+                  f"          but --mesh is {a.mesh} -- same head?")
+        gt = G_mm / D["mmpu"]           # head mm -> scan units
+        gt_err = np.linalg.norm(cons - gt, axis=1) * D["mmpu"]
+        g["gt"] = (spheres(gt, rad * 0.85, [GT_C] * K), MATERIAL)
+        g["gt_sticks"] = (lineset(list(zip(cons, gt)), GT_STICK_C),
+                          LINE_MATERIAL)
+        e = gt_err[np.isfinite(gt_err)]
+        print(f"wrap reference ({a.gt_subject}_{a.gt_ear}): paired median "
+              f"{np.median(e):.2f} mm, p90 {np.percentile(e, 90):.2f}, "
+              f"max {e.max():.2f}")
     rows = [v["row"] for v in V]
     for k in range(K):
         # one estimate per KEPT view, in the same order the colours use, so a
@@ -345,7 +388,10 @@ def main():
                                              "lmk0_fan"]),
                          ("4 consensus", ["cons"]),
                          ("5 against truth", ["cons", "truth", "sticks"]),
-                         ("6 depth map", ["view0_depth"])):
+                         ("6 depth map", ["view0_depth"]),
+                         ("7 against wrap",
+                          ["cons", "gt", "gt_sticks"] if gt is not None
+                          else ["cons"])):
             miss = [k for k in keys if k not in g]
             print(f"  stage {st:<16s} {'OK' if not miss else 'MISSING ' + str(miss)}")
         print(f"\ninlier counts: min {nin.min()}, median "
@@ -386,7 +432,7 @@ def main():
     win.add_child(img_w)
 
     st = {"stage": a.stage, "view": 0, "lmk": a.landmark % max(K, 1),
-          "mesh": True, "drawn": []}
+          "mesh": True, "gt": False, "drawn": []}
 
     def on_layout(ctx):
         r = win.content_rect
@@ -477,6 +523,25 @@ def main():
             else:
                 txt = (f"STAGE 6  the depth map itself\n"
                        f"view {v['tag']} has no usable depth map")
+        elif s == 7:
+            if gt is None:
+                show(["cons"])
+                txt = ("STAGE 7  against the wrap\n"
+                       "no --gt-subject was given, so there is no reference")
+            else:
+                show(["cons", "gt", "gt_sticks"])
+                e = gt_err[np.isfinite(gt_err)]
+                sd = D["dist"][np.isfinite(D["dist"])]
+                txt = (f"STAGE 7  {D['est_name']} against the WRAP's "
+                       f"landmarks\n"
+                       f"violet = the wrap's own point for the SAME index\n"
+                       f"median {np.median(e):.2f} mm   p90 "
+                       f"{np.percentile(e, 90):.2f}   max {e.max():.2f}\n"
+                       f"stage 5 says {np.median(sd):.2f} mm for the same "
+                       f"points -- that metric cannot see a point\n"
+                       f"that slid along the ear, and this one can\n"
+                       f"the reference carries ~2 mm of its own wrap "
+                       f"residual, so read this as an upper bound")
         else:
             show(["cons", "truth", "sticks"])
             d = D["dist"][np.isfinite(D["dist"])]
@@ -484,7 +549,16 @@ def main():
                    f"blue = nearest surface point, amber = the error\n"
                    f"median {np.median(d):.2f} mm   p90 "
                    f"{np.percentile(d, 90):.2f}   max {d.max():.2f}")
-        info.text = txt + "\n\n[1-6] stage   [M] mesh   [Q] quit"
+        # the reference as an OVERLAY, so convergence in stage 2 or a single
+        # landmark's fan in stage 3 can be read against where the point
+        # should have been, not just against where the others went
+        if st["gt"] and gt is not None and s != 7:
+            geo, mat = g["gt"]
+            widget.scene.add_geometry("gt_overlay", geo, mat)
+            st["drawn"].append("gt_overlay")
+            txt += "\n[G] violet = the wrap's landmarks"
+        info.text = txt + ("\n\n[1-7] stage   [M] mesh   [G] wrap   "
+                           "[Q] quit")
         win.set_needs_layout()
 
     def on_key(e):
@@ -492,7 +566,7 @@ def main():
             return False
         # The digit KeyNames ARE their ASCII codes, which is what makes this
         # readable; the arrows and letters have proper names.
-        if ord("1") <= e.key <= ord("6"):
+        if ord("1") <= e.key <= ord("7"):
             st["stage"] = e.key - ord("0")
         elif e.key == gui.KeyName.RIGHT:
             st["view"] = (st["view"] + 1) % nv
@@ -508,6 +582,8 @@ def main():
             st["stage"] = 3
         elif e.key == gui.KeyName.M:
             st["mesh"] = not st["mesh"]
+        elif e.key == gui.KeyName.G:
+            st["gt"] = not st["gt"]
         elif e.key in (gui.KeyName.Q, gui.KeyName.ESCAPE):
             gui.Application.instance.quit()
             return True
