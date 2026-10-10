@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+"""A window onto every stage of the multi-view lift, not just its answer.
+
+WHAT THIS IS FOR. The pipeline now has several places a landmark can go
+wrong, and a single number at the end cannot say which one did. A per-view
+estimate can read the scalp; a set of views can disagree; the consensus can
+sit off the surface. Each of those looks identical in a z_skill table and
+completely different on screen, so the stages are made steppable instead of
+being collapsed into a score.
+
+FIVE STAGES, cycled with the number keys:
+
+  1  one view        that view's render with its 2D landmarks, beside the 3D
+                     those same points lifted to. LEFT/RIGHT step views, so
+                     a bad view is found by walking the sweep.
+  2  all views       every view's lift at once, each view its own colour.
+                     This is the convergence seen as a cloud: tight where
+                     the views agree, a smear where they do not.
+  3  one landmark    one landmark's estimate from every view, with a line
+                     from each to the consensus, inliers solid and outliers
+                     dark. UP/DOWN step landmarks. This is the only view
+                     that shows WHY a point was accepted or rejected.
+  4  consensus       the RANSAC result, coloured by how many views agreed.
+  5  against truth   the consensus with the nearest surface point beside it
+                     and a stick between them, which is the error with a
+                     direction rather than a number.
+
+EVERY GEOMETRY IS BUILT BEFORE THE WINDOW OPENS. An OffscreenRenderer cannot
+be created while the GUI holds the Filament context -- it fails in the driver
+and takes the process down -- so nothing here may render on demand. That is
+also why the 2D overlays are drawn with PIL up front rather than by the
+renderer.
+
+    python scripts/view_pipeline.py --mv supersecret/mv/ear0 \
+        --mesh supersecret/BJ002/BJ002.OBJ
+"""
+from __future__ import annotations
+
+import argparse
+import colorsys
+import json
+import os
+import pathlib
+import sys
+
+# MUST COME BEFORE `import open3d`, and it is not optional on a Wayland
+# session. Open3D's interactive window is the legacy GLFW/GLEW path; on
+# Wayland it fails outright and the window never appears. GLFW has to be
+# pushed onto X11, which XWayland serves, and BOTH of these are needed --
+# clearing WAYLAND_DISPLAY alone still fails. Setting them after a renderer
+# has initialised is too late, hence module scope above the import. Copied
+# deliberately from scripts/view_backprojection.py, where it was worked out.
+if os.environ.get("WAYLAND_DISPLAY") and os.environ.get("DISPLAY"):
+    os.environ.pop("WAYLAND_DISPLAY", None)
+    os.environ["XDG_SESSION_TYPE"] = "x11"
+
+import numpy as np                                               # noqa: E402
+import open3d as o3d                                             # noqa: E402
+from PIL import Image, ImageDraw                                 # noqa: E402
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from ear3d.draw import spheres                                   # noqa: E402
+from ear3d.render import LINE_MATERIAL, MATERIAL, light_scene    # noqa: E402
+from ear3d.scheme import (STRIPS, STRIP_COLOURS,                  # noqa: E402
+                          STRIP_NAMES)
+
+CONSENSUS_C = (0.20, 0.95, 0.65)
+WEAK_C = (1.00, 0.45, 0.10)
+TRUTH_C = (0.15, 0.50, 1.00)
+STICK_C = (1.00, 0.75, 0.00)
+
+
+def view_colour(i, n):
+    """Distinct hue per view, so a cloud can be read back to its cameras."""
+    return colorsys.hsv_to_rgb((i / max(n, 1)) * 0.85, 0.80, 0.95)
+
+
+def lineset(pairs, colour):
+    pts, idx, col = [], [], []
+    for a, b in pairs:
+        if not (np.all(np.isfinite(a)) and np.all(np.isfinite(b))):
+            continue
+        idx.append([len(pts), len(pts) + 1])
+        pts += [np.asarray(a, float), np.asarray(b, float)]
+        col.append(colour)
+    ls = o3d.geometry.LineSet()
+    if not pts:
+        return ls
+    ls.points = o3d.utility.Vector3dVector(np.asarray(pts))
+    ls.lines = o3d.utility.Vector2iVector(np.asarray(idx))
+    ls.colors = o3d.utility.Vector3dVector(np.asarray(col, float))
+    return ls
+
+
+def strip_of(k):
+    return next(i for i, (a, b) in enumerate(STRIPS) if a <= k < b)
+
+
+def overlay_image(png, lm, note):
+    """The view's render with its 2D landmarks on it, as an o3d Image.
+
+    Drawn with PIL rather than the renderer because the renderer is not
+    available once the window exists -- see the module docstring.
+    """
+    im = Image.open(png).convert("RGB")
+    d = ImageDraw.Draw(im)
+    for i, (a, b) in enumerate(STRIPS):
+        c = tuple(int(255 * v) for v in STRIP_COLOURS[i])
+        pts = [tuple(lm[k]) for k in range(a, b) if np.all(np.isfinite(lm[k]))]
+        if len(pts) > 1:
+            d.line(pts, fill=c, width=2)
+    for k in range(len(lm)):
+        if not np.all(np.isfinite(lm[k])):
+            continue
+        x, y = lm[k]
+        c = tuple(int(255 * v) for v in STRIP_COLOURS[strip_of(k)])
+        d.ellipse([x - 2.5, y - 2.5, x + 2.5, y + 2.5], fill=c)
+    d.text((8, 8), note, fill=(255, 255, 255))
+    return o3d.geometry.Image(np.ascontiguousarray(np.asarray(im)))
+
+
+def load(mv, mesh_path):
+    mv = pathlib.Path(mv)
+    tags = json.loads((mv / "views.json").read_text())
+    C = np.load(mv / "consensus.npz", allow_pickle=True)
+    kept = [str(t) for t in C["tags"]]
+    cons, nin, est = C["cons"], C["nin"], C["est"]
+    # est is indexed by the FULL view list, the consensus by the kept subset;
+    # keeping both straight matters because a view with no depth map is in
+    # one and not the other, and mixing them silently mislabels every colour.
+    rows = [tags.index(t) for t in kept]
+    views = []
+    for t, r in zip(kept, rows):
+        d = mv / f"view_{t}"
+        F = np.load(d / "frame.npz", allow_pickle=True)
+        views.append(dict(tag=t, row=r, lm=F["lm"], png=d / "render.png",
+                          yaw=float(F["yaw"]), pitch=float(F["pitch"])))
+    m = o3d.io.read_triangle_mesh(str(mesh_path))
+    m.compute_vertex_normals()
+    sc = o3d.t.geometry.RaycastingScene()
+    sc.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(m))
+    ok = np.isfinite(cons).all(1)
+    surf = np.full_like(cons, np.nan)
+    if ok.any():
+        surf[ok] = sc.compute_closest_points(
+            o3d.core.Tensor(cons[ok].astype(np.float32)))["points"].numpy()
+    dist = np.linalg.norm(cons - surf, axis=1)
+    return dict(views=views, cons=cons, nin=nin, est=est, surf=surf,
+                dist=dist, mesh=m, K=len(cons), spread=C["spread"])
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--mv", required=True,
+                   help="an output directory from moge_multiview.py --combine")
+    p.add_argument("--mesh", required=True, help="the scan, in SCAN units")
+    p.add_argument("--radius", type=float, default=0.55,
+                   help="sphere radius in scan units (mm on these scans)")
+    p.add_argument("--size", type=int, default=1100)
+    p.add_argument("--selftest", action="store_true",
+                   help="build every stage's geometry and exit without "
+                        "opening a window, so the logic can be checked where "
+                        "a GUI cannot run")
+    a = p.parse_args()
+
+    D = load(a.mv, a.mesh)
+    V, K = D["views"], D["K"]
+    nv = len(V)
+    print(f"{nv} views, {K} landmarks, mesh "
+          f"{len(D['mesh'].vertices):,} verts")
+    f = np.isfinite(D["dist"])
+    print(f"consensus: median {np.median(D['dist'][f]):.2f} mm to the "
+          f"surface, {(D['nin'] >= 3).sum()}/{K} with 3+ inlier views")
+
+    # ---- geometry for every stage, all of it up front --------------------
+    g = {}
+    for i, v in enumerate(V):
+        P = D["est"][v["row"]]
+        col = [view_colour(i, nv)] * K
+        g[f"view{i}_lm"] = (spheres(P, a.radius, col), MATERIAL)
+        # kept as a (thing, material) pair like every geometry, with no
+        # material, so one loop can walk the whole table
+        g[f"view{i}_img"] = (overlay_image(
+            v["png"], v["lm"],
+            f"view {v['tag']}  yaw {v['yaw']:+.0f} pitch {v['pitch']:+.0f}"),
+            None)
+    cons, nin, surf = D["cons"], D["nin"], D["surf"]
+    g["cons"] = (spheres(cons, a.radius,
+                         [CONSENSUS_C if nin[k] >= 3 else WEAK_C
+                          for k in range(K)]), MATERIAL)
+    g["truth"] = (spheres(surf, a.radius * 0.8, [TRUTH_C] * K), MATERIAL)
+    g["sticks"] = (lineset(list(zip(cons, surf)), STICK_C), LINE_MATERIAL)
+    rows = [v["row"] for v in V]
+    for k in range(K):
+        # one estimate per KEPT view, in the same order the colours use, so a
+        # sphere's hue identifies its camera in every stage
+        pts = np.asarray([D["est"][r, k, :] for r in rows])
+        c = cons[k]
+        # an inlier here means what RANSAC meant by it: within tol of the
+        # consensus it ended up with. Recomputed rather than stored so the
+        # picture cannot disagree with the number beside it.
+        inl = (np.isfinite(pts).all(1)
+               & (np.linalg.norm(pts - c, axis=1) <= 2.0)
+               ) if np.isfinite(c).all() else np.zeros(len(pts), bool)
+        cl = [view_colour(j, nv) if inl[j] else (0.25, 0.25, 0.25)
+              for j in range(nv)]
+        g[f"lmk{k}_est"] = (spheres(pts, a.radius * 0.9, cl), MATERIAL)
+        g[f"lmk{k}_cons"] = (spheres(np.asarray([c]), a.radius * 1.5,
+                                     [CONSENSUS_C]), MATERIAL)
+        g[f"lmk{k}_fan"] = (lineset([(q, c) for q in pts], (0.7, 0.7, 0.7)),
+                            LINE_MATERIAL)
+
+    if a.selftest:
+        bad = [k for k, (geo, _) in g.items()
+               if hasattr(geo, "vertices") and len(geo.vertices) == 0]
+        empt = [k for k, (geo, _) in g.items()
+                if hasattr(geo, "lines") and len(geo.lines) == 0]
+        print(f"\nselftest: {len(g)} geometries built")
+        print(f"  meshes with no vertices: {bad if bad else 'none'}")
+        print(f"  linesets with no points: {len(empt)} "
+              f"({'ok -- a landmark every view agreed on has no outliers' if empt else 'none'})")
+        for st, keys in (("1 one view", ["view0_lm", "view0_img"]),
+                         ("2 all views", [f"view{i}_lm" for i in range(nv)]),
+                         ("3 one landmark", ["lmk0_est", "lmk0_cons",
+                                             "lmk0_fan"]),
+                         ("4 consensus", ["cons"]),
+                         ("5 against truth", ["cons", "truth", "sticks"])):
+            miss = [k for k in keys if k not in g]
+            print(f"  stage {st:<16s} {'OK' if not miss else 'MISSING ' + str(miss)}")
+        print(f"\ninlier counts: min {nin.min()}, median "
+              f"{np.median(nin):.0f}, max {nin.max()} of {nv}")
+        return
+
+    gui = o3d.visualization.gui
+    rendering = o3d.visualization.rendering
+    app = gui.Application.instance
+    app.initialize()
+    win = app.create_window("ear pipeline", a.size, int(a.size * 0.72))
+    widget = gui.SceneWidget()
+    widget.scene = rendering.Open3DScene(win.renderer)
+    widget.scene.add_geometry("mesh", D["mesh"], MATERIAL)
+    light_scene(widget.scene, (0.18, 0.18, 0.20))
+    bbox = D["mesh"].get_axis_aligned_bounding_box()
+    widget.setup_camera(50.0, bbox, cons[np.isfinite(cons).all(1)].mean(0)
+                        if np.isfinite(cons).any() else bbox.get_center())
+
+    info = gui.Label("")
+    panel = gui.Vert(0, gui.Margins(10, 10, 10, 10))
+    panel.background_color = gui.Color(0, 0, 0, 0.72)
+    panel.add_child(info)
+    img_w = gui.ImageWidget(g["view0_img"][0])
+    win.add_child(widget)
+    win.add_child(panel)
+    win.add_child(img_w)
+
+    st = {"stage": 1, "view": 0, "lmk": 0, "mesh": True, "drawn": []}
+
+    def on_layout(ctx):
+        r = win.content_rect
+        widget.frame = r
+        pref = panel.calc_preferred_size(ctx, gui.Widget.Constraints())
+        panel.frame = gui.Rect(r.x, r.y, min(r.width, pref.width),
+                               min(r.height, pref.height))
+        # the 2D render, bottom-right, only while stage 1 is showing
+        side = int(min(r.width, r.height) * 0.42)
+        img_w.frame = (gui.Rect(r.get_right() - side - 8,
+                                r.get_bottom() - side - 8, side, side)
+                       if st["stage"] == 1 else gui.Rect(0, 0, 1, 1))
+    win.set_on_layout(on_layout)
+
+    def show(keys):
+        for n in st["drawn"]:
+            widget.scene.remove_geometry(n)
+        st["drawn"] = []
+        for n in keys:
+            geo, mat = g[n]
+            if hasattr(geo, "points") and len(geo.points) == 0:
+                continue
+            if hasattr(geo, "vertices") and len(geo.vertices) == 0:
+                continue
+            widget.scene.add_geometry(n, geo, mat)
+            st["drawn"].append(n)
+
+    def redraw():
+        s, vi, k = st["stage"], st["view"], st["lmk"]
+        widget.scene.show_geometry("mesh", st["mesh"])
+        if s == 1:
+            show([f"view{vi}_lm"])
+            v = V[vi]
+            img_w.update_image(g[f"view{vi}_img"][0])
+            txt = (f"STAGE 1  one view\n"
+                   f"view {vi + 1}/{nv}   {v['tag']}   "
+                   f"yaw {v['yaw']:+.0f}  pitch {v['pitch']:+.0f}\n"
+                   f"LEFT/RIGHT change view")
+        elif s == 2:
+            show([f"view{i}_lm" for i in range(nv)])
+            txt = (f"STAGE 2  all {nv} views at once\n"
+                   f"one colour per view -- tight where they agree,\n"
+                   f"a smear where they do not")
+        elif s == 3:
+            show([f"lmk{k}_fan", f"lmk{k}_est", f"lmk{k}_cons"])
+            txt = (f"STAGE 3  one landmark's views\n"
+                   f"landmark {k}  ({STRIP_NAMES[strip_of(k)]})\n"
+                   f"{int(nin[k])}/{nv} views agree   spread "
+                   f"{D['spread'][k]:.2f} mm\n"
+                   f"grey spheres are outliers, big green is the consensus\n"
+                   f"UP/DOWN change landmark")
+        elif s == 4:
+            show(["cons"])
+            txt = (f"STAGE 4  RANSAC consensus\n"
+                   f"green = 3 or more views agree ({(nin >= 3).sum()}/{K})\n"
+                   f"orange = fewer ({(nin < 3).sum()}/{K})")
+        else:
+            show(["cons", "truth", "sticks"])
+            d = D["dist"][np.isfinite(D["dist"])]
+            txt = (f"STAGE 5  consensus against the scan\n"
+                   f"blue = nearest surface point, amber = the error\n"
+                   f"median {np.median(d):.2f} mm   p90 "
+                   f"{np.percentile(d, 90):.2f}   max {d.max():.2f}")
+        info.text = txt + "\n\n[1-5] stage   [M] mesh   [Q] quit"
+        win.set_needs_layout()
+
+    def on_key(e):
+        if e.type != gui.KeyEvent.Type.DOWN:
+            return False
+        # The digit KeyNames ARE their ASCII codes, which is what makes this
+        # readable; the arrows and letters have proper names.
+        if ord("1") <= e.key <= ord("5"):
+            st["stage"] = e.key - ord("0")
+        elif e.key == gui.KeyName.RIGHT:
+            st["view"] = (st["view"] + 1) % nv
+            st["stage"] = 1
+        elif e.key == gui.KeyName.LEFT:
+            st["view"] = (st["view"] - 1) % nv
+            st["stage"] = 1
+        elif e.key == gui.KeyName.DOWN:
+            st["lmk"] = (st["lmk"] + 1) % K
+            st["stage"] = 3
+        elif e.key == gui.KeyName.UP:
+            st["lmk"] = (st["lmk"] - 1) % K
+            st["stage"] = 3
+        elif e.key == gui.KeyName.M:
+            st["mesh"] = not st["mesh"]
+        elif e.key in (gui.KeyName.Q, gui.KeyName.ESCAPE):
+            gui.Application.instance.quit()
+            return True
+        else:
+            return False
+        redraw()
+        return True
+    win.set_on_key(on_key)
+
+    redraw()
+    app.run()
+
+
+if __name__ == "__main__":
+    main()
