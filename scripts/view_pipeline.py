@@ -360,7 +360,18 @@ def main():
     widget = gui.SceneWidget()
     widget.scene = rendering.Open3DScene(win.renderer)
     widget.scene.add_geometry("mesh", D["mesh"], MATERIAL)
+    # LIT FOR LOOKING AT, which is not how the renders are lit. light_scene
+    # is a single hard sun, correct for the offscreen renders because it is
+    # what the landmarker and the depth model were measured under -- changing
+    # it there would move every number. Here it left whole sides of the head
+    # black, and a landmark cannot be judged against a surface that is not
+    # drawn. So the background comes from light_scene and the lighting is
+    # then replaced by an image-based profile, which fills the shadow side
+    # without inventing a second hard light that would read as geometry.
     light_scene(widget.scene, (0.18, 0.18, 0.20))
+    widget.scene.set_lighting(rendering.Open3DScene.LightingProfile.NO_SHADOWS,
+                              (-0.3, -0.4, -0.9))
+    widget.scene.scene.set_indirect_light_intensity(45000)
     bbox = D["mesh"].get_axis_aligned_bounding_box()
     widget.setup_camera(50.0, bbox, cons[np.isfinite(cons).all(1)].mean(0)
                         if np.isfinite(cons).any() else bbox.get_center())
