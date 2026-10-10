@@ -32,9 +32,9 @@ FIVE STAGES, cycled with the number keys:
 
 STAGE 5 AND STAGE 7 DISAGREE, AND STAGE 7 IS THE ONE TO BELIEVE. Over 21
 views of hutubs pp10_right the two rank the views with a correlation of
-+0.01. The reference carries its own ~2 mm wrap residual normal to the
-surface, so stage 7's number is an upper bound and not an accuracy, but it
-is measured against a FIXED reference and so ranks honestly.
++0.35. The reference is the ear's own surface -- the wrap fits it to 0.002 mm
+and the landmarks land 0.06 mm from the scan -- so stage 7's number is OUR
+error outright, with nothing to deduct.
 
 EVERY GEOMETRY IS BUILT BEFORE THE WINDOW OPENS. An OffscreenRenderer cannot
 be created while the GUI holds the Filament context -- it fails in the driver
@@ -540,8 +540,8 @@ def main():
                        f"stage 5 says {np.median(sd):.2f} mm for the same "
                        f"points -- that metric cannot see a point\n"
                        f"that slid along the ear, and this one can\n"
-                       f"the reference carries ~2 mm of its own wrap "
-                       f"residual, so read this as an upper bound")
+                       f"the reference is the ear's own surface, so this "
+                       f"is our error with nothing to deduct")
         else:
             show(["cons", "truth", "sticks"])
             d = D["dist"][np.isfinite(D["dist"])]
