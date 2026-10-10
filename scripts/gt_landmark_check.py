@@ -53,6 +53,7 @@ import numpy as np
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WRAP = ROOT.parent / "wrap_work"
+sys.path.insert(0, str(ROOT))
 
 STRIP_NAME = {0: "outer helix", 20: "inner helix", 35: "concha/tragus",
               50: "lobe"}
@@ -65,31 +66,71 @@ STRIP_NAME = {0: "outer helix", 20: "inner helix", 35: "concha/tragus",
 SURFACE_TOL_MM = 1.0
 
 
-def gt_landmarks(dataset, subject, ear, n_points, verify=True):
+# The marks the reference is built from. v6_spacing keeps the hand-marked
+# curve and takes only the SPACING along it from the shipped landmarker, which
+# is the half of the old disagreement that was a convention rather than an
+# error. Scored on hutubs pp10_right, RANSAC consensus: 6.08 mm against the
+# hand marks, 3.61 against these. Pass --marks to compare with another file.
+DEFAULT_MARKS = WRAP / "templates/mark_mean_v6_spacing.wrap"
+
+
+def read_marks(path):
+    """(triangle, barycentric, names) from a Wrap SelectPoints project or npz.
+
+    The same convention as scripts/wrap_marks_to_npz.py: u weights the
+    triangle's first vertex, v the second, the remainder the third.
+    """
+    path = pathlib.Path(path)
+    if path.suffix == ".npz":
+        z = np.load(path, allow_pickle=True)
+        return (z["triangle"], z["barycentric"],
+                [str(n) for n in z["point_names"]])
+    import json
+    d = json.loads(path.read_text())
+    sel = [n for n in d["nodes"].values() if n["nodeType"] == "SelectPoints"]
+    if not sel:
+        sys.exit(f"{path}: no SelectPoints node")
+    pts = sel[0]["params"]["points"]["value"]
+    n = len(pts)
+    tri, bary, names = np.zeros(n, int), np.zeros((n, 3)), [""] * n
+    for k, q in pts.items():
+        j = int(k[:2])
+        names[j] = k
+        u, v = float(q["u"]), float(q["v"])
+        tri[j], bary[j] = int(q["triangleInd"]), (u, v, 1.0 - u - v)
+    return tri, bary, names
+
+
+def gt_landmarks(dataset, subject, ear, n_points, verify=True, marks=None):
     """The wrap's landmarks for one ear, in that scan's own frame, in mm.
 
-    ONE LOOKUP, NOT A COMPOSITION. corpus/canon2scan/<name>.npz holds a single
-    4x4 taking canonical millimetres to that scan's millimetres, built and
-    verified once by scripts/canonical_to_scan.py against the scan itself. All
-    476 ears land on their scan to 0.0 mm and the matrix is a pure rigid motion
-    (scale exactly 1, with a mirror for a right ear), because the canonical
-    corpus is already one frame at one scale.
+    BUILT FROM THE MARKS, NOT FROM A CACHE. A landmark is a (triangle,
+    barycentric) address on the template, and every canonical mesh carries the
+    template's topology, so the address evaluates directly on this ear's
+    canonical mesh. lm3d_v5_*_mm.npz was that evaluation stored, which meant a
+    re-marking left a stale copy behind; now there is one source.
 
-    Composing this by hand instead is what produced three separate bugs in an
-    afternoon -- the wrong mesh for the barycentrics, a crossed wrap/cut
-    generation, and corpus/tf_mm_* omitting the scan's centroid -- every one of
-    which left the landmarks ON the scan surface and so passed a
-    surface-distance check. Do not reintroduce it; read the matrix.
-
-    The landmarks are addressed on the CANONICAL mesh, so their (triangle,
-    barycentric) must not be applied to a fit of different topology.
+    ONE LOOKUP FOR THE FRAME. corpus/canon2scan/<name>.npz holds a single 4x4
+    taking canonical millimetres to this scan's, verified once by
+    scripts/canonical_to_scan.py -- all 476 ears land on their scan at 0.0 mm
+    and it comes out a pure rigid motion. Composing that by hand is what
+    produced three bugs in an afternoon, each of which left the landmarks ON
+    the surface and so passed a surface-distance check.
     """
+    import open3d as o3d
+    from ear3d.scheme import STRIPS
+
     name = f"{subject}_{ear}"
-    z = np.load(WRAP / f"templates/lm3d_v5_{dataset}_mm.npz", allow_pickle=True)
-    names = [str(n) for n in z["names"]]
-    if name not in names:
-        sys.exit(f"{name} is not in lm3d_v5_{dataset}_mm.npz")
-    L = z["landmarks"][names.index(name)]
+    tri, bary, _ = read_marks(marks or DEFAULT_MARKS)
+    gp = WRAP / f"corpus/canonical/{dataset}/{name}.obj"
+    if not gp.exists():
+        sys.exit(f"{gp} not found")
+    m = o3d.io.read_triangle_mesh(str(gp))
+    V, F = np.asarray(m.vertices), np.asarray(m.triangles)
+    if tri.max() >= len(F):
+        sys.exit(f"the marks address triangle {tri.max()} but {gp.name} has "
+                 f"{len(F)} -- wrong template topology")
+    L = np.einsum("ij,ijk->ik", bary, V[F[tri]])
 
     tp = WRAP / f"corpus/canon2scan/{name}.npz"
     if not tp.exists():
@@ -99,7 +140,6 @@ def gt_landmarks(dataset, subject, ear, n_points, verify=True):
     L = L @ T[:3, :3].T + T[:3, 3]
 
     if verify:
-        import open3d as o3d
         head = o3d.io.read_triangle_mesh(str(t["scan"]))
         Vh = np.asarray(head.vertices)
         Vh = Vh * (1000.0 if float(np.ptp(Vh, axis=0).max()) < 10.0 else 1.0)
@@ -113,7 +153,7 @@ def gt_landmarks(dataset, subject, ear, n_points, verify=True):
             sys.exit(f"the reference lands {np.median(d):.3f} mm from "
                      f"{t['scan']}, over the {SURFACE_TOL_MM} mm tolerance "
                      f"-- a link in the chain is wrong, NOT the data")
-    return L[:n_points], z["strips"], str(t["scan"])
+    return L[:n_points], np.asarray(STRIPS), str(t["scan"])
 
 
 def contour_check(P, strips, label):
@@ -136,6 +176,8 @@ def main():
     p.add_argument("--dataset", default="hutubs")
     p.add_argument("--n-points", type=int, default=55)
     p.add_argument("--per-view", action="store_true")
+    p.add_argument("--marks", default="",
+                   help="a .wrap or .npz of marks; default mark_mean_v6_spacing")
     p.add_argument("--reparam", action="store_true",
                    help="split the error into a labelling-convention part and "
                         "the rest, by letting each strip's reference slide "
@@ -143,7 +185,8 @@ def main():
     a = p.parse_args()
 
     import open3d as o3d
-    G, strips, src = gt_landmarks(a.dataset, a.subject, a.ear, a.n_points)
+    G, strips, src = gt_landmarks(a.dataset, a.subject, a.ear, a.n_points,
+                                  marks=a.marks or None)
     c = np.load(pathlib.Path(a.cons) / "consensus.npz", allow_pickle=True)
 
     head = o3d.io.read_triangle_mesh(src)

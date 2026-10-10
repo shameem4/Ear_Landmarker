@@ -33,8 +33,15 @@ FIVE STAGES, cycled with the number keys:
 STAGE 5 AND STAGE 7 DISAGREE, AND STAGE 7 IS THE ONE TO BELIEVE. Over 21
 views of hutubs pp10_right the two rank the views with a correlation of
 +0.35. The reference is the ear's own surface -- the wrap fits it to 0.002 mm
-and the landmarks land 0.06 mm from the scan -- so stage 7's number is OUR
+and the landmarks land 0.07 mm from the scan -- so stage 7's number is OUR
 error outright, with nothing to deduct.
+
+THE REFERENCE IS THE RE-MARKED SCHEME, mark_mean_v6_spacing: the hand-marked
+curve with the shipped landmarker's spacing along it. The hand marks put the
+same points at different places along each contour, which cost 2.5 mm of pure
+convention; RANSAC on pp10_right reads 6.08 mm against them and 3.61 against
+these. --gt-marks takes any other marks file, so the two can be compared on
+screen.
 
 EVERY GEOMETRY IS BUILT BEFORE THE WINDOW OPENS. An OffscreenRenderer cannot
 be created while the GUI holds the Filament context -- it fails in the driver
@@ -280,6 +287,9 @@ def main():
                         "landmarks. --mesh must be the same head, in the "
                         "head's own frame.")
     p.add_argument("--gt-ear", default="right", choices=["left", "right"])
+    p.add_argument("--gt-marks", default="",
+                   help="a .wrap or .npz of template marks; the default is "
+                        "mark_mean_v6_spacing, the re-marked scheme")
     p.add_argument("--gt-dataset", default="hutubs")
     p.add_argument("--stage", type=int, default=1,
                    choices=[1, 2, 3, 4, 5, 6, 7],
@@ -337,7 +347,8 @@ def main():
     if a.gt_subject:
         from gt_landmark_check import gt_landmarks
         G_mm, _, gt_src = gt_landmarks(a.gt_dataset, a.gt_subject,
-                                       a.gt_ear, K)
+                                       a.gt_ear, K,
+                                       marks=a.gt_marks or None)
         # THE SAME HEAD, CHECKED. The wrap records which scan it was cut
         # from, and comparing a consensus with a different person's ear
         # would look like a plain accuracy failure rather than a mistake.
@@ -541,7 +552,8 @@ def main():
                        f"points -- that metric cannot see a point\n"
                        f"that slid along the ear, and this one can\n"
                        f"the reference is the ear's own surface, so this "
-                       f"is our error with nothing to deduct")
+                       f"is our error with nothing to deduct\n"
+                       f"marks: {pathlib.Path(a.gt_marks).name if a.gt_marks else 'mark_mean_v6_spacing'}")
         else:
             show(["cons", "truth", "sticks"])
             d = D["dist"][np.isfinite(D["dist"])]
