@@ -1865,3 +1865,27 @@ names from the scheme instead of carrying its own copy.
 Still stale and deliberately not rebuilt: `lm_basis_v*_unitheight.npz` is a
 PCA of the landmarks and so is downstream of this, and which corpus it is
 built from is a licensing choice rather than a mechanical one.
+
+## The landmark basis rebuilt on the CC-BY corpus and the new marks
+
+`build_landmark_basis.py` projects the ear shape PCA onto the marks, so the
+CC-BY choice is which PCA it reads: `ear_pca_v6_ccby_mm.npz`, HUTUBS only,
+112 ears. Written as `lm_basis_v7_ccby_55_unitheight.npz` and
+`..._95_unitheight.npz`, 40 modes each, carrying 96.6% of the retained
+variance, mean ear 66.2 mm. Unit-height, as the names say.
+
+Mean per-landmark reconstruction residual at 40 modes, in mm:
+
+| basis | on all 588 | on HUTUBS |
+|---|---|---|
+| v6 marks, all-588 PCA | 0.453 | 0.443 |
+| v7 marks, all-588 PCA | **0.435** | **0.422** |
+| v7 marks, ccby-112 PCA | 0.578 | 0.441 |
+
+Two separate effects, which the middle row exists to tell apart. **The
+re-marking slightly improves compressibility** -- 0.453 to 0.435 on the same
+588 ears -- so nothing was lost by moving the marks. **The CC-BY restriction
+costs 0.14 mm when generalising** to SONICOM and AudioEar3D (0.435 to 0.578)
+and almost nothing on HUTUBS-like ears (0.422 to 0.441), 112 training ears
+against 588 being the whole of that gap. That is the price of the licence,
+and it is now a number rather than an assumption.
