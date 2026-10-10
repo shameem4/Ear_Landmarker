@@ -1699,3 +1699,51 @@ every head we trained the render was the easy case. The open question is
 amplitude, not direction: the relief ratios sit at 0.68-0.81 and the oracle
 amplitude row barely improves on the raw one, so MoGe is slightly flattening
 the pinna rather than mis-shaping it.
+
+## Surface distance cannot rank views; the wrap's own landmarks can
+
+Every 3D number in this project so far was a distance to the nearest point on
+the scan. That metric has no idea *which* point a landmark should be on, so a
+landmark that slides along the ear -- or off it onto the scalp -- scores well.
+
+The wrap gives a reference with correspondence. Each landmark is a (triangle,
+barycentric) address on the template, so a wrapped ear carries all 95 at known
+indices and point *i* can be compared with point *i*. On `hutubs pp10_right`,
+21 views:
+
+| estimator | paired vs wrap | surface |
+|---|---|---|
+| RANSAC | **7.11** mm | 1.69 mm |
+| coordinate median | 8.01 mm | 1.94 mm |
+| geometric median | 7.66 mm | 2.09 mm |
+
+The two metrics rank the 21 single views with a correlation of **+0.012**.
+Surface distance is not merely blind to scalp escapes -- it is uninformative.
+The view flagged by eye as broken, `y-16_p+0`, is the *worst* of the twenty-one
+by the paired metric (12.06 mm) while surface distance put it mid-pack at 2.33;
+`y+24_p+12` looks best by surface distance (0.96) and is mid-pack by GT.
+
+The consensus survives the better instrument: RANSAC beats 20 of 21 single
+views, the median 19 of 21. That claim previously rested only on the metric we
+now know says nothing.
+
+By strip, the outer helix is worst at 11.56 mm against 5.48 for concha and
+tragus -- independent agreement with the inter-view spread, which already put
+the weak landmarks at 2-5 and 16/17, all outer helix.
+
+**This is a ranking instrument, not an accuracy figure.** The wrap residual is
+~2 mm normal to the surface and the landmarks ride on the wrap, so the
+reference and our estimate both sit ~1.9 mm off the scan. The disagreement is
+therefore almost entirely tangential, the one direction the wrap residual does
+not constrain, and the 7-8 mm cannot be split between us and the reference. It
+is an upper bound, valid for comparing views against a fixed reference and for
+catching gross displacement.
+
+Two traps, both of which first produced plausible nonsense. The barycentrics
+index the *wrapped template* (1188 v, 2296 f), not the `faceform2` fit (13776
+f); applied to the fit, every point still lands on the fit surface -- 3.2 mm by
+surface distance, looking fine -- while actually scattering at random, which
+only showed up as a pairwise-distance correlation of 0.04 and 23 consecutive
+-step jumps instead of 3. And a right ear is stored in left form, mirrored
+about z, which must be undone before the cut-to-head matrix. `scripts/gt_landmark_check.py`
+asserts the face count and runs the contour check so neither can recur quietly.
