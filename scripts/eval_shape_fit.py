@@ -72,13 +72,20 @@ def main():
     p.add_argument("--label-2d", choices=["hand", "avg"], default="hand")
     p.add_argument("--n", type=int, default=400, help="views, for --renders")
     p.add_argument("--n-points", type=int, default=55)
+    p.add_argument("--alpha-sweep", action="store_true",
+                   help="scale each model's predicted coefficients by a factor "
+                        "and report skill against it. The diagnostic that "
+                        "separates 'wrong shape' from 'no shape': by "
+                        "construction alpha=0 is the mean ear, so if the best "
+                        "alpha is 0 the prediction carries no usable signal, "
+                        "and if it is >0 there is signal being over-trusted")
     a = p.parse_args()
 
     import warnings
     warnings.filterwarnings("ignore")
     import torch
     from PIL import Image
-    from model.depth_module import EarDepth3DModule
+    from model.depth_module import EarDepth3DModule, EarShape3DModule
 
     K = a.n_points
     dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -172,7 +179,8 @@ def main():
 
     for spec in a.models:
         name, ckpt = spec.split("=", 1)
-        m = EarDepth3DModule.load_from_checkpoint(ckpt, map_location=dev).eval().to(dev)
+        m = EarShape3DModule.load_from_checkpoint(
+            ckpt, map_location=dev).eval().to(dev)
         nmod = m.model.n_modes
         coef, e2e = [], []
         for (path, _, zl) in items:
@@ -192,6 +200,15 @@ def main():
                [np.abs(weak_perspective(shape_from(c), x)[0] - it[2]).sum()
                 for c, x, it in zip(C, xy_fit, items)])
         record(f"{name}: end-to-end (REGRESSED pose)", e2e)
+        if a.alpha_sweep:
+            print(f"       alpha sweep on the predicted coefficients:")
+            for al in (0.0, 0.1, 0.25, 0.5, 0.75, 1.0):
+                zs = np.array([
+                    np.abs(weak_perspective(shape_from(c * al), x)[0]
+                           - it[2]).sum()
+                    for c, x, it in zip(C, xy_fit, items)])
+                print(f"         alpha {al:4.2f}  z_skill "
+                      f"{1 - zs.sum()/den.sum():7.3f}")
         print(f"       predicted coefficient sd {C.std():.3f} "
               f"(gt is 1.0; << 1 means it fell back toward the mean ear)")
 

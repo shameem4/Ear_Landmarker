@@ -1405,3 +1405,127 @@ A stale comment in the builder was also asserting the wrong thing: it said the
 source PCA was in "HUTUBS normalised head units, not millimetres". True of v4,
 false since the canonical rebuild. The division is still correct, but for a
 different reason than the comment gave -- the pose solver already owns scale.
+
+## Route B: the shape head works, does not transfer, and takes my predicted failure mode with it
+
+Route B replaces regressed depth with MediaPipe's split: the network predicts
+40 shape coefficients, pose is SOLVED from the 2D landmarks by weak
+perspective, and depth is whatever shape and pose imply. The ceiling was
+measured before any training (`scripts/shape_fit_ceiling.py`), and it said go:
+40 modes reach 0.807 against the 0.817 full-3D oracle, equal to head 1's
+0.804, on a concave curve where a quarter of the coefficient magnitude buys
+42% of the gain.
+
+Four runs, coefficient supervision swept, one no-augmentation control.
+
+### Supervision is necessary and it costs the landmark metric
+
+| run | render z_skill (end-to-end) | NME | mesh_err / mesh_base |
+|---|---|---|---|
+| coeff-sup 0 | **0.752** | **0.0160** | **1.384** |
+| coeff-sup 1 | 0.576 | 0.0288 | 0.814 |
+| coeff-sup 10 | 0.266 | 0.1108 | 0.853 |
+| coeff-sup 1, no aug | 0.609 | 0.0293 | 0.814 |
+
+Unsupervised coefficients are not merely uninformative, they are **worse than
+predicting the mean ear** (1.384). And that run has the best landmarks and the
+best depth of the four. So the head reaches a good fit by using the 40
+coefficients as free parameters with no shape meaning, and **no landmark or
+depth metric can tell** -- which is exactly what the earlier head 2 attempt
+recorded, now with the number attached. Its coefficients fed to the solver
+score 0.023 against the mean ear's 0.584.
+
+### In domain the shape prediction is real
+
+Renders, 400 views, fitted to ground-truth 2D, paired bootstrap against the
+mean-ear fit at 0.584:
+
+| condition | z_skill | delta | 95% CI | P(better) |
+|---|---|---|---|---|
+| mean ear + solver | 0.584 | — | — | — |
+| sup1: coeffs + solver | **0.696** | **+0.113** | [+0.097, +0.129] | **1.00** |
+| sup10: coeffs + solver | 0.676 | +0.092 | [+0.076, +0.109] | 1.00 |
+| sup0: coeffs + solver | 0.023 | −0.561 | [−0.654, −0.469] | 0.00 |
+
+sup1 recovers about half the available gain (0.696 of a 0.584-to-0.807 range).
+The capability is genuine.
+
+### On photographs it reverses sign
+
+112 photographs. Labels from the hand annotation and the ear's true 3D,
+predictions from the shipped model's 2D, so no pose error is shared.
+
+| condition | z_skill | delta vs mean ear | 95% CI | P(better) |
+|---|---|---|---|---|
+| mean ear + solver | **0.250** | — | — | — |
+| sup10: coeffs + solver | 0.150 | −0.100 | [−0.189, −0.015] | 0.01 |
+| sup1, no aug: coeffs + solver | 0.144 | −0.106 | [−0.165, −0.047] | 0.00 |
+| sup1: coeffs + solver | 0.107 | −0.143 | [−0.233, −0.057] | 0.00 |
+| head 1: regressed depth | −0.044 | −0.294 | [−0.398, −0.200] | 0.00 |
+| sup0: coeffs + solver | −0.326 | −0.576 | [−0.756, −0.413] | 0.00 |
+| sup1: end-to-end, REGRESSED pose | −0.509 | −0.759 | [−0.892, −0.638] | 0.00 |
+
+Every variant loses to the plain mean ear. **Route B fails its pre-registered
+bar.**
+
+### My predicted failure mode was wrong, and that is the finding
+
+The argument for Route B was that a domain shift would drive coefficients
+toward zero, and zero coefficients ARE the mean ear, so the floor was supposed
+to be +0.250. That is not what happens. The predicted coefficient standard
+deviation is **0.577 on renders and 0.617 on photographs** -- essentially
+unchanged. The magnitude transfers; the DIRECTION does not. The head is
+confidently wrong rather than cautiously average, so the geometric constraint
+bought a bounded failure (−0.143) instead of a harmless one.
+
+Scaling the predictions by alpha makes the cost explicit, with alpha = 0 being
+the mean ear by construction:
+
+| alpha | z_skill | delta vs alpha = 0 | 95% CI | P(better) |
+|---|---|---|---|---|
+| 0.00 | 0.250 | — | — | — |
+| 0.10 | 0.258 | +0.0085 | [−0.0010, +0.0180] | 0.96 |
+| 0.25 | **0.262** | +0.0125 | [−0.0111, +0.0364] | 0.85 |
+| 0.50 | 0.239 | −0.0109 | [−0.0581, +0.0348] | 0.31 |
+| 1.00 | 0.107 | −0.1428 | [−0.2330, −0.0573] | 0.00 |
+
+So there is at most a whisper of transferable shape -- about +0.01 skill, and
+neither CI clears zero. The correct policy on a photograph today is alpha = 0,
+which is to say: use the mean ear and do not ask the network about shape.
+
+### What did transfer: solve pose, never regress it
+
+This is the half of the MediaPipe thesis that survived, and it is not a small
+effect.
+
+| model | solved pose | regressed pose | gain from solving |
+|---|---|---|---|
+| sup1 | 0.107 | −0.509 | **+0.62** |
+| sup1, no aug | 0.144 | −0.717 | **+0.86** |
+| sup10 | 0.150 | −0.216 | +0.37 |
+
+A regressed pose has to survive the domain shift; a solved one rides on the 2D
+model that already does. In domain the two are a tie for sup1 (0.696 solved
+against 0.594 regressed, and sup0 actually prefers regressing), so **nothing
+in the render metrics predicts this** -- it only appears on photographs, which
+is the argument for keeping the photo benchmark in the loop for every head.
+
+### Standing
+
+The MediaPipe-equivalent pipeline -- shipped 2D, mean ear, solved pose -- is
+still the best thing available on a photograph at **+0.250**, beating head 1 by
+0.29 and every shape head tried here. Route B's shape prediction is a real
+in-domain capability (+0.113, P = 1.00) that does not survive the render-to-
+photo gap, which is the same disease as head 1 in a milder and bounded form.
+Photo-realism augmentation does not fix it either: the no-aug control is the
+BEST of the supervised runs on photographs (0.144 against 0.107), so the
+Route C recipe that cut x,y error 26% does nothing for shape transfer and may
+mildly hurt it.
+
+The honest read is that per-subject 3D ear shape is not recoverable from a
+single in-the-wild photograph with the supervision available -- 588 rendered
+ears from two sources. Nothing measured here says it is impossible; it says
+that render supervision plus appearance augmentation is not enough, and that
+the next thing worth trying is supervision whose APPEARANCE is real, not
+synthesised. The coefficient head itself is sound and cheap to retrain once
+such a signal exists.
