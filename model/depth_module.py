@@ -224,6 +224,25 @@ class EarFeatureLifter3DModule(EarLifter3DModule):
             point_width=point_width, width=self.hparams.width,
             use_conf=self.hparams.use_conf)
 
+    def from_image(self, image: torch.Tensor):
+        """(xy, conf, z) straight from pixels: frozen base, then the lifter.
+
+        Training and evaluation BOTH come through here. An evaluator that
+        rebuilt this by hand would be a second copy of the inference path,
+        free to drift from the one the loss is computed on, and that is the
+        failure this project has already had in its 3D code.
+
+        Only the base is under no_grad -- the lifter is the part that trains.
+        """
+        k = self.hparams.num_landmarks
+        with torch.no_grad():
+            feat = self.base._decode(image)
+            hm = self.base.to_heatmap(feat)
+            xy = self.base.soft_argmax(hm, self.base.tau).view(-1, k, 2)
+            conf = self.base.heatmap_confidence(hm, self.base.tau)
+        return xy, conf, self.model(feat, xy,
+                                    conf if self.model.use_conf else None)
+
     def _shared_step(self, batch):
         k = self.hparams.num_landmarks
         t = batch["landmarks"].view(-1, k, 3)
@@ -235,12 +254,7 @@ class EarFeatureLifter3DModule(EarLifter3DModule):
             zp = self.model.from_sampled(sampled, xy,
                                          conf if self.model.use_conf else None)
         else:
-            with torch.no_grad():
-                feat = self.base._decode(batch["image"])
-                hm = self.base.to_heatmap(feat)
-                xy = self.base.soft_argmax(hm, self.base.tau).view(-1, k, 2)
-                conf = self.base.heatmap_confidence(hm, self.base.tau)
-            zp = self.model(feat, xy, conf if self.model.use_conf else None)
+            xy, conf, zp = self.from_image(batch["image"])
         zt = t[:, :, 2]
         m = batch.get("visible")
         m = torch.ones_like(zt) if m is None else m

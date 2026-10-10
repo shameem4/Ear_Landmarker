@@ -216,6 +216,8 @@ def main():
                    help="DIAGNOSTIC: negate every predicted z before scoring. "
                         "If a score improves, that prediction's depth is "
                         "sign-inverted relative to the scan")
+    p.add_argument("--feat-ckpt", default="",
+                   help="head 3b: the shipped 2D frozen, lifter on top")
     p.add_argument("--shape-ckpt", default="",
                    help="a head 2 (shape) checkpoint. Lifted two ways: its "
                         "own decoded x,y,z, and its COEFFICIENTS with pose "
@@ -385,6 +387,21 @@ def main():
         # ONLY in the sign of the predicted depth
         methods += [("head1_zflipped", (1.00, 0.85, 0.10), uv, -z_pred,
                      "head 1: z NEGATED (diagnostic)")]
+
+    if a.feat_ckpt:
+        from model.depth_module import EarFeatureLifter3DModule
+        fm = EarFeatureLifter3DModule.load_from_checkpoint(
+            a.feat_ckpt, map_location=dev).eval().to(dev)
+        with torch.no_grad():
+            xyf, _, zpf = fm.from_image(
+                torch.from_numpy((t - 0.5) / 0.5).float().to(dev))
+        xy_f = xyf.cpu().numpy()[0][:K]
+        z_f = zpf.cpu().numpy()[0][:K]
+        z_f = z_f - z_f.mean()
+        uv_f = np.stack([crop_box[0] + xy_f[:, 0] * side,
+                         crop_box[1] + xy_f[:, 1] * side], axis=1)
+        methods += [("head3b_lifter", (0.65, 0.35, 0.90), uv_f, z_f,
+                     "head 3b: frozen shipped 2D + lifter")]
 
     if a.shape_ckpt:
         from model.depth_module import EarShape3DModule

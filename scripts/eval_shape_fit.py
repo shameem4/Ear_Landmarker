@@ -61,6 +61,19 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--models", nargs="*", default=[], help="name=ckpt pairs")
     p.add_argument("--head1", default="", help="head 1 ckpt, for comparison")
+    p.add_argument("--base2d", default="",
+                   help="the shipped 2D Lightning checkpoint, needed by "
+                        "--lifter for per-point confidence")
+    p.add_argument("--lifter", default="",
+                   help="head 3a ckpt: x,y -> z with NO image at all. Fed the "
+                        "same shipped 2D the mean-ear fit gets, so it is the "
+                        "learned counterpart of that geometric fit and the "
+                        "only variant with nothing render-domain in its input")
+    p.add_argument("--feat", default="",
+                   help="head 3b ckpt: the SHIPPED 2D model frozen, with only "
+                        "a lifter trained on top. Its x,y is therefore the "
+                        "shipped model's, which already transfers to "
+                        "photographs, so only the depth has to cross the gap")
     p.add_argument("--renders", action="store_true",
                    help="score in domain on render common_test instead")
     p.add_argument("--bench", default="data/photo3d/audioear3d_depth.npz")
@@ -211,6 +224,64 @@ def main():
                       f"{1 - zs.sum()/den.sum():7.3f}")
         print(f"       predicted coefficient sd {C.std():.3f} "
               f"(gt is 1.0; << 1 means it fell back toward the mean ear)")
+
+    if a.lifter:
+        from model.depth_module import EarLifter3DModule
+        from model.lightning_module import EarLandmarkerModule
+        lm_ = EarLifter3DModule.load_from_checkpoint(
+            a.lifter, map_location=dev).eval().to(dev)
+        # This lifter wants the 2D model's per-point confidence, which the
+        # ONNX export does not return, so its x,y come from the shipped
+        # LIGHTNING checkpoint instead. To keep the comparison honest the
+        # mean-ear fit is then re-scored at those same x,y -- the two differ
+        # only in how depth is produced from identical landmarks.
+        if not a.base2d:
+            sys.exit("--lifter needs --base2d, the shipped 2D checkpoint, "
+                     "because this lifter consumes its confidence")
+        b2 = EarLandmarkerModule.load_from_checkpoint(
+            a.base2d, map_location=dev).eval().to(dev).model
+        zs, zm, nvalid = [], [], 0
+        for (path, _, zl) in items:
+            im = Image.open(path).convert("RGB")
+            tt = np.asarray(im.resize((192, 192), Image.BILINEAR),
+                            np.float32).transpose(2, 0, 1)[None] / 255.0
+            xin = torch.from_numpy((tt - 0.5) / 0.5).float().to(dev)
+            with torch.no_grad():
+                feat = b2._decode(xin)
+                hm = b2.to_heatmap(feat)
+                xyb = b2.soft_argmax(hm, b2.tau).view(-1, K, 2)
+                cf = b2.heatmap_confidence(hm, b2.tau)
+                zq = lm_.model(xyb, cf if lm_.model.use_conf else None)
+            zq = zq.cpu().numpy()[0][:K]
+            zq = zq - zq.mean()
+            zs.append(np.abs(zq - zl).sum())
+            xb = xyb.cpu().numpy()[0][:K]
+            zmm = weak_perspective(shape_from(np.zeros(1)), xb)[0]
+            zm.append(np.abs(zmm - zl).sum())
+            nvalid += 1
+        record("head 3a: x,y -> z, no image", zs)
+        record("  (mean ear at the SAME x,y, for reference)", zm)
+
+    if a.feat:
+        from model.depth_module import EarFeatureLifter3DModule
+        fm = EarFeatureLifter3DModule.load_from_checkpoint(
+            a.feat, map_location=dev).eval().to(dev)
+        zs, zf_pred = [], []
+        for (path, _, zl) in items:
+            im = Image.open(path).convert("RGB")
+            tt = np.asarray(im.resize((192, 192), Image.BILINEAR),
+                            np.float32).transpose(2, 0, 1)[None] / 255.0
+            with torch.no_grad():
+                xyf, _, zp = fm.from_image(
+                    torch.from_numpy((tt - 0.5) / 0.5).float().to(dev))
+            zq = zp.cpu().numpy()[0][:K]
+            zq = zq - zq.mean()
+            zf_pred.append(zq)
+            zs.append(np.abs(zq - zl).sum())
+        record("head 3b: frozen shipped 2D + lifter", zs)
+        zf_pred = np.asarray(zf_pred)
+        print(f"       predicted z sd {zf_pred.std():.4f} "
+              f"(label sd {np.std([it[2] for it in items]):.4f})")
 
     if a.head1:
         m = EarDepth3DModule.load_from_checkpoint(a.head1, map_location=dev).eval().to(dev)

@@ -1529,3 +1529,84 @@ that render supervision plus appearance augmentation is not enough, and that
 the next thing worth trying is supervision whose APPEARANCE is real, not
 synthesised. The coefficient head itself is sound and cheap to retrain once
 such a signal exists.
+
+## Freezing the 2D model does not rescue depth: every LEARNED lift fails, the geometric one does not
+
+head 1 is architecturally the shipped 2D model plus a 1x1 conv: same
+`EarLandmarkerHeatmap`, same backbone, 348,466 parameters against 353,801,
+with `to_z` contributing 5,335 of them (1.51%). What it is NOT is the shipped
+WEIGHTS -- `--head z` trains the whole thing from scratch on renders, so its
+x,y is a second, render-trained 2D model that scores 0.0768 NME on
+photographs against the shipped model's 0.0143.
+
+That suggests an obvious fix: freeze the 2D model that already transfers and
+train only the depth on top. Two heads already do exactly this and had never
+been scored on the photo benchmark, which did not exist when they were built.
+Both are frozen on the real shipped checkpoint, `manual_occ_s42`.
+
+| on the 112-photo benchmark | z_skill | vs mean ear | P(better) |
+|---|---|---|---|
+| mean ear + solved pose | **+0.250** | -- | -- |
+| head 1: image -> x, y, z | −0.044 | −0.294 [−0.398, −0.200] | 0.00 |
+| head 3b: frozen 2D + features -> z | −0.536 | −0.786 [−0.943, −0.639] | 0.00 |
+| head 3a: x, y -> z, NO image | −0.559 | −0.809 [−0.958, −0.668] | 0.00 |
+
+**Freezing the transferable part makes it WORSE, and head 3a is the clean
+experiment that says why.** head 3a consumes nothing but the 2D model's 55
+coordinates and their confidences -- no pixels, no decoder features, nothing
+that carries a render's appearance. Everything in its input transfers. It
+still scores −0.559.
+
+And the comparison is exact rather than approximate. Scoring the mean-ear fit
+at head 3a's OWN landmarks gives +0.250, identical to three decimals, with a
+paired delta of +0.000 [−0.000, +0.000]. So the two methods receive literally
+the same 55 points and differ by **0.81 skill** on how they turn those points
+into depth: one learned the mapping from 588 rendered ears, the other solves
+it with a camera model and a mean ear.
+
+(That reference row also confirms, incidentally, that
+`docs/EarLandmarker_web.onnx` is an exact export of the `manual_occ_s42`
+checkpoint -- the two 2D sources produce the same landmarks to the precision
+this metric can see.)
+
+So the failure was never the image features. A learned x,y -> z mapping
+memorises the geometry of the corpus it was trained on; the distribution of
+real-ear landmarks is not that distribution, and the mapping has no physics to
+fall back on. A weak-perspective solve has nothing to memorise.
+
+### The same four heads on the head scan
+
+The scan is a RENDER wearing a real texture, so it should and does behave like
+the render domain rather than the photo domain:
+
+| | left ear | right ear |
+|---|---|---|
+| head 1 | **+0.277** | −0.051 |
+| head 3b | −0.056 | −0.469 |
+| mean ear + solved pose | −0.101 | −0.297 |
+
+head 1 wins both, as it does on the render corpus, and head 3b beats the mean
+ear on the left ear and loses on the right. Nothing here contradicts the photo
+result; it confirms that this scan sits on the render side of the gap.
+
+### What this settles
+
+Five ways of producing depth have now been scored on real photographs. Every
+one that LEARNS the depth mapping loses to predicting z = 0:
+
+    head 1, image -> xyz                     −0.044
+    head 2, shape coefficients + solved pose  +0.107 (best of four variants)
+    head 2, regressed pose                   −0.509
+    head 3a, x,y -> z                        −0.559
+    head 3b, frozen 2D + features -> z       −0.536
+
+and the one that does not learn it wins:
+
+    mean ear + weak-perspective solve        +0.250
+
+The common factor is not architecture, not the frozen base, not the image
+features and not the depth parameterisation -- head 1's amplitude is correct
+in domain to 1.008 and its optimal rescale out of domain is 0.42, so there is
+no range pathology to fix either. It is that a learned depth mapping does not
+survive the render-to-photo gap in any form tried, while a geometric one needs
+no transfer because it was never fitted to a domain.
