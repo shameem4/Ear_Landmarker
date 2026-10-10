@@ -122,6 +122,76 @@ def overlay_image(png, lm, note):
     return o3d.geometry.Image(np.ascontiguousarray(np.asarray(im)))
 
 
+def depth_panels(true_d, mg, mask, lm, mm_per_unit, pad=0.15):
+    """MoGe's map, the renderer's exact buffer, and their difference.
+
+    THE AFFINE IS FITTED OUTSIDE THE EAR. MoGe is free in global scale and
+    offset, so the two maps cannot be differenced until one is put in the
+    other's units -- but solving that on the ear would absorb the very relief
+    the difference panel exists to show, and every model would look perfect.
+    So scale and offset come from the valid pixels beyond the grown landmark
+    box and are applied to the ear unchanged. Same choice as
+    moge_lift_check.py, for the same reason, so the picture and that script's
+    numbers mean the same thing.
+
+    The two depth panels share one colour scale, because the whole point is
+    whether the same structure appears in both; scaling each to its own range
+    would make a flat map look detailed.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    from matplotlib import cm
+
+    H, W = true_d.shape
+    valid = np.isfinite(true_d) & np.isfinite(mg) & mask
+    (x0, y0), (x1, y1) = lm.min(0), lm.max(0)
+    ew, eh = x1 - x0, y1 - y0
+    yy, xx = np.mgrid[0:H, 0:W]
+    grown = ((xx >= x0 - pad * ew) & (xx <= x1 + pad * ew) &
+             (yy >= y0 - pad * eh) & (yy <= y1 + pad * eh))
+    ear = (xx >= x0) & (xx <= x1) & (yy >= y0) & (yy <= y1)
+    fit = valid & ~grown
+    if fit.sum() < 200 or (valid & ear).sum() < 200:
+        return None, {}
+    A = np.stack([mg[fit], np.ones(fit.sum())], 1)
+    sc, sh = np.linalg.lstsq(A, true_d[fit], rcond=None)[0]
+    maff = sc * mg + sh
+
+    # colour scale from the EAR's true depths, so the ear is what the ramp
+    # resolves rather than the whole head's range
+    lo, hi = np.percentile(true_d[valid & ear], [2, 98])
+    def ramp(a, m):
+        n = np.clip((a - lo) / max(hi - lo, 1e-9), 0, 1)
+        rgb = (cm.viridis(n)[:, :, :3] * 255).astype(np.uint8)
+        rgb[~m] = 0
+        return rgb
+    diff = (maff - true_d) * mm_per_unit
+    lim = float(np.percentile(np.abs(diff[valid & ear]), 95)) or 1.0
+    dn = np.clip(diff / (2 * lim) + 0.5, 0, 1)
+    drgb = (cm.coolwarm(dn)[:, :, :3] * 255).astype(np.uint8)
+    drgb[~valid] = 0
+
+    panels = [ramp(true_d, valid), ramp(maff, valid), drgb]
+    gap = np.zeros((H, 6, 3), np.uint8)
+    comp = np.concatenate(
+        [panels[0], gap, panels[1], gap, panels[2]], axis=1)
+    im = Image.fromarray(comp)
+    d = ImageDraw.Draw(im)
+    for i, t in enumerate(("renderer (exact)", "MoGe", "MoGe - truth")):
+        d.text((8 + i * (W + 6), 8), t, fill=(255, 255, 255))
+    d.text((8, H - 16), f"{lo * mm_per_unit:.0f}..{hi * mm_per_unit:.0f} mm "
+                        f"shared ramp", fill=(255, 255, 255))
+    d.text((8 + 2 * (W + 6), H - 16), f"+-{lim:.1f} mm", fill=(255, 255, 255))
+    st = dict(
+        resid=float(np.std((maff - true_d)[fit]) * mm_per_unit),
+        ear_rms=float(np.sqrt(np.mean(((maff - true_d)[valid & ear]) ** 2))
+                      * mm_per_unit),
+        relief_t=float(np.std(true_d[valid & ear]) * mm_per_unit),
+        relief_m=float(np.std(maff[valid & ear]) * mm_per_unit),
+        scale=float(sc))
+    return o3d.geometry.Image(np.ascontiguousarray(np.asarray(im))), st
+
+
 def load(mv, mesh_path):
     mv = pathlib.Path(mv)
     tags = json.loads((mv / "views.json").read_text())
@@ -137,9 +207,16 @@ def load(mv, mesh_path):
         d = mv / f"view_{t}"
         F = np.load(d / "frame.npz", allow_pickle=True)
         views.append(dict(tag=t, row=r, lm=F["lm"], png=d / "render.png",
-                          yaw=float(F["yaw"]), pitch=float(F["pitch"])))
+                          yaw=float(F["yaw"]), pitch=float(F["pitch"]),
+                          depth=F["depth"].astype(float),
+                          scale=float(F["scale"]), moge=d / "moge.npz"))
     m = o3d.io.read_triangle_mesh(str(mesh_path))
     m.compute_vertex_normals()
+    # render units -> scan units, the same chain moge_multiview inverts: a
+    # length picks up the view's scale and the mesh normalisation, and
+    # nothing else.
+    Vm = np.asarray(m.vertices)
+    s0 = float(np.abs(Vm - Vm.mean(0)).max())
     sc = o3d.t.geometry.RaycastingScene()
     sc.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(m))
     ok = np.isfinite(cons).all(1)
@@ -156,7 +233,7 @@ def load(mv, mesh_path):
     tol = float(C["tol"]) if "tol" in C.files else 2.0
     return dict(views=views, cons=cons, nin=nin, est=est, surf=surf,
                 dist=dist, mesh=m, K=len(cons), spread=C["spread"],
-                est_name=est_name, tol=tol)
+                est_name=est_name, tol=tol, s0=s0)
 
 
 def main():
@@ -167,7 +244,8 @@ def main():
     p.add_argument("--radius", type=float, default=0.55,
                    help="sphere radius in scan units (mm on these scans)")
     p.add_argument("--size", type=int, default=1100)
-    p.add_argument("--stage", type=int, default=1, choices=[1, 2, 3, 4, 5],
+    p.add_argument("--stage", type=int, default=1,
+                   choices=[1, 2, 3, 4, 5, 6],
                    help="which stage to open on")
     p.add_argument("--landmark", type=int, default=0,
                    help="which landmark stage 3 opens on")
@@ -188,13 +266,21 @@ def main():
           f"{(D['nin'] >= 3).sum()}/{K} with 3+ supporting views")
 
     # ---- geometry for every stage, all of it up front --------------------
-    g = {}
+    g, depth_stats = {}, {}
     for i, v in enumerate(V):
         P = D["est"][v["row"]]
         col = [view_colour(i, nv)] * K
         g[f"view{i}_lm"] = (spheres(P, a.radius, col), MATERIAL)
         # kept as a (thing, material) pair like every geometry, with no
         # material, so one loop can walk the whole table
+        if v["moge"].exists():
+            M = np.load(v["moge"])
+            img, st6 = depth_panels(v["depth"], M["depth"].astype(float),
+                                    M["mask"].astype(bool), v["lm"],
+                                    v["scale"] * D["s0"])
+            if img is not None:
+                g[f"view{i}_depth"] = (img, None)
+                depth_stats[i] = st6
         g[f"view{i}_img"] = (overlay_image(
             v["png"], v["lm"],
             f"view {v['tag']}  yaw {v['yaw']:+.0f} pitch {v['pitch']:+.0f}"),
@@ -239,7 +325,8 @@ def main():
                          ("3 one landmark", ["lmk0_est", "lmk0_cons",
                                              "lmk0_fan"]),
                          ("4 consensus", ["cons"]),
-                         ("5 against truth", ["cons", "truth", "sticks"])):
+                         ("5 against truth", ["cons", "truth", "sticks"]),
+                         ("6 depth map", ["view0_depth"])):
             miss = [k for k in keys if k not in g]
             print(f"  stage {st:<16s} {'OK' if not miss else 'MISSING ' + str(miss)}")
         print(f"\ninlier counts: min {nin.min()}, median "
@@ -283,9 +370,16 @@ def main():
         # "missing required attributes (0xd), declared=0x5" on the first
         # stage change -- one line, no crash, and nothing to say which
         # geometry it meant. A hidden widget is not submitted at all.
-        side = int(min(r.width, r.height) * 0.42)
-        img_w.visible = st["stage"] == 1
-        if img_w.visible:
+        # stage 6 is three panels side by side, so it gets a wide strip
+        # across the bottom instead of the square thumbnail stage 1 uses
+        img_w.visible = st["stage"] in (1, 6)
+        if st["stage"] == 6:
+            w = int(r.width * 0.96)
+            h = int(w / 3.03)
+            img_w.frame = gui.Rect(r.x + (r.width - w) // 2,
+                                   r.get_bottom() - h - 8, w, h)
+        elif img_w.visible:
+            side = int(min(r.width, r.height) * 0.42)
             img_w.frame = gui.Rect(r.get_right() - side - 8,
                                    r.get_bottom() - side - 8, side, side)
     win.set_on_layout(on_layout)
@@ -334,6 +428,25 @@ def main():
                    f"green = 3 or more views within {D['tol']:.1f} mm "
                    f"({(nin >= 3).sum()}/{K})\n"
                    f"orange = fewer ({(nin < 3).sum()}/{K})")
+        elif s == 6:
+            show([f"view{vi}_lm"])
+            v = V[vi]
+            key = f"view{vi}_depth"
+            if key in g:
+                img_w.update_image(g[key][0])
+                t6 = depth_stats[vi]
+                txt = (f"STAGE 6  the depth map itself\n"
+                       f"view {vi + 1}/{nv}   {v['tag']}\n"
+                       f"affine fitted OUTSIDE the ear (scale "
+                       f"{t6['scale']:.3f}), residual {t6['resid']:.2f} mm\n"
+                       f"relief across the ear: truth {t6['relief_t']:.2f} mm,"
+                       f" MoGe {t6['relief_m']:.2f} mm "
+                       f"(x{t6['relief_m'] / max(t6['relief_t'], 1e-9):.2f})\n"
+                       f"rms over the ear {t6['ear_rms']:.2f} mm\n"
+                       f"LEFT/RIGHT change view")
+            else:
+                txt = (f"STAGE 6  the depth map itself\n"
+                       f"view {v['tag']} has no usable depth map")
         else:
             show(["cons", "truth", "sticks"])
             d = D["dist"][np.isfinite(D["dist"])]
@@ -341,7 +454,7 @@ def main():
                    f"blue = nearest surface point, amber = the error\n"
                    f"median {np.median(d):.2f} mm   p90 "
                    f"{np.percentile(d, 90):.2f}   max {d.max():.2f}")
-        info.text = txt + "\n\n[1-5] stage   [M] mesh   [Q] quit"
+        info.text = txt + "\n\n[1-6] stage   [M] mesh   [Q] quit"
         win.set_needs_layout()
 
     def on_key(e):
@@ -349,7 +462,7 @@ def main():
             return False
         # The digit KeyNames ARE their ASCII codes, which is what makes this
         # readable; the arrows and letters have proper names.
-        if ord("1") <= e.key <= ord("5"):
+        if ord("1") <= e.key <= ord("6"):
             st["stage"] = e.key - ord("0")
         elif e.key == gui.KeyName.RIGHT:
             st["view"] = (st["view"] + 1) % nv
