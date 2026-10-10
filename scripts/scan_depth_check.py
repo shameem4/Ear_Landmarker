@@ -45,7 +45,7 @@ from ear3d.frames import (frame_from, head_pose, in_frame,       # noqa: E402
                           load_head, plane_normal)
 from ear3d.label import landmark_whole_frame                     # noqa: E402
 from ear3d.render import render                                  # noqa: E402
-from ear3d.scheme import STRIPS                                  # noqa: E402
+from ear3d.scheme import STRIPS, STRIP_NAMES                     # noqa: E402
 
 TPL = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/wrap_work/templates")
 
@@ -65,6 +65,77 @@ def flag_scalp(P, hit, cam, tol):
     med = float(np.nanmedian(zc))
     span = float(np.nanmax(zc) - np.nanmin(zc))
     return zc, hit & (zc > med + tol * max(span, 1e-9))
+
+
+def write_review_obj(out_obj, src_obj, sets, radius, strip_of):
+    """Textured head + one named sphere per landmark, for a 3D viewer.
+
+    The head is re-emitted from the ORIGINAL obj so its uvs and texture come
+    through untouched -- the vertex-coloured ply the renderer uses is a
+    lossy bake and is not what anyone wants to review against.
+
+    Every landmark is its own `o` group with its own material, so a viewer
+    lists them by name and they can be clicked individually rather than
+    arriving as one soup of triangles.
+    """
+    import shutil
+    import open3d as o3d
+
+    src_obj = pathlib.Path(src_obj)
+    out_obj = pathlib.Path(out_obj)
+    out_obj.parent.mkdir(parents=True, exist_ok=True)
+
+    # the texture, named as it is ON DISK; the scan's own .mtl disagrees in
+    # case with the file beside it, which breaks on a case-sensitive viewer
+    tex = None
+    mtl_src = src_obj.with_suffix(".MTL")
+    if mtl_src.exists():
+        want = next((l.split(maxsplit=1)[1].strip()
+                     for l in open(mtl_src, errors="ignore")
+                     if l.lower().startswith("map_kd")), None)
+        if want:
+            tex = next((q for q in src_obj.parent.iterdir()
+                        if q.name.lower() == pathlib.Path(want).name.lower()),
+                       None)
+    if tex is not None and not (out_obj.parent / tex.name).exists():
+        shutil.copy2(tex, out_obj.parent / tex.name)
+
+    sph = o3d.geometry.TriangleMesh.create_sphere(radius=radius, resolution=6)
+    sv = np.asarray(sph.vertices)
+    sf = np.asarray(sph.triangles)
+
+    mtl = out_obj.with_suffix(".mtl")
+    with open(mtl, "w") as f:
+        f.write("newmtl head\nKa 1 1 1\nKd 1 1 1\nKs 0 0 0\nNs 100\n")
+        if tex is not None:
+            f.write(f"map_Kd {tex.name}\n")
+        for name, (col, _) in sets.items():
+            f.write(f"\nnewmtl {name}\nKa 0 0 0\n"
+                    f"Kd {col[0]:.3f} {col[1]:.3f} {col[2]:.3f}\n"
+                    f"Ks 0.2 0.2 0.2\nNs 50\n")
+
+    nv = 0
+    with open(out_obj, "w") as f:
+        f.write(f"# head scan + predicted landmarks, for review\n")
+        f.write(f"mtllib {mtl.name}\n\no head\nusemtl head\n")
+        for ln in open(src_obj, errors="ignore"):
+            if ln.startswith("v ") or ln.startswith("vt "):
+                f.write(ln)
+                nv += ln.startswith("v ")
+            elif ln.startswith("f "):
+                f.write(ln)
+        for name, (_, pts) in sets.items():
+            for i, P in enumerate(pts):
+                if P is None or not np.isfinite(P).all():
+                    continue
+                f.write(f"\no {name}_{i:02d}_{strip_of(i)}\nusemtl {name}\n")
+                for v in sv + P:
+                    f.write(f"v {v[0]:.5f} {v[1]:.5f} {v[2]:.5f}\n")
+                for t in sf:
+                    f.write(f"f {nv + t[0] + 1} {nv + t[1] + 1} "
+                            f"{nv + t[2] + 1}\n")
+                nv += len(sv)
+    return out_obj, mtl, tex
 
 
 def corpus_z(zc, fx, crop_px):
@@ -97,12 +168,21 @@ def main():
                         "fraction of the sampled span, is the scalp beside the "
                         "pinna rather than the ear")
     p.add_argument("--no-skin", action="store_true")
+    p.add_argument("--export-obj", default="",
+                   help="write a textured .obj of the head with a named "
+                        "sphere at every landmark, for review in a 3D viewer")
+    p.add_argument("--texture-obj", default="",
+                   help="the ORIGINAL textured .obj to embed; defaults to "
+                        "--mesh when that is itself an .obj")
+    p.add_argument("--sphere", type=float, default=0.012,
+                   help="sphere radius as a fraction of ear height")
     p.add_argument("--out", default="supersecret/out",
                    help="LOCAL ONLY: a gitignored directory")
     a = p.parse_args()
 
     import warnings
     warnings.filterwarnings("ignore")
+    import open3d as o3d
     import torch
     from PIL import Image
     from model.depth_module import EarDepth3DModule
@@ -254,6 +334,61 @@ def main():
     np.savez(out / "scan_depth.npz", xy=xy, z_pred=z_pred, z_true_good=zt_g,
              good=good, hit=hit2, scalp=scalp, uv=uv, conf=conf,
              mae=mae, base=base, mean_ear_mae=mf)
+
+    if a.export_obj:
+        src = a.texture_obj or (a.mesh if a.mesh.lower().endswith(".obj") else "")
+        if not src:
+            sys.exit("--export-obj needs --texture-obj: the mesh being "
+                     "rendered is not an .obj, and the point of the export is "
+                     "the original texture")
+        # EVERY TRANSFORM, INVERTED, so the spheres land in the scan's own
+        # coordinates and the result overlays the original file.
+        #   load_head : V1 = (V0 - c) / s0
+        #   in_frame  : V2 = ((V1 - C2) @ R2.T) / scale
+        V0 = np.asarray(o3d.io.read_triangle_mesh(src).vertices)
+        c0 = V0.mean(0)
+        s0 = float(np.abs(V0 - c0).max())
+
+        def to_scan(P2):
+            return (((np.atleast_2d(P2) * scale) @ R2) + C2) * s0 + c0
+
+        # head 1's own 3D: undo the z normalisation, then unproject. zbar is
+        # taken from the surface samples -- a crop fixes no absolute depth, so
+        # the model cannot supply it and nothing here pretends otherwise.
+        zbar = float(np.mean(zc[good]))
+        zc_pred = zbar * (1.0 + z_pred * side / cam2.fx)
+        pc = np.stack([(uv[:, 0] - cam2.cx) / cam2.fx * zc_pred,
+                       (uv[:, 1] - cam2.cy) / cam2.fy * zc_pred,
+                       zc_pred], axis=1)
+        P_pred2 = (pc - cam2.t) @ cam2.R
+
+        surf = [to_scan(P2[i])[0] if hit2[i] else None for i in range(K)]
+        pred = [to_scan(P_pred2[i])[0] for i in range(K)]
+        sets = {
+            "head1_depth": ((0.95, 0.18, 0.58),
+                            [p if not scalp[i] else p
+                             for i, p in enumerate(pred)]),
+            "scan_surface": ((0.18, 0.80, 0.44),
+                             [v if (hit2[i] and not scalp[i]) else None
+                              for i, v in enumerate(surf)]),
+            "scan_surface_SCALP": ((1.0, 1.0, 1.0),
+                                   [v if scalp[i] else None
+                                    for i, v in enumerate(surf)]),
+        }
+        rad = a.sphere * ear_h * s0
+        oo, mm, tt = write_review_obj(a.export_obj, src, sets, rad,
+                                      lambda i: next(n for (lo, hi), n
+                                                     in zip(STRIPS, STRIP_NAMES)
+                                                     if lo <= i < hi))
+        print(f"\nreview mesh -> {oo}")
+        print(f"  {mm.name}, texture {tt.name if tt else 'NONE'}")
+        print(f"  spheres r={rad:.2f} scan units: "
+              f"{sum(p is not None for p in sets['head1_depth'][1])} head1_depth "
+              f"(magenta), "
+              f"{sum(p is not None for p in sets['scan_surface'][1])} "
+              f"scan_surface (green), "
+              f"{sum(p is not None for p in sets['scan_surface_SCALP'][1])} "
+              f"scan_surface_SCALP (white)")
 
     import matplotlib
     matplotlib.use("Agg")
