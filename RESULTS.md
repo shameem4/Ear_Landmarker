@@ -1978,3 +1978,38 @@ Walking the ladder and stopping at the first clean fit:
 3.8 fits per ear, about 6.9 h for the corpus. Two ears never reach zero in this
 ladder, so a residue remains that either needs a wider search or a de-folding
 pass.
+
+### The escalation loop, validated on 20 fresh ears
+
+`scripts/wrap_refit_adaptive.py`. The ladder starts at the SHIPPED DEFAULT and
+stops at the first fold-free, untorn fit, so an ear that does not fold today is
+refitted with today's parameters and stops there -- integrity for the ears that
+are already fine is a property of the ordering, not something measured
+afterwards. Later rungs are ordered by clean rate from the twelve-ear sweep
+(128, 64, 4, 2, 32).
+
+Screening 60 fresh ears at the default: only 5 are fold-free, the median is 5
+folds and the tail reaches 16. The folding is a corpus-wide property, which is
+why the mean template inherited it.
+
+Test set of 20, stratified: the 10 worst offenders, the 5 clean, 5 near-clean.
+
+| group                | folds        | clean  |
+|----------------------|--------------|--------|
+| 10 worst (9-16)      | 11.5 -> 0.8  |  6/10  |
+| 5 near-clean (1-2)   |  2.0 -> 0.2  |   4/5  |
+| 5 already clean      |  0   -> 0    |   5/5  |
+| **all 20**           | **6.25 -> 0.45** | **5/20 -> 15/20** |
+
+Accuracy improves rather than paying for it: scan->fit 0.1355% -> 0.1264%
+(-6.7%), p95 flat at +0.1%. Unfolding puts vertices back where they belong, so
+surface agreement gets better. The five already-clean ears come out at exactly
+0.000000% delta -- the same rung, so the same mesh.
+
+3.0 fits per ear: 1764 fits for the corpus, 5.4 h at one job and 1.3 h at four.
+
+Two caveats. The worst offenders were selected for being bad, so some of their
+improvement is regression to the mean -- the claim that best-of-ladder beats
+any single setting rests on the twelve-ear sweep (0.33 vs 2.25 folds), not on
+this run. And 5 of 20 never reach zero, bottoming at 1-4 folds, so a residue
+needs a wider ladder or a de-folding pass.
