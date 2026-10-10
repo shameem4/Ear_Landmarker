@@ -55,8 +55,15 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 WRAP = ROOT.parent / "wrap_work"
 sys.path.insert(0, str(ROOT))
 
-STRIP_NAME = {0: "outer helix", 20: "inner helix", 35: "concha/tragus",
-              50: "lobe"}
+def _strip_names():
+    """From ear3d.scheme, never retyped. Hardcoding them here had 35-49 as
+    'concha/tragus' and 50-54 as 'lobe'; they are the concha border and the
+    superior crus, and the 55-point scheme has no lobe point at all."""
+    from ear3d.scheme import STRIPS, STRIP_NAMES
+    return {int(a): n.replace("_", " ") for (a, _), n in zip(STRIPS, STRIP_NAMES)}
+
+
+STRIP_NAME = _strip_names()
 
 # How far from the scan the finished reference is allowed to be. The wrap fits
 # the cut ear to 0.002 mm and the cut inverts onto the head's own vertices

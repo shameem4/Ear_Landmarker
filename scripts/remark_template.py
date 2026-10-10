@@ -4,8 +4,8 @@
 WHY. The hand-marked template and the shipped 2D model do not put the same
 number of points in the same places along a contour: both helix strips sit
 about 0.05 of their arc further along in the model's scheme -- one index step
-in twenty -- and the model's five lobe points span only 0.65-0.75 of the arc
-the template gives the lobe. Measured against hutubs pp10, that convention
+in twenty -- and the model's five superior-crus points span only 0.65-0.75 of the arc
+the template gives that strip. Measured against hutubs pp10, that convention
 difference is 2.5 mm of the 6.1 mm paired error, and it is not an error in
 either scheme; they simply disagree. Since the model is what ships, the
 template moves.

@@ -1793,18 +1793,21 @@ Reparameterising each strip by arc length, `t -> alpha*t + beta`:
 |---|---|---|---|---|---|
 | outer helix | 9.06 | 4.53 | 0.96 | +0.091 | +0.051 |
 | inner helix | 5.38 | 2.93 | 1.00 | +0.046 | +0.055 |
-| concha/tragus | 5.12 | 4.59 | 1.15 | -0.074 | -0.028 |
-| lobe | 6.04 | 2.73 | 0.68 | -0.000 | +0.001 |
+| concha border | 5.12 | 4.59 | 1.15 | -0.074 | -0.028 |
+| superior crus | 6.04 | 2.73 | 0.68 | -0.000 | +0.001 |
 
 Both helix strips sit about **0.05 of their arc further along** in our scheme
 than in the wrap's hand-marked one -- on the 20-point outer helix that is
 exactly one index step, which is also what an integer-shift search finds
-(9.06 -> 4.57 at s=+1). Our five lobe points span only **0.65-0.75** of the arc
-the wrap gives the lobe: an endpoint disagreement about where the lobe ends.
+(9.06 -> 4.57 at s=+1). Our five superior-crus points span only **0.65-0.75** of the arc the wrap
+gives that strip: an endpoint disagreement about where it ends. (Earlier
+revisions of this section called 35-49 'concha/tragus' and 50-54 'the lobe';
+the scheme's own names are concha_border and superior_crus, and the 55 points
+include no lobe at all.)
 
 **Confirmed on a second ear.** pp10_left was rendered separately and lifted
 with oracle depth: outer helix beta +0.051 against +0.053 on the right, inner
-helix +0.055 against +0.048, lobe alpha 0.651 against 0.752. Across 40 views
+helix +0.055 against +0.048, superior-crus alpha 0.651 against 0.752. Across 40 views
 in total beta's spread between views is 0.03-0.06, against offsets of 0.05, so
 this is a property of the two schemes and not something fitted to one ear.
 
@@ -1828,3 +1831,37 @@ corpus, so the offsets are recorded and corrected at measurement time instead.
 One loose end, separate from this: pp10_left's outer helix reads 23.4 mm as-is
 with beta scattering at sd 0.40 across views, far worse than the right ear's
 10.4 and 0.04, which is a real per-view failure rather than a convention.
+
+## The corpus re-propagated onto the new marks, in one frame
+
+A landmark is a (triangle, barycentric) address on the template, so changing
+the marks does not require re-solving a single fit. `corpus/canonical` is
+already the Faceform Wrap output in one frame at one scale, so the whole
+corpus is one evaluation of the new addresses on those meshes --
+`propagate_landmarks.py` onto the three canonical directories, no re-wrap.
+
+`templates/lm3d_v7_canonical_mm.npz`, 588 ears x 95 landmarks, from
+`mark_mean_v6_spacing`:
+
+- centroid spread across all 588 ears **0.19-0.27 mm sd**, ear size 49.2-79.5
+  mm, and the propagator's own units check reports consistent units. One
+  frame, one scale, by measurement rather than by assertion.
+- **0 of 588 ears** have a contour jump inside a strip, against the 23 that
+  the wrong-mesh barycentrics produced on a single ear.
+- agrees with the reference computed on the fly through `canon2scan` to
+  **9.7e-07 mm**.
+
+Moved from v5, over all 588: median 2.09 mm, outer helix 6.59, superior crus
+4.57, inner helix and concha border 0.86-0.87.
+
+**A naming correction that runs through the earlier sections.** Strips 35-49
+and 50-54 were written here as "concha/tragus" and "the lobe". The scheme's
+own names, in `ear3d.scheme.STRIP_NAMES`, are `concha_border` and
+`superior_crus`, and the 55-point scheme contains no lobe point at all --
+which the scheme-gaps note already said. The numbers are unaffected; the
+anatomy attached to them was wrong, and `gt_landmark_check` now reads the
+names from the scheme instead of carrying its own copy.
+
+Still stale and deliberately not rebuilt: `lm_basis_v*_unitheight.npz` is a
+PCA of the landmarks and so is downstream of this, and which corpus it is
+built from is a licensing choice rather than a mechanical one.
