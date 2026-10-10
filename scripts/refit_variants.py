@@ -94,7 +94,7 @@ def connect(node, param, target):
 
 def rewire(proj, subdivide_first=False, project=True, smooth_min=None,
            n_subdiv=None, wrap_nsub=None, project_dist=None,
-           smooth_max=None, sub_template=False):
+           smooth_max=None, sub_template=False, wrap_params=None):
     """Apply a variant to a cloned project, in place."""
     rig = one(proj, "RigidAlignment")
     wrp = one(proj, "Wrapping")
@@ -108,6 +108,11 @@ def rewire(proj, subdivide_first=False, project=True, smooth_min=None,
         sub["params"]["nSubdivisions"]["value"] = n_subdiv
     if smooth_min is not None:
         wrp["params"]["globalSmoothWeightMin"]["value"] = smooth_min
+    for k, v in (wrap_params or {}).items():
+        if k not in wrp["params"]:
+            raise KeyError(f"Wrapping has no parameter {k!r}; it has "
+                           f"{sorted(wrp['params'])}")
+        wrp["params"][k]["value"] = v
     if smooth_max is not None:
         wrp["params"]["globalSmoothWeightMax"]["value"] = smooth_max
     if wrap_nsub is not None:
@@ -184,14 +189,25 @@ def fold_stats(V, F):
 
 
 def accuracy(V, F, Vs, Fs):
-    """Both directions, in scan units: a fold can hide in one of them."""
+    """scan->fit where the template has support, as % of ear extent.
+
+    Unrestricted scan->fit is dominated by the uncut head around the ear,
+    which no variant covers and which therefore moves identically for all of
+    them. Restricting to the supported region is what makes the number read
+    on the fit rather than on the crop. Percent of extent, because HUTUBS
+    cuts are in normalised head units and SONICOM is in millimetres.
+    """
     import trimesh
     fit = trimesh.Trimesh(vertices=V, faces=F, process=False)
     scan = trimesh.Trimesh(vertices=Vs, faces=Fs, process=False)
+    ext = float(np.ptp(Vs, axis=0).max())
     d1 = trimesh.proximity.closest_point(scan, V)[1]          # fit -> scan
     d2 = trimesh.proximity.closest_point(fit, Vs)[1]          # scan -> fit
-    return (float(np.median(d1)), float(np.percentile(d1, 95)),
-            float(np.median(d2)), float(np.percentile(d2, 95)))
+    cov = d2 < 0.03 * ext
+    return (100 * float(np.median(d2[cov])) / ext,
+            100 * float(np.percentile(d2[cov], 95)) / ext,
+            100 * float(np.median(d1)) / ext,
+            100 * float(cov.mean()))
 
 
 def main():
@@ -207,13 +223,38 @@ def main():
     p.add_argument("--out", default=str(WRAP / "refit_variants"))
     p.add_argument("--ears", nargs="+", required=True)
     p.add_argument("--variants", nargs="+", default=["all"])
+    p.add_argument("--combo", nargs="*", default=[],
+                   help="NAME:p1=v1,p2=v2 -- one variant combining several "
+                        "Wrapping parameters, projection off")
+    p.add_argument("--grid", nargs="*", default=[],
+                   help="NAME=v1,v2,... one variant per value, projection "
+                        "off. Isolates Wrapping's own contribution")
     p.add_argument("--points", type=int, default=14)
     p.add_argument("--work-size", type=float, default=100.0)
     p.add_argument("--project-dist", type=float, default=0.02)
     a = p.parse_args()
 
     import trimesh
-    names = list(VARIANTS) if a.variants == ["all"] else a.variants
+    if a.combo:
+        for spec in a.combo:
+            nm, kv = spec.split(":", 1)
+            VARIANTS[nm] = dict(project=False, wrap_params={
+                k: float(v) for k, v in
+                (x.split("=", 1) for x in kv.split(","))})
+        names = ["control"] + [spec.split(":", 1)[0] for spec in a.combo]
+        VARIANTS.setdefault("control", dict(project=False))
+    elif a.grid:
+        for spec in a.grid:
+            k, vals = spec.split("=", 1)
+            for v in vals.split(","):
+                VARIANTS[f"{k[:14]}@{v}"] = dict(
+                    project=False, wrap_params={k: float(v)})
+        names = [n for n in VARIANTS if "@" in n]
+        if "control" not in VARIANTS:
+            VARIANTS["control"] = dict(project=False)
+        names = ["control"] + names
+    else:
+        names = list(VARIANTS) if a.variants == ["all"] else a.variants
     out = pathlib.Path(a.out)
     (out / "work").mkdir(parents=True, exist_ok=True)
     base = json.load(open(a.base))
@@ -331,31 +372,26 @@ def main():
                 rows.append([ear, vn, len(Vo), len(Fo), dt, float(ang.max()),
                              int((ang > 90).sum()), int((ang > 60).sum()),
                              float(np.median(ang)), m1, p1, m2, p2])
-                print(f"  {ear:14s} {vn:12s} {len(Vo):6d}v {dt:6.1f}s  "
-                      f"max {ang.max():6.1f}  >90 {int((ang>90).sum()):4d}  "
-                      f"fit->scan med {m1:.4f} p95 {p1:.4f}", flush=True)
+                print(f"  {ear:14s} {vn:18s} {dt:5.1f}s  max {ang.max():6.1f}"
+                      f"  >90 {int((ang>90).sum()):4d}  >60 "
+                      f"{int((ang>60).sum()):4d}  scan>fit {m1:.4f}% "
+                      f"p95 {p1:.4f}%  cov {p2:.0f}%", flush=True)
             except Exception as e:
                 print(f"  {ear:14s} {vn:12s} FAILED: {str(e)[:140]}", flush=True)
 
     if not rows:
         return
-    print(f"\n{'variant':12s} {'verts':>6s} {'sec':>6s} {'maxdih':>7s} "
-          f"{'>90':>5s} {'>60':>5s} {'fit>scan':>9s} {'p95':>7s} "
-          f"{'scan>fit':>9s} {'p95':>7s}")
-    for ds, keep in (("hutubs (normalised units)", lambda e: e.startswith("pp")),
-                     ("sonicom (mm)", lambda e: not e.startswith("pp"))):
-        sub = [x for x in rows if keep(x[0])]
-        if not sub:
+    print(f"\n{'variant':18s} {'sec':>5s} {'maxdih':>7s} {'>90':>5s} "
+          f"{'>60':>5s} {'scan>fit':>9s} {'p95':>8s}   "
+          f"(mean over ears, % of ear extent)")
+    for vn in names:
+        r = [x for x in rows if x[1] == vn]
+        if not r:
             continue
-        print(f"-- {ds}")
-        for vn in names:
-            r = [x for x in sub if x[1] == vn]
-            if not r:
-                continue
-            def g(i):
-                return float(np.mean([x[i] for x in r]))
-            print(f"{vn:12s} {int(g(2)):6d} {g(4):6.1f} {g(5):7.1f} {g(6):5.0f} "
-                  f"{g(7):5.0f} {g(9):9.4f} {g(10):7.4f} {g(11):9.4f} {g(12):7.4f}")
+        def g(i):
+            return float(np.mean([x[i] for x in r]))
+        print(f"{vn:18s} {g(4):5.1f} {g(5):7.1f} {g(6):5.1f} {g(7):5.1f} "
+              f"{g(9):8.4f}% {g(10):7.4f}%")
     json.dump(rows, open(out / "rows.json", "w"), indent=1)
 
 

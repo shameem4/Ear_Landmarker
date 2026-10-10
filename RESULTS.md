@@ -1927,3 +1927,54 @@ It says nothing about the lifter heads, which are the ones that actually ate
 mismatched inputs (shipped-convention `pred_xy` against wrap-convention z);
 head 1 reads pixels and was always internally consistent. That experiment was
 not run.
+
+## The Wrap fits fold, and no single parameter fixes it
+
+Every one of the 588 fits carries edges whose two faces meet past 90 degrees --
+a median of 42, and about 290 at full subdivided resolution. They are not
+anatomy: only 2 edges fold in 95% of fits while 250 fold in under 10%, so they
+move per ear, and the generic template they all start from has none.
+
+Two causes, found separately.
+
+**ProjectGeom.** It runs last, on the dense mesh, snapping every vertex to its
+nearest scan point with no smoothness term, so on a thin ridge adjacent
+vertices snap to opposite faces. Dropping it takes folds from 42 to 11 across
+four ears with scan->fit unchanged. What it buys is real but small: a 5.4x
+tighter typical surface fit, 0.087 mm to 0.016 mm, concentrated entirely in
+regions that already fit -- the p95 barely moves (1.12 mm to 1.00 mm) and
+coverage is identical. It polishes where nothing needed polishing.
+
+**Wrapping itself**, which leaves about 11 folds with projection fully off.
+
+Subdividing before the fit does not help, after two bugs of mine were fixed: a
+control point is (triangleIndex, u, v) and subdivision renumbers triangles,
+and anchors sampled on subdivision midpoints have no counterpart on the coarse
+automatic fit and were silently dropped. Corrected, fitting the subdivided
+template still gives 97 folds against 11 and 1.43 mm against 0.09 mm.
+Wrapping's freedom comes from its deformation graph, not mesh density: raising
+nSubdivisions from 5 to 6 moved the result in the fourth decimal.
+
+**A single parameter does not solve the folding.** On four ears,
+globalPoint2PointFittingWeight looked decisive -- 10.8 folds to 0.8 at no
+accuracy cost, a 13x reduction. It did not replicate. On twelve fresh ears the
+best weight gives 2x, weight 2.0 is WORSE than control, and the per-ear
+response is chaotic: pp31_left goes 2, 14, 7, 8, 3, 19 as the weight rises.
+The weight is not suppressing a mechanism, it is perturbing a non-convex
+optimisation into a different local minimum, and whether that minimum folds is
+luck. The 13x figure is withdrawn.
+
+**Per-ear search does solve it.** No single weight clears more than 7 of 12
+ears, but 10 of 12 reach zero folds at SOME weight, and accuracy is flat across
+the whole ladder (0.122-0.130%), so choosing per ear is free on the other axis.
+Walking the ladder and stopping at the first clean fit:
+
+| policy              | mean folds | clean  | scan->fit |
+|---------------------|-----------:|-------:|----------:|
+| control (shipped)   |       4.50 |   1/12 |   0.1280% |
+| best fixed (p2p 64) |       2.25 |   6/12 |   0.1225% |
+| adaptive            |       0.33 |  10/12 |   0.1251% |
+
+3.8 fits per ear, about 6.9 h for the corpus. Two ears never reach zero in this
+ladder, so a residue remains that either needs a wider search or a de-folding
+pass.
