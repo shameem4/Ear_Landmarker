@@ -16,6 +16,7 @@ inverted and affine-fitted before it meant anything.
 
     .venv_cu130/bin/python scripts/moge_infer.py in.png out.npz
 """
+import argparse
 import sys
 
 import numpy as np
@@ -26,9 +27,23 @@ MODEL = "Ruicheng/moge-2-vitl-normal"
 
 
 def main():
-    if len(sys.argv) < 3:
-        sys.exit(__doc__)
-    src, dst = sys.argv[1], sys.argv[2]
+    ap = argparse.ArgumentParser()
+    ap.add_argument("src")
+    ap.add_argument("dst")
+    ap.add_argument("--fov-x", type=float, default=None,
+                    help="the image's TRUE horizontal field of view in "
+                         "degrees. MoGe estimates this when it is not given, "
+                         "and on an ear render it estimated 515.9 px of focal "
+                         "length against the renderer's actual 643.4 -- a "
+                         "wider camera than the real one. Its depth is "
+                         "self-consistent with whatever it assumed, so the "
+                         "error only shows when the point map is combined "
+                         "with the TRUE camera, where it costs about 20% of "
+                         "the relief amplitude. When the image was rendered, "
+                         "the fov is known exactly and there is no reason to "
+                         "let it be guessed")
+    args = ap.parse_args()
+    src, dst = args.src, args.dst
     from moge.model.v2 import MoGeModel
 
     im = Image.open(src).convert("RGB")
@@ -40,13 +55,16 @@ def main():
         # resolution_level 9 is the package default and the highest it
         # offers; an ear is a small part of the frame, so there is no case
         # for asking for fewer tokens here.
-        out = m.infer(x, resolution_level=9, apply_mask=True)
+        out = m.infer(x, resolution_level=9, apply_mask=True,
+                      fov_x=args.fov_x)
 
     d = {k: v.float().cpu().numpy() for k, v in out.items()
          if torch.is_tensor(v) and v.dtype != torch.bool}
     d.update({k: v.cpu().numpy() for k, v in out.items()
               if torch.is_tensor(v) and v.dtype == torch.bool})
-    np.savez_compressed(dst, size=np.asarray(im.size), **d)
+    np.savez_compressed(dst, size=np.asarray(im.size),
+                        fov_x_given=(np.nan if args.fov_x is None else args.fov_x),
+                        **d)
     print(f"wrote {dst}: " + ", ".join(
         f"{k}{tuple(v.shape)}" for k, v in d.items()))
 

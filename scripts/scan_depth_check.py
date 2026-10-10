@@ -385,6 +385,31 @@ def main():
                         "--mesh when that is itself an .obj")
     p.add_argument("--sphere", type=float, default=0.012,
                    help="sphere radius as a fraction of ear height")
+    p.add_argument("--zoom-fill", type=float, default=0.0,
+                   help="with --zoom: make the ear fill this fraction of the "
+                        "frame's LONGER extent, instead of the corpus "
+                        "0.354 x 0.677. Only meaningful with --no-head1 -- "
+                        "the corpus occupancy exists because head 1 is "
+                        "framing-sensitive, and a depth map is not, so with "
+                        "head 1 gone the ear can simply be made as large as "
+                        "fits and the extra pixels spent on relief")
+    p.add_argument("--no-head1", action="store_true",
+                   help="do not load or score head 1 at all. It is the "
+                        "incumbent depth head and a useful baseline, but it "
+                        "is NOT part of the shipped-2D + depth-map flow, and "
+                        "keeping it forces the framing to the corpus "
+                        "occupancy it was trained on -- which is what makes "
+                        "--zoom fight the detector. Without it the framing is "
+                        "free")
+    p.add_argument("--zoom", action="store_true",
+                   help="frame the ear by MOVING THE CAMERA instead of "
+                        "cropping the render. Same geometry -- a crop and a "
+                        "narrowed field of view give the same fx/width "
+                        "ratio, which is the only thing corpus z depends on "
+                        "-- but it removes the crop box, removes putting a "
+                        "depth map back on the render grid, makes the z unit "
+                        "simply the image width, and renders the ear at full "
+                        "resolution instead of inside a sub-window")
     p.add_argument("--snap-surface", type=float, default=0.0,
                    metavar="MM",
                    help="after lifting, move each exported landmark the "
@@ -519,29 +544,144 @@ def main():
     # The 2D model is the reliable part of this pipeline (0.0149 NME), so the
     # ear's apparent extent comes from it. A depth head is sensitive to
     # occupancy, so this is matched rather than inherited.
-    res2 = pipe(img2, timestamp=0.0)
-    if not res2:
-        sys.exit("the pipeline found no ear in the pinna-frame render")
-    lm2 = np.asarray(max(res2, key=lambda d: float(d["confidence"]))
-                     ["landmarks"], float)[:K]
-    (bx0, by0), (bx1, by1) = lm2.min(0), lm2.max(0)
-    side = max((bx1 - bx0) / 0.354, (by1 - by0) / a.occupancy)
-    cx, cy = (bx0 + bx1) / 2, (by0 + by1) / 2
-    x0, y0 = cx - side / 2, cy - side / 2
-    H0, W0 = depth2.shape
-    if x0 < 0 or y0 < 0 or x0 + side > W0 or y0 + side > H0:
-        print(f"note: the corpus crop runs off the {W0}px render "
-              f"(x0 {x0:.0f}, side {side:.0f}); it is clamped, so occupancy "
-              f"is approximate")
-        x0, y0 = max(0.0, min(x0, W0 - 1)), max(0.0, min(y0, H0 - 1))
-        side = min(side, W0 - x0, H0 - y0)
     from PIL import Image as _I
-    crop_box = (int(round(x0)), int(round(y0)),
-                int(round(x0 + side)), int(round(y0 + side)))
-    img_c = np.asarray(_I.fromarray(img2).crop(crop_box))
-    size = float(side)            # crop width in RENDER pixels: the z unit
-    print(f"frame:  ear fills {(bx1 - bx0) / side:.3f} of crop width, "
-          f"{(by1 - by0) / side:.3f} of height (corpus 0.354 x 0.677)")
+
+    def landmark_render(im, ts, soft=False):
+        r = pipe(im, timestamp=ts)
+        if not r:
+            if soft:
+                return None
+            sys.exit("the pipeline found no ear in the pinna-frame render")
+        return np.asarray(max(r, key=lambda d: float(d["confidence"]))
+                          ["landmarks"], float)[:K]
+
+    lm2 = landmark_render(img2, 0.0)
+
+    if a.zoom:
+        # THE CAMERA DOES THE FRAMING, so there is no crop and no second
+        # coordinate system: the z unit becomes the image width, a depth map
+        # arrives already on the render's own grid, and the ear is rendered at
+        # full resolution instead of inside a sub-window. Geometrically this
+        # is the same view -- a crop and a narrowed field of view give the
+        # same fx/width ratio, which is all corpus z depends on.
+        #
+        # THE DETECTOR HAS SCALE BLIND BANDS, which is the one thing that
+        # makes this harder than it looks. Measured on this scan by sweeping
+        # the zoom in 2% steps: zero detections anywhere in 0.90-0.98 or
+        # 0.76-0.80 of the starting scale, while the scales on either side
+        # return confidence 0.94-0.98. It is not a size limit and it is not
+        # tracker state -- pipe.reset() changes nothing and the pattern
+        # repeats exactly. The corpus occupancy lands inside the second band,
+        # which is why the crop path never hit this: it only ever shows the
+        # detector a WIDE framing and crops afterwards.
+        #
+        # So the target is tried, and if the detector refuses it the nearest
+        # framing that works is used and the deviation is printed. That
+        # matters for head 1, which is framing-sensitive (a crop round-trip
+        # alone cost it 0.802 -> 0.584), and not for MoGe, which was never
+        # trained on this corpus and only wants resolution.
+        W0 = img2.shape[1]
+        (q0, r0), (q1, r1) = lm2.min(0), lm2.max(0)
+        if a.zoom_fill > 0:
+            need = max(q1 - q0, r1 - r0) / W0 / a.zoom_fill
+        else:
+            need = max((q1 - q0) / W0 / 0.354,
+                       (r1 - r0) / W0 / a.occupancy)
+        print(f"zoom:   ear fills {(q1 - q0) / W0:.3f} x "
+              f"{(r1 - r0) / W0:.3f} of the frame at the start; "
+              f"target needs x{need:.4f}")
+        base_scale, got = scale, None
+        # the target first, then outward in 2% steps either side of it
+        ladder = [1.0]
+        for k in range(1, 9):
+            ladder += [1 + 0.02 * k, 1 - 0.02 * k]
+        for f in ladder:
+            cand = base_scale * need * f
+            g2t = in_frame(mesh, R2, C2, cand)
+            it, dt, ct = render(g2t, cfg)
+            lt = landmark_render(it, 100.0 + 10 * abs(f - 1) + f, soft=True)
+            if lt is None:
+                continue
+            got = (cand, it, dt, ct, lt, f)
+            break
+        if got is None:
+            sys.exit("no zoom within +-16% of the target framing is one the "
+                     "detector will accept; run without --zoom")
+        scale, img2, depth2, cam2, lm2, f = got
+        H0, W0 = depth2.shape
+        crop_box = (0, 0, W0, H0)
+        img_c = img2
+        side = size = float(W0)
+        (bx0, by0), (bx1, by1) = lm2.min(0), lm2.max(0)
+        note = "on target" if f == 1.0 else f"OFF TARGET by {100*(f-1):+.0f}%"
+        print(f"frame:  ear fills {(bx1 - bx0) / side:.3f} of frame width, "
+              f"{(by1 - by0) / side:.3f} of height "
+              f"(corpus 0.354 x 0.677), no crop -- {note}")
+        if f != 1.0:
+            print(f"        the detector rejected the exact target framing; "
+                  f"head 1's score below is at a framing it was not trained "
+                  f"for and is not comparable with its crop-path number")
+
+        # AIM THE CAMERA, not just zoom it. The corpus framing is occupancy
+        # AND centring -- a crop puts the ear's box dead centre by
+        # construction -- and matching only the occupancy leaves the ear up
+        # to 6% of the frame off centre, which is enough to cost head 1 a
+        # lot (0.277 -> 0.083 on the left ear). So the look-at point is
+        # nudged until the ear's box centre lands on the principal point.
+        #
+        # Solved by iteration rather than in closed form: the correction is
+        # a small translation of C2, and iterating makes the result
+        # self-verifying instead of resting on getting a chain of frame
+        # conventions right first time. Converges in two passes.
+        for it in range(1, 5):
+            (cx0, cy0), (cx1, cy1) = lm2.min(0), lm2.max(0)
+            ecx, ecy = (cx0 + cx1) / 2, (cy0 + cy1) / 2
+            dxp, dyp = cam2.cx - ecx, cam2.cy - ecy
+            if max(abs(dxp), abs(dyp)) < 0.004 * W0:
+                break
+            zc_ear = float(np.mean(depth2[np.isfinite(depth2)]))
+            u = np.array([dxp * zc_ear / cam2.fx,
+                          dyp * zc_ear / cam2.fy, 0.0]) @ cam2.R
+            C2t = C2 - (u * scale) @ R2
+            g2t = in_frame(mesh, R2, C2t, scale)
+            it2, dt2, ct2 = render(g2t, cfg)
+            lt2 = landmark_render(it2, 300.0 + it, soft=True)
+            if lt2 is None:
+                print(f"        aim {it}: detector refused the recentred "
+                      f"framing, keeping the previous one")
+                break
+            C2, img2, depth2, cam2, lm2 = C2t, it2, dt2, ct2, lt2
+            img_c = img2
+            print(f"        aim {it}: ear centre off by "
+                  f"({dxp / W0:+.3f}, {dyp / W0:+.3f}) of the frame, corrected")
+        (bx0, by0), (bx1, by1) = lm2.min(0), lm2.max(0)
+        ec = ((bx0 + bx1) / 2 / W0, (by0 + by1) / 2 / W0)
+        print(f"        ear centre now ({ec[0]:.3f}, {ec[1]:.3f}) of the "
+              f"frame; a crop centres at (0.500, 0.500)")
+
+        fov_x = float(np.degrees(2 * np.arctan(W0 / (2 * cam2.fx))))
+        print(f"        true fov_x {fov_x:.3f} deg (fx {cam2.fx:.1f} px), "
+              f"told to MoGe rather than guessed")
+    else:
+        fov_x = float(np.degrees(2 * np.arctan(depth2.shape[1]
+                                               / (2 * cam2.fx))))
+        (bx0, by0), (bx1, by1) = lm2.min(0), lm2.max(0)
+        side = max((bx1 - bx0) / 0.354, (by1 - by0) / a.occupancy)
+        cx, cy = (bx0 + bx1) / 2, (by0 + by1) / 2
+        x0, y0 = cx - side / 2, cy - side / 2
+        H0, W0 = depth2.shape
+        if x0 < 0 or y0 < 0 or x0 + side > W0 or y0 + side > H0:
+            print(f"note: the corpus crop runs off the {W0}px render "
+                  f"(x0 {x0:.0f}, side {side:.0f}); it is clamped, so "
+                  f"occupancy is approximate")
+            x0, y0 = max(0.0, min(x0, W0 - 1)), max(0.0, min(y0, H0 - 1))
+            side = min(side, W0 - x0, H0 - y0)
+        crop_box = (int(round(x0)), int(round(y0)),
+                    int(round(x0 + side)), int(round(y0 + side)))
+        img_c = np.asarray(_I.fromarray(img2).crop(crop_box))
+        size = float(side)        # crop width in RENDER pixels: the z unit
+        print(f"frame:  ear fills {(bx1 - bx0) / side:.3f} of crop width, "
+              f"{(by1 - by0) / side:.3f} of height (corpus 0.354 x 0.677)")
 
     if a.dump_render:
         # EVERYTHING A SECOND DEPTH SOURCE NEEDS, and nothing it would have to
@@ -559,21 +699,25 @@ def main():
             dr / "frame.npz", depth_full=depth2.astype(np.float32),
             crop_box=np.asarray(crop_box), side=side, lm2=lm2,
             fx=cam2.fx, fy=cam2.fy, cx=cam2.cx, cy=cam2.cy,
-            R=cam2.R, t=cam2.t, ear=a.ear, mesh=str(a.mesh))
+            R=cam2.R, t=cam2.t, ear=a.ear, mesh=str(a.mesh),
+            fov_x=fov_x, zoom=bool(a.zoom))
         print(f"dump:   {dr}/render_full.png, render_crop.png, frame.npz")
 
-    m = EarDepth3DModule.load_from_checkpoint(
-        a.ckpt, map_location="cuda" if torch.cuda.is_available() else "cpu").eval()
-    dev = next(m.parameters()).device
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
     t = np.asarray(Image.fromarray(img_c).resize((192, 192), Image.BILINEAR),
                    np.float32).transpose(2, 0, 1)[None] / 255.0
-    with torch.no_grad():
-        pr = m(torch.from_numpy((t - 0.5) / 0.5).float().to(dev)
-               ).view(-1, 3).cpu().numpy()[:K]
-    xy, z_pred = pr[:, :2], pr[:, 2] - pr[:, 2].mean()
-    # xy is a fraction OF THE CROP; the depth buffer is the full render
-    uv = np.stack([crop_box[0] + xy[:, 0] * side,
-                   crop_box[1] + xy[:, 1] * side], axis=1)
+    xy = z_pred = uv = None
+    if not a.no_head1:
+        m = EarDepth3DModule.load_from_checkpoint(
+            a.ckpt, map_location=dev).eval()
+        dev = next(m.parameters()).device
+        with torch.no_grad():
+            pr = m(torch.from_numpy((t - 0.5) / 0.5).float().to(dev)
+                   ).view(-1, 3).cpu().numpy()[:K]
+        xy, z_pred = pr[:, :2], pr[:, 2] - pr[:, 2].mean()
+        # xy is a fraction OF THE CROP; the depth buffer is the full render
+        uv = np.stack([crop_box[0] + xy[:, 0] * side,
+                       crop_box[1] + xy[:, 1] * side], axis=1)
 
     def sample_surface(uvq):
         """Where the scan's surface actually is, at these pixels."""
@@ -601,8 +745,9 @@ def main():
     uv_pipe = lm2.copy()
     xy_pipe = (lm2 - np.array(crop_box[:2])) / side
 
-    methods = [("head1_depth", (0.95, 0.18, 0.58), uv, z_pred,
-                "head 1: regressed depth")]
+    methods = [] if a.no_head1 else [
+        ("head1_depth", (0.95, 0.18, 0.58), uv, z_pred,
+         "head 1: regressed depth")]
 
     if a.moge_npz:
         # THE SHIPPED 2D, LIFTED BY A GENERAL DEPTH MODEL. x and y are
@@ -690,7 +835,7 @@ def main():
     # ---- score each at ITS OWN pixels, then lift it ----------------------
     print(f"\n{'method':<44s} {'usable':>7s} {'signal':>8s} {'z_skill':>8s}"
           f" {'corr':>6s}")
-    sets, head1 = {}, None
+    sets, scored = {}, {}
     for name, col, uvq, zq, label in methods:
         if a.flip_z:
             zq = -zq
@@ -708,23 +853,37 @@ def main():
               f"{1 - maeq / baseq:8.3f} {corrq:6.3f}")
         zbarq = float(np.mean(zcq[goodq]))
         sets[name] = (col, [q for q in lift(uvq, zq, zbarq)])
-        if name == "head1_depth":
-            head1 = dict(uv=uvq, good=goodq, scalp=scalpq, zt=ztq, zp=zpq,
-                         mae=maeq, base=baseq, zc=zcq, P2=sample_surface(uvq)[0])
+        scored[name] = dict(uv=uvq, good=goodq, scalp=scalpq, zt=ztq,
+                            zp=zpq, mae=maeq, base=baseq, zc=zcq)
     print(f"  {'predict z = 0':<42s} {'-':>5s}    {'-':>8s} {0.0:8.3f}"
           f" {'-':>6s}")
 
-    # the surface reference, at head 1's pixels, for the figure and the export
-    P2, hit2, zc, scalp, good = sample_surface(uv)
-    zt_g, zp = head1["zt"], head1["zp"]
-    mae, base = head1["mae"], head1["base"]
-    zf_all = weak_perspective(mean_u, xy)[0]
+    # THE SURFACE REFERENCE IS THE SHIPPED 2D's PIXELS. It used to be head
+    # 1's, which was wrong in two ways: it made a depth head mandatory even
+    # for a flow that does not use one, and in the export it paired every
+    # prediction's error stick with the surface point at a DIFFERENT pixel.
+    # The reference now follows whichever set is primary, preferring the
+    # lifted depth map, because that is the flow being reviewed.
+    if not scored:
+        sys.exit("nothing to score: --no-head1 with no --moge-npz leaves only "
+                 "the mean-ear fit, which is not a depth source")
+    ref_name = ("moge_lift" if "moge_lift" in scored
+                else "head1_depth" if "head1_depth" in scored
+                else next(iter(scored)))
+    ref = scored[ref_name]
+    P2, hit2, zc, scalp, good = sample_surface(ref["uv"])
+    zt_g, zp = ref["zt"], ref["zp"]
+    mae, base = ref["mae"], ref["base"]
+    xy_ref = (ref["uv"] - np.array(crop_box[:2])) / side
+    zf_all = weak_perspective(mean_u, xy_ref)[0]
     zf = zf_all[good] - zf_all[good].mean()
     mf = float(np.abs(zf - zt_g).mean())
+    print(f"\nreference set for the figure and the export: {ref_name} "
+          f"(at the pixels that set produced)")
 
-    np.savez(out / "scan_depth.npz", xy=xy, z_pred=z_pred, z_true_good=zt_g,
-             good=good, hit=hit2, scalp=scalp, uv=uv, conf=conf,
-             mae=mae, base=base, mean_ear_mae=mf)
+    np.savez(out / "scan_depth.npz", xy=xy_ref, z_true_good=zt_g, zp=zp,
+             good=good, hit=hit2, scalp=scalp, uv=ref["uv"], conf=conf,
+             mae=mae, base=base, mean_ear_mae=mf, ref=ref_name)
 
     if a.export_obj:
         src = a.texture_obj or (a.mesh if a.mesh.lower().endswith(".obj") else "")
@@ -834,7 +993,7 @@ def main():
     idx = np.arange(K)[good]
     fig, ax = plt.subplots(1, 3, figsize=(13.5, 4.6))
     ax[0].imshow(img_c)
-    cu = xy * side              # crop-local pixels, for drawing
+    cu = xy_ref * side          # crop-local pixels, for drawing
     for lo, hi in STRIPS:
         ax[0].plot(cu[lo:hi, 0], cu[lo:hi, 1], "-", c="#ff2d95", lw=1.4)
     ax[0].plot(cu[:, 0], cu[:, 1], ".", c="#ff2d95", ms=3)
@@ -846,15 +1005,15 @@ def main():
                     fontsize=8)
     ax[0].axis("off")
     ax[1].plot(idx, zt_g, "-o", c="#2ca02c", ms=3, label="scan surface")
-    ax[1].plot(idx, zp, "-o", c="#ff2d95", ms=3, label="head 1")
+    ax[1].plot(idx, zp, "-o", c="#ff2d95", ms=3, label=ref_name)
     ax[1].plot(idx, zf, "-o", c="#5599ff", ms=3, label="mean ear + pose")
     ax[1].set_xlabel("landmark index")
     ax[1].set_ylabel("z (crop widths)")
     ax[1].set_title("depth profile along the scheme", fontsize=8)
     ax[1].legend(fontsize=6)
     ax[1].grid(alpha=.25)
-    ax[2].plot(xy[good, 0], zt_g, "o", c="#2ca02c", ms=4, label="scan")
-    ax[2].plot(xy[good, 0], zp, "o", c="#ff2d95", ms=4, label="head 1")
+    ax[2].plot(xy_ref[good, 0], zt_g, "o", c="#2ca02c", ms=4, label="scan")
+    ax[2].plot(xy_ref[good, 0], zp, "o", c="#ff2d95", ms=4, label=ref_name)
     ax[2].set_xlabel("x")
     ax[2].set_ylabel("z")
     ax[2].invert_yaxis()
@@ -863,7 +1022,7 @@ def main():
     ax[2].grid(alpha=.25)
     fig.suptitle(
         f"{pathlib.Path(a.mesh).stem}: predicted depth against the scan's own "
-        f"geometry.  head 1 z_skill {1 - mae / base:.3f}, mean-ear fit "
+        f"geometry.  {ref_name} z_skill {1 - mae / base:.3f}, mean-ear fit "
         f"{1 - mf / base:.3f}, {int(good.sum())}/{K} usable landmarks."
         "\nPlacement is NOT scored: the scan has no annotation. This asks "
         "whether the depth matches the surface at the pixels the model chose.",
