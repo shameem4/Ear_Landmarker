@@ -208,6 +208,10 @@ def main():
                         "fraction of the sampled span, is the scalp beside the "
                         "pinna rather than the ear")
     p.add_argument("--no-skin", action="store_true")
+    p.add_argument("--compare-flip", action="store_true",
+                   help="export head 1 TWICE, as predicted and with z "
+                        "negated, so the two can be judged side by side in a "
+                        "viewer against the same surface reference")
     p.add_argument("--flip-z", action="store_true",
                    help="DIAGNOSTIC: negate every predicted z before scoring. "
                         "If a score improves, that prediction's depth is "
@@ -376,6 +380,11 @@ def main():
 
     methods = [("head1_depth", (0.95, 0.18, 0.58), uv, z_pred,
                 "head 1: regressed depth")]
+    if a.compare_flip:
+        # same pixels, so the same rays and the same zbar: the two sets differ
+        # ONLY in the sign of the predicted depth
+        methods += [("head1_zflipped", (1.00, 0.85, 0.10), uv, -z_pred,
+                     "head 1: z NEGATED (diagnostic)")]
 
     if a.shape_ckpt:
         from model.depth_module import EarShape3DModule
@@ -401,9 +410,12 @@ def main():
         print(f"shape head: predicted coefficient sd {coef.std():.3f} "
               f"(gt is 1.0)")
 
-    methods += [("meanear_fit", (0.20, 0.85, 0.85), uv_pipe,
-                 weak_perspective(mean_u, xy_pipe)[0],
-                 "mean ear + SOLVED pose, shipped 2D")]
+    if not a.compare_flip:
+        # --compare-flip is about head 1's sign alone; a third prediction set
+        # only crowds the viewer
+        methods += [("meanear_fit", (0.20, 0.85, 0.85), uv_pipe,
+                     weak_perspective(mean_u, xy_pipe)[0],
+                     "mean ear + SOLVED pose, shipped 2D")]
 
     # ---- score each at ITS OWN pixels, then lift it ----------------------
     print(f"\n{'method':<44s} {'usable':>7s} {'signal':>8s} {'z_skill':>8s}"
