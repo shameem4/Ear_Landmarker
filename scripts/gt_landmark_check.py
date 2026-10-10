@@ -137,6 +137,44 @@ def gt_landmarks(dataset, subject, ear, n_points, verify=True):
     return L[:n_points], z["strips"], str(tf["source"])
 
 
+# ONE FIXED RELABELLING, measured on pp10 and NOT fitted per ear: both helix
+# strips sit about 0.05 of their arc further along in our scheme than in the
+# wrap's hand-marked one -- on the 20-point outer helix that is exactly one
+# index step -- and our five lobe points span about 0.70 of the arc the wrap
+# gives the lobe. Confirmed on both ears of pp10 independently (outer helix
+# beta +0.053 right, +0.051 left; lobe alpha 0.752 right, 0.651 left) and
+# across 40 views lifted with oracle depth, where beta's spread between views
+# is 0.03-0.06 against offsets of 0.05.
+ARC_FIX = {0: (1.00, 0.05), 20: (1.00, 0.05), 35: (1.00, 0.00),
+           50: (0.70, 0.00)}
+
+
+def _arc(X):
+    d = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(X, axis=0), axis=1))]
+    return d / d[-1]
+
+
+def _resample(Gs, n, alpha, beta):
+    """The reference strip read at alpha*t+beta instead of at t."""
+    tg = _arc(Gs)
+    tt = np.clip(alpha * np.linspace(0, 1, n) + beta, 0, 1)
+    return np.stack([np.interp(tt, tg, Gs[:, k]) for k in range(3)], axis=1)
+
+
+def _reparam_fit(Gs, Ps):
+    """alpha, beta minimising the median paired distance, and that median."""
+    from scipy.optimize import minimize
+
+    def cost(q):
+        return float(np.median(np.linalg.norm(
+            Ps - _resample(Gs, len(Ps), q[0], q[1]), axis=1)))
+    best = min((minimize(cost, x0, method="Nelder-Mead",
+                         options=dict(xatol=1e-4, fatol=1e-4)).x
+                for x0 in ([1, 0], [1, 0.05], [0.9, 0.05], [1.1, -0.05])),
+               key=cost)
+    return cost(best), best
+
+
 def contour_check(P, strips, label):
     """A correctly ordered landmark set jumps only BETWEEN strips."""
     step = np.linalg.norm(np.diff(P, axis=0), axis=1)
@@ -157,6 +195,10 @@ def main():
     p.add_argument("--dataset", default="hutubs")
     p.add_argument("--n-points", type=int, default=55)
     p.add_argument("--per-view", action="store_true")
+    p.add_argument("--reparam", action="store_true",
+                   help="split the error into a labelling-convention part and "
+                        "the rest, by letting each strip's reference slide "
+                        "along its own arc")
     a = p.parse_args()
 
     import open3d as o3d
@@ -209,6 +251,35 @@ def main():
         e = np.linalg.norm(P[s:min(b, len(G))] - G[s:min(b, len(G))], axis=1)
         print(f"  {s:2d}-{min(b, len(G)) - 1:2d} {STRIP_NAME.get(s, ''):<14}"
               f"median {np.median(e):5.2f}  max {e.max():5.2f}")
+
+    if a.reparam:
+        # WHY THIS IS NOT JUST FITTING THE ERROR AWAY. A rigid fit to the
+        # whole set absorbs these offsets as an 11.9 degree rotation, which
+        # is what they were first reported as; per-strip the apparent angles
+        # are -11, -9, -2 and -23 degrees, so there is no one rotation and the
+        # cause is points sitting further along each contour. Depth is not
+        # involved: lifting the same 2D points with the renderer's own depth
+        # buffer gives the same offsets.
+        print("\nSLIDING THE REFERENCE ALONG EACH CONTOUR")
+        print(f"{'strip':<16}{'as-is':>8}{'fitted':>8}{'alpha':>8}{'beta':>8}"
+              f"{'fixed':>8}")
+        tot = {"as": [], "fit": [], "fix": []}
+        for s_, b_ in strips:
+            s_, b_ = int(s_), int(min(b_, len(G)))
+            if s_ >= len(G):
+                break
+            Gs, Ps = G[s_:b_], P[s_:b_]
+            e0 = np.linalg.norm(Ps - Gs, axis=1)
+            rf, q = _reparam_fit(Gs, Ps)
+            al, be = ARC_FIX.get(s_, (1.0, 0.0))
+            ef = np.linalg.norm(Ps - _resample(Gs, len(Ps), al, be), axis=1)
+            print(f"  {STRIP_NAME.get(s_, ''):<14}{np.median(e0):>8.2f}"
+                  f"{rf:>8.2f}{q[0]:>8.3f}{q[1]:>+8.3f}{np.median(ef):>8.2f}")
+            tot["as"] += list(e0); tot["fix"] += list(ef)
+        print(f"  {'all':<14}{np.median(tot['as']):>8.2f}{'':>8}{'':>8}{'':>8}"
+              f"{np.median(tot['fix']):>8.2f}")
+        print("'fixed' uses ONE correction for every ear, not one fitted here."
+              "\nWhat remains after it is error no relabelling can explain.")
 
     if a.per_view:
         rows = []

@@ -1768,3 +1768,63 @@ surface, so a surface-distance check passes while the answer is wrong.
 `scripts/gt_landmark_check.py` composes the chain itself from `tf_*` plus the
 scan's own centroid and radius, and refuses to return a reference that lands
 more than 1 mm from the scan.
+
+## The 11.9 degree rotation is a labelling convention, not a pose error
+
+The best rigid alignment of reference to consensus removed 11.9 degrees, which
+looked like a systematic pose problem worth chasing. It is not a rotation at
+all.
+
+**Depth is innocent.** Lifting the same 2D landmarks with the renderer's own
+depth buffer instead of MoGe's -- exact depth, by construction -- leaves the
+rotation at 11.7 degrees (sd 1.9 over 21 views) and the paired error at 6.34 mm
+against MoGe's 6.28. Whatever this is, it is in the 2D points or in the
+correspondence, not in the depth.
+
+**And it is not a rotation.** Fitted per strip the apparent angles are -11.1,
+-9.4, -2.4 and -23.0 degrees. The axis is the pinna normal (mean component
+0.88, views agreeing at 0.869), so it lies in the plane of the ear. What
+actually happens is that our points sit further along each contour than the
+wrap's, and a rigid fit absorbs that as rotation.
+
+Reparameterising each strip by arc length, `t -> alpha*t + beta`:
+
+| strip | as-is | fitted | alpha | beta | pp10_left beta |
+|---|---|---|---|---|---|
+| outer helix | 9.06 | 4.53 | 0.96 | +0.091 | +0.051 |
+| inner helix | 5.38 | 2.93 | 1.00 | +0.046 | +0.055 |
+| concha/tragus | 5.12 | 4.59 | 1.15 | -0.074 | -0.028 |
+| lobe | 6.04 | 2.73 | 0.68 | -0.000 | +0.001 |
+
+Both helix strips sit about **0.05 of their arc further along** in our scheme
+than in the wrap's hand-marked one -- on the 20-point outer helix that is
+exactly one index step, which is also what an integer-shift search finds
+(9.06 -> 4.57 at s=+1). Our five lobe points span only **0.65-0.75** of the arc
+the wrap gives the lobe: an endpoint disagreement about where the lobe ends.
+
+**Confirmed on a second ear.** pp10_left was rendered separately and lifted
+with oracle depth: outer helix beta +0.051 against +0.053 on the right, inner
+helix +0.055 against +0.048, lobe alpha 0.651 against 0.752. Across 40 views
+in total beta's spread between views is 0.03-0.06, against offsets of 0.05, so
+this is a property of the two schemes and not something fitted to one ear.
+
+With **one fixed correction applied to every ear** rather than one fitted per
+ear, `--reparam` in `gt_landmark_check.py`:
+
+| estimator | as-is | relabelled |
+|---|---|---|
+| RANSAC | 6.08 | **3.54** |
+| coordinate median | 6.28 | 4.02 |
+| geometric median | 6.22 | 4.17 |
+
+and the best-rigid rotation falls from 11.9 to 6.8 degrees. So roughly **2.5 mm
+of the 6.08 was a labelling convention** and about 3.5 mm is real geometric
+error -- which also means our 3D accuracy has been understated by the metric
+rather than overstated.
+
+Not acted on: the two schemes could be reconciled by re-marking the template,
+but landmark definitions are load-bearing across the shape model and the 2D
+corpus, so the offsets are recorded and corrected at measurement time instead.
+One loose end, separate from this: pp10_left's outer helix reads 23.4 mm as-is
+with beta scattering at sd 0.40 across views, far worse than the right ear's
+10.4 and 0.04, which is a real per-view failure rather than a convention.
