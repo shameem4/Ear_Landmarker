@@ -124,6 +124,13 @@ def write_review_obj(out_obj, src_obj, sets, radius, strip_of,
             f.write(f"\nnewmtl {name}\nKa 0 0 0\n"
                     f"Kd {col[0]:.3f} {col[1]:.3f} {col[2]:.3f}\n"
                     f"Ks 0.2 0.2 0.2\nNs 50\n")
+        # The error sticks get their OWN colour rather than the prediction's.
+        # Sharing it made them read as more of the same cloud, when the whole
+        # reason they exist is to be seen AGAINST both point sets. Amber is
+        # picked to sit away from the prediction green, the truth blue and the
+        # skin tones of the textured head, which is the full palette here.
+        f.write("\nnewmtl error\nKa 0 0 0\nKd 1.000 0.750 0.000\n"
+                "Ks 0.2 0.2 0.2\nNs 50\n")
 
     nv = 0
     with open(out_obj, "w") as f:
@@ -169,7 +176,7 @@ def write_review_obj(out_obj, src_obj, sets, radius, strip_of,
                   and np.isfinite(x).all() and np.isfinite(y).all()]
             if not pr:
                 continue
-            f.write(f"\no {name}_error\nusemtl {name}\n")
+            f.write(f"\no {name}_error\nusemtl error\n")
             for x, y in pr:
                 f.write(f"v {x[0]:.5f} {x[1]:.5f} {x[2]:.5f}\n")
                 f.write(f"v {y[0]:.5f} {y[1]:.5f} {y[2]:.5f}\n")
@@ -232,6 +239,14 @@ def main():
                         "--mesh when that is itself an .obj")
     p.add_argument("--sphere", type=float, default=0.012,
                    help="sphere radius as a fraction of ear height")
+    p.add_argument("--export-only", default="",
+                   help="comma-separated set names to keep in --export-obj "
+                        "(e.g. moge_lift,scan_surface). Every method scored "
+                        "still appears in the TABLE; this only thins the obj, "
+                        "because four overlapping 55-sphere sets on one ear "
+                        "is unreadable in a viewer. scan_surface is the truth "
+                        "reference, so keep it unless the error sticks alone "
+                        "are enough")
     p.add_argument("--moge-npz", default="",
                    help="a monocular depth map from scripts/moge_infer.py, "
                         "scored as the depth source at the SHIPPED 2D "
@@ -558,12 +573,20 @@ def main():
         surf = [to_scan(P2[i])[0] if hit2[i] else None for i in range(K)]
         osets = {k: (c, [to_scan(q)[0] for q in pts])
                  for k, (c, pts) in sets.items()}
-        osets["scan_surface"] = ((0.18, 0.80, 0.44),
+        osets["scan_surface"] = ((0.15, 0.50, 1.00),
                                  [v if (hit2[i] and not scalp[i]) else None
                                   for i, v in enumerate(surf)])
         osets["scan_surface_SCALP"] = ((1.0, 1.0, 1.0),
                                        [v if scalp[i] else None
                                         for i, v in enumerate(surf)])
+        if a.export_only:
+            want = [w.strip() for w in a.export_only.split(",") if w.strip()]
+            missing = [w for w in want if w not in osets]
+            if missing:
+                sys.exit(f"--export-only {missing} not among "
+                         f"{sorted(osets)}")
+            osets = {k: v for k, v in osets.items() if k in want}
+
         rad = a.sphere * ear_h * s0
         links = {k: [(q, surf[i]) for i, q in enumerate(pts)
                      if hit2[i] and not scalp[i]]
