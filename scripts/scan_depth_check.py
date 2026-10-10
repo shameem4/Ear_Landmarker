@@ -67,8 +67,63 @@ def flag_scalp(P, hit, cam, tol):
     return zc, hit & (zc > med + tol * max(span, 1e-9))
 
 
+def wire_tubes(V, F, radius, target):
+    """A decimated mesh's edges as REAL TRIANGLES, not obj `l` polylines.
+
+    WHY NOT `l`. An obj can carry a polyline and this script used to rely on
+    that for the strip contours and the error sticks, but a lot of viewers
+    silently ignore `l` and draw nothing -- which is exactly what happened
+    here: 47 error sticks were in the file and none of them appeared. Anything
+    that must be SEEN therefore has to be triangles.
+
+    Each surviving edge becomes a three-sided tube, so it is visible from
+    every angle; a flat sliver quad would vanish when viewed edge-on. The
+    mesh is decimated first because the scan is 210k triangles and a tube per
+    edge on that would be millions.
+    """
+    import open3d as o3d
+
+    m = o3d.geometry.TriangleMesh(
+        o3d.utility.Vector3dVector(V), o3d.utility.Vector3iVector(F))
+    m = m.simplify_quadric_decimation(target_number_of_triangles=int(target))
+    V2 = np.asarray(m.vertices)
+    F2 = np.asarray(m.triangles)
+    E = np.concatenate([F2[:, [0, 1]], F2[:, [1, 2]], F2[:, [2, 0]]], 0)
+    E = np.unique(np.sort(E, axis=1), axis=0)
+
+    A, B = V2[E[:, 0]], V2[E[:, 1]]
+    d = B - A
+    L = np.linalg.norm(d, axis=1, keepdims=True)
+    keep = L[:, 0] > 1e-9
+    A, B, d, L = A[keep], B[keep], d[keep], L[keep]
+    d = d / L
+    # any vector not parallel to the edge, to start the perpendicular frame
+    tmp = np.tile([0.0, 0.0, 1.0], (len(d), 1))
+    par = np.abs((d * tmp).sum(1)) > 0.9
+    tmp[par] = [1.0, 0.0, 0.0]
+    u = np.cross(d, tmp)
+    u /= np.linalg.norm(u, axis=1, keepdims=True)
+    w = np.cross(d, u)
+
+    ang = np.arange(3) * (2 * np.pi / 3)
+    off = (np.cos(ang)[None, :, None] * u[:, None, :] +
+           np.sin(ang)[None, :, None] * w[:, None, :]) * radius
+    verts = np.concatenate([A[:, None, :] + off, B[:, None, :] + off], 1)
+
+    n = len(A)
+    base = np.arange(n)[:, None] * 6
+    i0, i1, i2 = [base + k for k in (0, 1, 2)]
+    j0, j1, j2 = [base + k for k in (3, 4, 5)]
+    tris = np.concatenate([
+        np.concatenate([i0, i1, j1], 1), np.concatenate([i0, j1, j0], 1),
+        np.concatenate([i1, i2, j2], 1), np.concatenate([i1, j2, j1], 1),
+        np.concatenate([i2, i0, j0], 1), np.concatenate([i2, j0, j2], 1),
+    ], 0)
+    return verts.reshape(-1, 3), tris
+
+
 def write_review_obj(out_obj, src_obj, sets, radius, strip_of,
-                     links=None):
+                     links=None, wire=None):
     """Textured head + one named sphere per landmark, for a 3D viewer.
 
     The head is re-emitted from the ORIGINAL obj so its uvs and texture come
@@ -108,6 +163,8 @@ def write_review_obj(out_obj, src_obj, sets, radius, strip_of,
             tex = next((q for q in src_obj.parent.iterdir()
                         if q.name.lower() == pathlib.Path(want).name.lower()),
                        None)
+    if wire:
+        tex = None
     if tex is not None and not (out_obj.parent / tex.name).exists():
         shutil.copy2(tex, out_obj.parent / tex.name)
 
@@ -117,9 +174,19 @@ def write_review_obj(out_obj, src_obj, sets, radius, strip_of,
 
     mtl = out_obj.with_suffix(".mtl")
     with open(mtl, "w") as f:
-        f.write("newmtl head\nKa 1 1 1\nKd 1 1 1\nKs 0 0 0\nNs 100\n")
-        if tex is not None:
-            f.write(f"map_Kd {tex.name}\n")
+        if wire:
+            # A WIREFRAME HEAD, so a landmark that has gone SUBSURFACE is
+            # visible instead of hidden behind an opaque face. Coloured warm,
+            # not grey, to stay distinguishable from the landmarks while still
+            # reading as the head. No texture: the atlas cannot survive
+            # decimation, and the point of this mode is to see through.
+            f.write(f"newmtl head\nKa 0 0 0\n"
+                    f"Kd {wire[1][0]:.3f} {wire[1][1]:.3f} {wire[1][2]:.3f}\n"
+                    f"Ks 0.1 0.1 0.1\nNs 20\n")
+        else:
+            f.write("newmtl head\nKa 1 1 1\nKd 1 1 1\nKs 0 0 0\nNs 100\n")
+            if tex is not None:
+                f.write(f"map_Kd {tex.name}\n")
         for name, (col, _) in sets.items():
             f.write(f"\nnewmtl {name}\nKa 0 0 0\n"
                     f"Kd {col[0]:.3f} {col[1]:.3f} {col[2]:.3f}\n"
@@ -129,19 +196,30 @@ def write_review_obj(out_obj, src_obj, sets, radius, strip_of,
         # reason they exist is to be seen AGAINST both point sets. Amber is
         # picked to sit away from the prediction green, the truth blue and the
         # skin tones of the textured head, which is the full palette here.
-        f.write("\nnewmtl error\nKa 0 0 0\nKd 1.000 0.750 0.000\n"
-                "Ks 0.2 0.2 0.2\nNs 50\n")
+        if links:
+            f.write("\nnewmtl error\nKa 0 0 0\nKd 1.000 0.750 0.000\n"
+                    "Ks 0.2 0.2 0.2\nNs 50\n")
 
     nv = 0
     with open(out_obj, "w") as f:
         f.write(f"# head scan + predicted landmarks, for review\n")
         f.write(f"mtllib {mtl.name}\n\no head\nusemtl head\n")
-        for ln in open(src_obj, errors="ignore"):
-            if ln.startswith("v ") or ln.startswith("vt "):
-                f.write(ln)
-                nv += ln.startswith("v ")
-            elif ln.startswith("f "):
-                f.write(ln)
+        if wire:
+            src = o3d.io.read_triangle_mesh(str(src_obj))
+            wv, wf = wire_tubes(np.asarray(src.vertices),
+                                np.asarray(src.triangles), wire[0], wire[2])
+            for v in wv:
+                f.write(f"v {v[0]:.5f} {v[1]:.5f} {v[2]:.5f}\n")
+            for t in wf:
+                f.write(f"f {t[0] + 1} {t[1] + 1} {t[2] + 1}\n")
+            nv = len(wv)
+        else:
+            for ln in open(src_obj, errors="ignore"):
+                if ln.startswith("v ") or ln.startswith("vt "):
+                    f.write(ln)
+                    nv += ln.startswith("v ")
+                elif ln.startswith("f "):
+                    f.write(ln)
         for name, (_, pts) in sets.items():
             for i, P in enumerate(pts):
                 if P is None or not np.isfinite(P).all():
@@ -239,6 +317,21 @@ def main():
                         "--mesh when that is itself an .obj")
     p.add_argument("--sphere", type=float, default=0.012,
                    help="sphere radius as a fraction of ear height")
+    p.add_argument("--wireframe", action="store_true",
+                   help="emit the head as a coloured WIREFRAME instead of a "
+                        "textured surface, so a landmark that has gone "
+                        "subsurface is visible rather than hidden behind an "
+                        "opaque face. Built from real triangles (a tube per "
+                        "edge), because many viewers ignore obj `l` lines")
+    p.add_argument("--wire-tris", type=int, default=8000,
+                   help="decimate the head to this many triangles before "
+                        "turning its edges into tubes; the scan is ~210k, and "
+                        "a tube per edge on that is millions of triangles")
+    p.add_argument("--wire-radius", type=float, default=0.003,
+                   help="tube radius as a fraction of ear height, same "
+                        "convention as --sphere")
+    p.add_argument("--wire-color", default="0.80,0.62,0.48",
+                   help="r,g,b for the wireframe")
     p.add_argument("--export-only", default="",
                    help="comma-separated set names to keep in --export-obj "
                         "(e.g. moge_lift,scan_surface). Every method scored "
@@ -588,15 +681,26 @@ def main():
             osets = {k: v for k, v in osets.items() if k in want}
 
         rad = a.sphere * ear_h * s0
+        # AN ERROR STICK WITHOUT ITS TRUTH POINT MEANS NOTHING. Each stick
+        # runs from a prediction to the surface point at the same pixel, so
+        # if scan_surface has been excluded from the export the sticks are
+        # measuring against something that is not in the file; they are
+        # dropped with it rather than left pointing into empty space.
         links = {k: [(q, surf[i]) for i, q in enumerate(pts)
                      if hit2[i] and not scalp[i]]
                  for k, (_, pts) in osets.items()
-                 if k not in ("scan_surface", "scan_surface_SCALP")}
+                 if k not in ("scan_surface", "scan_surface_SCALP")} \
+            if "scan_surface" in osets else {}
+        wire = None
+        if a.wireframe:
+            wire = (a.wire_radius * ear_h * s0,
+                    tuple(float(v) for v in a.wire_color.split(",")),
+                    a.wire_tris)
         oo, mm, tt = write_review_obj(a.export_obj, src, osets, rad,
                                       lambda i: next(n for (lo, hi), n
                                                      in zip(STRIPS, STRIP_NAMES)
                                                      if lo <= i < hi),
-                                      links=links)
+                                      links=links, wire=wire)
         print(f"\nreview mesh -> {oo}")
         print(f"  {mm.name}, texture {tt.name if tt else 'NONE'}")
         print(f"  spheres r={rad:.2f} scan units:")
