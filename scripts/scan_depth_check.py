@@ -67,6 +67,74 @@ def flag_scalp(P, hit, cam, tol):
     return zc, hit & (zc > med + tol * max(span, 1e-9))
 
 
+def snap_front_surface(P, src_obj, fwd, max_dist, probe=None):
+    """Move each point the SHORTEST distance onto the camera-facing surface.
+
+    MoGe SETS THE POSITION; this only tidies it. The alternative -- snapping
+    along the camera ray -- would replace the predicted depth with the depth
+    buffer's, which is back-projection again: all that survives a ray snap is
+    x and y, so a MoGe dot and a mean-ear dot land in the same place. A
+    nearest-point snap keeps the prediction and corrects it by the minimum
+    displacement, which on this scan is about a millimetre.
+
+    FRONT OF THE EAR, NOT THE BACK. A dot sitting inside the pinna is roughly
+    equidistant from its anterior and posterior surfaces, so an unrestricted
+    nearest-point query can land on the back. Only triangles whose normal
+    faces the camera are offered, which removes the posterior sheet from the
+    search entirely rather than trying to detect the mistake afterwards.
+
+    `max_dist` leaves anything further than that where it is. A dot a long way
+    from the surface is not a rounding error to be tidied -- it is usually a
+    landmark whose 2D fell off the pinna -- and dragging it onto the nearest
+    triangle would manufacture a plausible wrong answer and hide the failure.
+
+    `probe` is points KNOWN to lie on the visible surface (back-projected
+    through the depth buffer). The normals of a scan are not guaranteed
+    outward, and if they point the wrong way this function would silently
+    offer the posterior sheet and snap everything to the back of the ear. So
+    the kept subset is verified against the probe first and the orientation is
+    flipped if it is wrong, which turns an invisible failure into a printed
+    line. Returns (snapped, distance, moved mask, diagnostic string).
+    """
+    import open3d as o3d
+
+    m = o3d.io.read_triangle_mesh(str(src_obj))
+    m.compute_triangle_normals()
+    V = np.asarray(m.vertices)
+    F = np.asarray(m.triangles)
+    N = np.asarray(m.triangle_normals)
+    fwd = np.asarray(fwd, float)
+    fwd = fwd / np.linalg.norm(fwd)
+
+    def scene_of(mask):
+        sub = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(V),
+                                        o3d.utility.Vector3iVector(F[mask]))
+        sc = o3d.t.geometry.RaycastingScene()
+        sc.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(sub))
+        return sc
+
+    facing = (N @ fwd) < 0
+    note = f"{facing.mean():.0%} of triangles face the camera"
+    if probe is not None and len(probe):
+        q = o3d.core.Tensor(np.asarray(probe, np.float32))
+        da = float(np.median(scene_of(facing).compute_distance(q).numpy()))
+        db = float(np.median(scene_of(~facing).compute_distance(q).numpy()))
+        if db < da:
+            facing = ~facing
+            note += f"; ORIENTATION FLIPPED (probe {db:.2f} vs {da:.2f} mm)"
+        else:
+            note += f"; orientation verified on probe ({da:.2f} mm)"
+
+    res = scene_of(facing).compute_closest_points(
+        o3d.core.Tensor(np.asarray(P, np.float32)))
+    cp = res["points"].numpy().astype(float)
+    d = np.linalg.norm(cp - np.asarray(P, float), axis=1)
+    moved = d <= max_dist
+    out = np.asarray(P, float).copy()
+    out[moved] = cp[moved]
+    return out, d, moved, note
+
+
 def wire_tubes(V, F, radius, target):
     """A decimated mesh's edges as REAL TRIANGLES, not obj `l` polylines.
 
@@ -317,6 +385,18 @@ def main():
                         "--mesh when that is itself an .obj")
     p.add_argument("--sphere", type=float, default=0.012,
                    help="sphere radius as a fraction of ear height")
+    p.add_argument("--snap-surface", type=float, default=0.0,
+                   metavar="MM",
+                   help="after lifting, move each exported landmark the "
+                        "SHORTEST distance onto the camera-facing surface, "
+                        "leaving anything further than MM where it is. The "
+                        "prediction still sets the position; this is a bounded "
+                        "tidy-up, not a re-derivation -- a snap along the "
+                        "camera ray would discard the predicted depth and be "
+                        "back-projection again. Scores are reported for the "
+                        "UNSNAPPED points, because a point snapped onto the "
+                        "surface is on the surface by construction and cannot "
+                        "be graded against it")
     p.add_argument("--wireframe", action="store_true",
                    help="emit the head as a coloured WIREFRAME instead of a "
                         "textured surface, so a landmark that has gone "
@@ -672,6 +752,46 @@ def main():
         osets["scan_surface_SCALP"] = ((1.0, 1.0, 1.0),
                                        [v if scalp[i] else None
                                         for i, v in enumerate(surf)])
+        if a.snap_surface > 0:
+            # the camera's forward axis, carried into the scan's coordinates:
+            # a direction picks up R2 and the scales, not the translations
+            fwd = (cam2.R.T @ np.array([0.0, 0.0, 1.0])) @ R2
+            # points the depth buffer SAW, so known to be on the visible
+            # surface -- these verify the normal orientation
+            Pp, hp = backproject(depth2, uv_pipe, cam2)
+            probe = np.array([to_scan(Pp[i])[0] for i in range(K) if hp[i]])
+            print(f"\nsnap to front surface (max {a.snap_surface:.2f} "
+                  f"scan units):")
+            for nm in [k for k in osets
+                       if not k.startswith("scan_surface")]:
+                col, pts = osets[nm]
+                idx = [i for i, q in enumerate(pts)
+                       if q is not None and np.isfinite(q).all()]
+                if not idx:
+                    continue
+                Q = np.array([pts[i] for i in idx])
+                Qs, dd, mv, note = snap_front_surface(
+                    Q, src, fwd, a.snap_surface, probe=probe)
+                new = list(pts)
+                for j, i in enumerate(idx):
+                    new[i] = Qs[j]
+                osets[nm] = (col, new)
+                # THE PRE-SNAP DISTANCE IS A MEASUREMENT, not a
+                # by-product, and a better-behaved one than z_skill in two
+                # ways: it is in scan units, and it keeps ALL the points
+                # rather than dropping the ones whose 2D left the pinna. So
+                # the median is reported over everything; the median over the
+                # moved subset alone is bounded by the limit and so is biased
+                # low by construction.
+                print(f"  {nm:<16s} {note}")
+                print(f"  {'':<16s} distance to front surface BEFORE the "
+                      f"snap: median {np.median(dd):.2f}, "
+                      f"p90 {np.percentile(dd, 90):.2f}, max {dd.max():.2f}")
+                print(f"  {'':<16s} snapped {int(mv.sum())}/{len(idx)} "
+                      f"(within {a.snap_surface:.1f}), median move "
+                      f"{np.median(dd[mv]) if mv.any() else 0:.2f}; "
+                      f"{int((~mv).sum())} left alone")
+
         if a.export_only:
             want = [w.strip() for w in a.export_only.split(",") if w.strip()]
             missing = [w for w in want if w not in osets]
