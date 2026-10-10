@@ -234,7 +234,8 @@ def main():
                    help="which robust centre to export. All three are "
                         "computed and compared either way")
     p.add_argument("--tol", type=float, default=2.0,
-                   help="RANSAC inlier distance in scan units (mm here). The "
+                   help="inlier distance IN MILLIMETRES, converted to scan "
+                        "units from the head's measured size. The "
                         "failure being rejected is a scalp read, which sits a "
                         "whole ear-depth out, so this does not have to be "
                         "tight to catch one")
@@ -273,6 +274,24 @@ def main():
     V0 = np.asarray(o3d.io.read_triangle_mesh(src).vertices) if src else None
     c0 = V0.mean(0) if src else None
     s0 = float(np.abs(V0 - c0).max()) if src else 1.0
+
+    # WHAT A SCAN UNIT IS WORTH IN MILLIMETRES, decided from the head's own
+    # size rather than assumed. This matters more than it looks: BJ002 is in
+    # mm and the HUTUBS heads are in METRES, and with mm assumed every
+    # distance printed as 0.00 while --tol 2.0 silently meant two METRES, so
+    # all 55 landmarks came back with full support and the table read as a
+    # perfect result. A head is 150-350 mm tall by any measure, so an extent
+    # under 10 cannot be millimetres.
+    mm = 1.0
+    if V0 is not None:
+        ext = float(np.ptp(V0, axis=0).max())
+        mm = 1000.0 if ext < 10.0 else 1.0
+        print(f"units:  head extent {ext:.3f} scan units -> "
+              f"{'METRES' if mm == 1000 else 'millimetres'} "
+              f"({ext * mm:.0f} mm tall); distances below are mm")
+    # --tol is quoted in mm, so it has to come back to scan units to be
+    # compared against coordinates
+    tol = a.tol / mm
 
     if not a.combine:
         nrm, up, front, C, ear_h, conf = locate_and_frame(
@@ -377,7 +396,7 @@ def main():
     # all three estimators, always, because they cost nothing next to the
     # renders and the depth maps, and the comparison is the point
     ests = {}
-    for name, fn in (("ransac", lambda P: ransac_point(P, a.tol)[0]),
+    for name, fn in (("ransac", lambda P: ransac_point(P, tol)[0]),
                      ("median", coord_median),
                      ("geomedian", geometric_median)):
         C = np.full((K, 3), np.nan)
@@ -387,25 +406,27 @@ def main():
             c = fn(est[:, k, :])
             if c is not None:
                 C[k] = c
-                N[k], S[k] = support(est[:, k, :], c, a.tol)
+                N[k], S[k] = support(est[:, k, :], c, tol)
         ests[name] = (C, N, S)
     cons, nin, spr = ests[a.consensus]
 
     def dist_to_surface(P):
+        """Distance from each point to the scan surface, IN MILLIMETRES."""
         ok = np.isfinite(P).all(1)
         d = np.full(len(P), np.nan)
         if ok.any():
             d[ok] = sc.compute_distance(
                 o3d.core.Tensor(P[ok].astype(np.float32))).numpy()
-        return d
+        return d * mm
 
     dc = dist_to_surface(cons)
-    print(f"\n{'':<26s}{'median':>8s}{'p90':>8s}{'max':>8s}{'<=2mm':>8s}")
+    print(f"\n{'':<26s}{'median':>8s}{'p90':>8s}{'max':>8s}"
+          f"{'<=' + str(int(a.tol)) + 'mm':>8s}")
 
     def row(lbl, d):
         f = np.isfinite(d)
         print(f"  {lbl:<24s}{np.median(d[f]):8.2f}{np.percentile(d[f], 90):8.2f}"
-              f"{d[f].max():8.2f}{100 * (d[f] <= 2).mean():7.0f}%")
+              f"{d[f].max():8.2f}{100 * (d[f] <= a.tol).mean():7.0f}%")
 
     for vi, tag in enumerate(kept):
         row(f"single view {tag}", dist_to_surface(est[tags.index(tag)]))
@@ -418,13 +439,13 @@ def main():
     dm = np.linalg.norm(ests["median"][0] - ests["geomedian"][0], axis=1)
     fm = np.isfinite(dm)
     print(f"\ncoord median vs geometric median: median "
-          f"{np.median(dm[fm]):.3f} mm apart, max {dm[fm].max():.3f}")
+          f"{np.median(dm[fm]) * mm:.3f} mm apart, max {dm[fm].max() * mm:.3f}")
     print(f"\nsupport per landmark ({a.consensus}): median "
           f"{np.median(nin):.0f} of "
           f"{len(kept)}, {(nin >= 3).sum()}/{K} with 3 or more, "
           f"{(nin <= 1).sum()} with 1 or none")
-    print(f"agreement within the consensus set: median {np.nanmedian(spr):.2f} "
-          f"scan units")
+    print(f"agreement within the consensus set: median "
+          f"{np.nanmedian(spr) * mm:.2f} mm")
     lone = np.where(nin <= 1)[0]
     if len(lone):
         print(f"landmarks the views do NOT agree on: {list(lone)}")

@@ -165,7 +165,15 @@ def depth_panels(true_d, mg, mask, lm, mm_per_unit, pad=0.15):
         rgb = (cm.viridis(n)[:, :, :3] * 255).astype(np.uint8)
         rgb[~m] = 0
         return rgb
-    diff = (maff - true_d) * mm_per_unit
+    # SUBTRACT ONLY WHERE BOTH MAPS EXIST. The renderer writes inf for
+    # background and MoGe's mask leaves inf where it declines to predict, so
+    # a plain difference evaluates inf - inf and yields nan. The stats below
+    # index down to valid pixels afterwards, so the result was already
+    # correct -- but arithmetic on infinities is how a nan eventually reaches
+    # something that does not mask, and it buried the real output in warnings.
+    diff = np.zeros_like(true_d)
+    np.subtract(maff, true_d, out=diff, where=valid)
+    diff *= mm_per_unit
     lim = float(np.percentile(np.abs(diff[valid & ear]), 95)) or 1.0
     dn = np.clip(diff / (2 * lim) + 0.5, 0, 1)
     drgb = (cm.coolwarm(dn)[:, :, :3] * 255).astype(np.uint8)
@@ -183,9 +191,8 @@ def depth_panels(true_d, mg, mask, lm, mm_per_unit, pad=0.15):
                         f"shared ramp", fill=(255, 255, 255))
     d.text((8 + 2 * (W + 6), H - 16), f"+-{lim:.1f} mm", fill=(255, 255, 255))
     st = dict(
-        resid=float(np.std((maff - true_d)[fit]) * mm_per_unit),
-        ear_rms=float(np.sqrt(np.mean(((maff - true_d)[valid & ear]) ** 2))
-                      * mm_per_unit),
+        resid=float(np.std(diff[fit])),
+        ear_rms=float(np.sqrt(np.mean(diff[valid & ear] ** 2))),
         relief_t=float(np.std(true_d[valid & ear]) * mm_per_unit),
         relief_m=float(np.std(maff[valid & ear]) * mm_per_unit),
         scale=float(sc))
@@ -217,6 +224,14 @@ def load(mv, mesh_path):
     # nothing else.
     Vm = np.asarray(m.vertices)
     s0 = float(np.abs(Vm - Vm.mean(0)).max())
+    # MILLIMETRES PER SCAN UNIT, measured from the head rather than assumed.
+    # BJ002 is in mm and the HUTUBS heads are in METRES, and with mm assumed
+    # this window reported every distance as 0.00 mm and would have drawn
+    # half-metre spheres. A head is 150-350 mm tall by any measure, so an
+    # extent under 10 cannot be millimetres. Same rule as
+    # moge_multiview.py, deliberately -- two different answers for one scan
+    # would be worse than either.
+    mmpu = 1000.0 if float(np.ptp(Vm, axis=0).max()) < 10.0 else 1.0
     sc = o3d.t.geometry.RaycastingScene()
     sc.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(m))
     ok = np.isfinite(cons).all(1)
@@ -224,7 +239,7 @@ def load(mv, mesh_path):
     if ok.any():
         surf[ok] = sc.compute_closest_points(
             o3d.core.Tensor(cons[ok].astype(np.float32)))["points"].numpy()
-    dist = np.linalg.norm(cons - surf, axis=1)
+    dist = np.linalg.norm(cons - surf, axis=1) * mmpu   # mm
     # WHICH ESTIMATOR AND WHICH TOLERANCE, from the file rather than assumed.
     # The combine step can export a median, a geometric median or a RANSAC
     # consensus, and a viewer that hard-codes one of those names will happily
@@ -233,7 +248,7 @@ def load(mv, mesh_path):
     tol = float(C["tol"]) if "tol" in C.files else 2.0
     return dict(views=views, cons=cons, nin=nin, est=est, surf=surf,
                 dist=dist, mesh=m, K=len(cons), spread=C["spread"],
-                est_name=est_name, tol=tol, s0=s0)
+                est_name=est_name, tol=tol, s0=s0, mmpu=mmpu)
 
 
 def main():
@@ -242,7 +257,8 @@ def main():
                    help="an output directory from moge_multiview.py --combine")
     p.add_argument("--mesh", required=True, help="the scan, in SCAN units")
     p.add_argument("--radius", type=float, default=0.55,
-                   help="sphere radius in scan units (mm on these scans)")
+                   help="sphere radius IN MILLIMETRES, converted to scan "
+                        "units from the head's measured size")
     p.add_argument("--size", type=int, default=1100)
     p.add_argument("--stage", type=int, default=1,
                    choices=[1, 2, 3, 4, 5, 6],
@@ -257,11 +273,14 @@ def main():
 
     D = load(a.mv, a.mesh)
     V, K = D["views"], D["K"]
+    rad = a.radius / D["mmpu"]          # mm -> scan units
+    tol_scan = D["tol"] / D["mmpu"]
     nv = len(V)
     print(f"{nv} views, {K} landmarks, mesh "
           f"{len(D['mesh'].vertices):,} verts")
     f = np.isfinite(D["dist"])
-    print(f"consensus ({D['est_name']}, tol {D['tol']:.1f} mm): median "
+    print(f"units:  {D['mmpu']:.0f} mm per scan unit\n"
+          f"consensus ({D['est_name']}, tol {D['tol']:.1f} mm): median "
           f"{np.median(D['dist'][f]):.2f} mm to the surface, "
           f"{(D['nin'] >= 3).sum()}/{K} with 3+ supporting views")
 
@@ -270,14 +289,14 @@ def main():
     for i, v in enumerate(V):
         P = D["est"][v["row"]]
         col = [view_colour(i, nv)] * K
-        g[f"view{i}_lm"] = (spheres(P, a.radius, col), MATERIAL)
+        g[f"view{i}_lm"] = (spheres(P, rad, col), MATERIAL)
         # kept as a (thing, material) pair like every geometry, with no
         # material, so one loop can walk the whole table
         if v["moge"].exists():
             M = np.load(v["moge"])
             img, st6 = depth_panels(v["depth"], M["depth"].astype(float),
                                     M["mask"].astype(bool), v["lm"],
-                                    v["scale"] * D["s0"])
+                                    v["scale"] * D["s0"] * D["mmpu"])
             if img is not None:
                 g[f"view{i}_depth"] = (img, None)
                 depth_stats[i] = st6
@@ -286,10 +305,10 @@ def main():
             f"view {v['tag']}  yaw {v['yaw']:+.0f} pitch {v['pitch']:+.0f}"),
             None)
     cons, nin, surf = D["cons"], D["nin"], D["surf"]
-    g["cons"] = (spheres(cons, a.radius,
+    g["cons"] = (spheres(cons, rad,
                          [CONSENSUS_C if nin[k] >= 3 else WEAK_C
                           for k in range(K)]), MATERIAL)
-    g["truth"] = (spheres(surf, a.radius * 0.8, [TRUTH_C] * K), MATERIAL)
+    g["truth"] = (spheres(surf, rad * 0.8, [TRUTH_C] * K), MATERIAL)
     g["sticks"] = (lineset(list(zip(cons, surf)), STICK_C), LINE_MATERIAL)
     rows = [v["row"] for v in V]
     for k in range(K):
@@ -301,12 +320,12 @@ def main():
         # consensus it ended up with. Recomputed rather than stored so the
         # picture cannot disagree with the number beside it.
         inl = (np.isfinite(pts).all(1)
-               & (np.linalg.norm(pts - c, axis=1) <= D["tol"])
+               & (np.linalg.norm(pts - c, axis=1) <= tol_scan)
                ) if np.isfinite(c).all() else np.zeros(len(pts), bool)
         cl = [view_colour(j, nv) if inl[j] else (0.25, 0.25, 0.25)
               for j in range(nv)]
-        g[f"lmk{k}_est"] = (spheres(pts, a.radius * 0.9, cl), MATERIAL)
-        g[f"lmk{k}_cons"] = (spheres(np.asarray([c]), a.radius * 1.5,
+        g[f"lmk{k}_est"] = (spheres(pts, rad * 0.9, cl), MATERIAL)
+        g[f"lmk{k}_cons"] = (spheres(np.asarray([c]), rad * 1.5,
                                      [CONSENSUS_C]), MATERIAL)
         g[f"lmk{k}_fan"] = (lineset([(q, c) for q in pts], (0.7, 0.7, 0.7)),
                             LINE_MATERIAL)

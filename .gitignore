@@ -56,3 +56,12 @@ supersecret/
 # HSRD-100 (CC BY 4.0). Permissively licensed, but data still stays local.
 /data/hsrd100/
 data/hsrd100/
+
+# Multi-view lift outputs: renders, depth maps and consensus per ear. Large
+# (169 MB for one ear) and derived -- regenerate with scripts/moge_multiview.py.
+# Both spellings, as elsewhere in this file, so a relative or rooted path is
+# caught either way.
+/data/mv_hutubs/
+data/mv_hutubs/
+/data/mv_*/
+data/mv_*/

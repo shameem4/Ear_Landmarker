@@ -55,8 +55,13 @@ def main():
         # resolution_level 9 is the package default and the highest it
         # offers; an ear is a small part of the frame, so there is no case
         # for asking for fewer tokens here.
+        # fp16 ONLY ON THE GPU. MoGe's infer defaults to use_fp16=True, and
+        # on CPU that fails outright -- "Input type (c10::Half) and bias type
+        # (float) should be the same" -- because CPU convolutions have no
+        # half-precision path. It only shows up when the GPU is busy and this
+        # falls back, which is exactly when nobody is watching.
         out = m.infer(x, resolution_level=9, apply_mask=True,
-                      fov_x=args.fov_x)
+                      fov_x=args.fov_x, use_fp16=(dev == "cuda"))
 
     d = {k: v.float().cpu().numpy() for k, v in out.items()
          if torch.is_tensor(v) and v.dtype != torch.bool}
