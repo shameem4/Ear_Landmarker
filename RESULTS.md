@@ -1889,3 +1889,41 @@ costs 0.14 mm when generalising** to SONICOM and AudioEar3D (0.435 to 0.578)
 and almost nothing on HUTUBS-like ears (0.422 to 0.441), 112 training ears
 against 588 being the whole of that gap. That is the price of the licence,
 and it is now a number rather than an assumption.
+
+## Re-marking does not move head 1 at all
+
+Head 1 retrained from scratch on the re-labelled corpus, against an identical
+run on the old labels -- same code, same settings, both on CPU, so neither is
+being compared with a published number from a different configuration. Each
+model scored against its OWN labels, on its own test split:
+
+| labels | nme (xy) | z MAE | flat z | z skill |
+|---|---|---|---|---|
+| v5 hand marks | 0.01235 | 0.01401 | 0.07043 | 0.801 |
+| v7 re-marked | **0.01235** | 0.01391 | 0.06959 | 0.800 |
+
+**Identical to five decimals on xy, and 0.7% on z, which is noise.** The
+convention was never head 1's problem: it learns whichever labelling it is
+given, to the same precision. The control runs also reproduce the published
+head 1 closely (0.01182 nme, 0.808 skill), so the CPU setup is sound.
+
+The cross-evaluation is the part worth keeping, because it sizes the mismatch
+rather than assuming it:
+
+| model | labels | nme | z MAE |
+|---|---|---|---|
+| v5 | v5 | 0.01235 | 0.01401 |
+| v5 | v7 | 0.04295 | 0.02039 |
+| v7 | v5 | 0.03915 | 0.01919 |
+| v7 | v7 | 0.01235 | 0.01391 |
+
+A head trained on one convention scores **3.2-3.5x its own error** against the
+other. So the earlier claim stands and is now measured rather than estimated:
+any xy comparison across the two conventions is dominated by the convention,
+not by accuracy. What this rules out is the other half of that worry -- there
+was no accuracy hiding behind the mismatch for head 1 to recover.
+
+It says nothing about the lifter heads, which are the ones that actually ate
+mismatched inputs (shipped-convention `pred_xy` against wrap-convention z);
+head 1 reads pixels and was always internally consistent. That experiment was
+not run.
