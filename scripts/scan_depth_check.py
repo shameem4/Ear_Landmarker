@@ -67,7 +67,8 @@ def flag_scalp(P, hit, cam, tol):
     return zc, hit & (zc > med + tol * max(span, 1e-9))
 
 
-def write_review_obj(out_obj, src_obj, sets, radius, strip_of):
+def write_review_obj(out_obj, src_obj, sets, radius, strip_of,
+                     links=None):
     """Textured head + one named sphere per landmark, for a 3D viewer.
 
     The head is re-emitted from the ORIGINAL obj so its uvs and texture come
@@ -77,6 +78,16 @@ def write_review_obj(out_obj, src_obj, sets, radius, strip_of):
     Every landmark is its own `o` group with its own material, so a viewer
     lists them by name and they can be clicked individually rather than
     arriving as one soup of triangles.
+
+    Two kinds of POLYLINE go in alongside the spheres, because 275 spheres on
+    one ear is unreadable and the spheres alone cannot show WHICH way a point
+    is wrong:
+      <name>_strips  the scheme's four contours in order, so a set that has
+                     lost the ear's anatomy looks wrong instead of merely
+                     scattered
+      <name>_error   one segment from each prediction to the surface point at
+                     the same pixel, so the depth error is a stick with a
+                     direction rather than a gap to be judged by eye
     """
     import shutil
     import open3d as o3d
@@ -135,6 +146,35 @@ def write_review_obj(out_obj, src_obj, sets, radius, strip_of):
                     f.write(f"f {nv + t[0] + 1} {nv + t[1] + 1} "
                             f"{nv + t[2] + 1}\n")
                 nv += len(sv)
+        for name, (_, pts) in sets.items():
+            keep = [i for i, q in enumerate(pts)
+                    if q is not None and np.isfinite(q).all()]
+            if len(keep) < 2:
+                continue
+            f.write(f"\no {name}_strips\nusemtl {name}\n")
+            base = nv
+            at = {}
+            for i in keep:
+                at[i] = nv
+                q = pts[i]
+                f.write(f"v {q[0]:.5f} {q[1]:.5f} {q[2]:.5f}\n")
+                nv += 1
+            for lo, hi in STRIPS:
+                run = [at[i] for i in range(lo, hi) if i in at]
+                if len(run) > 1:
+                    f.write("l " + " ".join(str(v + 1) for v in run) + "\n")
+        for name, pairs in (links or {}).items():
+            pr = [(x, y) for x, y in pairs
+                  if x is not None and y is not None
+                  and np.isfinite(x).all() and np.isfinite(y).all()]
+            if not pr:
+                continue
+            f.write(f"\no {name}_error\nusemtl {name}\n")
+            for x, y in pr:
+                f.write(f"v {x[0]:.5f} {x[1]:.5f} {x[2]:.5f}\n")
+                f.write(f"v {y[0]:.5f} {y[1]:.5f} {y[2]:.5f}\n")
+                f.write(f"l {nv + 1} {nv + 2}\n")
+                nv += 2
     return out_obj, mtl, tex
 
 
@@ -168,6 +208,10 @@ def main():
                         "fraction of the sampled span, is the scalp beside the "
                         "pinna rather than the ear")
     p.add_argument("--no-skin", action="store_true")
+    p.add_argument("--flip-z", action="store_true",
+                   help="DIAGNOSTIC: negate every predicted z before scoring. "
+                        "If a score improves, that prediction's depth is "
+                        "sign-inverted relative to the scan")
     p.add_argument("--shape-ckpt", default="",
                    help="a head 2 (shape) checkpoint. Lifted two ways: its "
                         "own decoded x,y,z, and its COEFFICIENTS with pose "
@@ -366,6 +410,8 @@ def main():
           f" {'corr':>6s}")
     sets, head1 = {}, None
     for name, col, uvq, zq, label in methods:
+        if a.flip_z:
+            zq = -zq
         _, hitq, zcq, scalpq, goodq = sample_surface(uvq)
         if goodq.sum() < 10:
             print(f"  {label:<42s} too few usable landmarks")
@@ -425,10 +471,15 @@ def main():
                                        [v if scalp[i] else None
                                         for i, v in enumerate(surf)])
         rad = a.sphere * ear_h * s0
+        links = {k: [(q, surf[i]) for i, q in enumerate(pts)
+                     if hit2[i] and not scalp[i]]
+                 for k, (_, pts) in osets.items()
+                 if k not in ("scan_surface", "scan_surface_SCALP")}
         oo, mm, tt = write_review_obj(a.export_obj, src, osets, rad,
                                       lambda i: next(n for (lo, hi), n
                                                      in zip(STRIPS, STRIP_NAMES)
-                                                     if lo <= i < hi))
+                                                     if lo <= i < hi),
+                                      links=links)
         print(f"\nreview mesh -> {oo}")
         print(f"  {mm.name}, texture {tt.name if tt else 'NONE'}")
         print(f"  spheres r={rad:.2f} scan units:")
