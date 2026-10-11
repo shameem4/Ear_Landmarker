@@ -53,13 +53,40 @@ from refit_variants import (accuracy, fold_stats, nodes_by_type,   # noqa: E402
 # (name, Wrapping parameter overrides). First rung is the shipped default.
 # The rest are ordered by clean rate over the twelve-ear sweep: 128 cleared
 # 7/12, 64 cleared 6/12, 4 cleared 5/12, 2 cleared 4/12, 32 cleared 3/12.
+# Each rung is (name, Wrapping params, extra landmark anchors).
+#
+# EXTRA ANCHORS ARE A RESCUE, NEVER A DEFAULT. Added to every ear they are
+# harmful -- on 20 fresh ears they broke 5 of the 8 that were already
+# fold-free, introducing 1.75 folds each, which is why a flat A/B reads them
+# as a regression. Added only to ears that are still folded, they rescue a
+# class the parameter rungs cannot touch: on the 15 worst of 80 ears, all 5
+# that no p2p rung improved were rescued, 3 of them to zero. The two
+# mechanisms are complementary -- params alone reach 0 on 7/15, extras alone
+# on 7/15, both available on 10/15 -- so the parameter rungs come first and
+# the anchor rungs follow.
+#
+# They cannot fix coverage. The lobe and helix rim are short of real ears by
+# template geometry, not by constraint; anchors there move coverage by less
+# than its detection threshold.
+# RUNG ORDER WAS RE-DERIVED FOR FRONT-ONLY ANCHORS. The original order came
+# from a twelve-ear sweep run with anchors spread over the whole template;
+# with front-only anchors the ranking changed and p2p_128, tried second,
+# clears only 3 of the 15 worst ears while p2p_4 clears 8. Measured per rung
+# on those 15: p2p_4 8, p2p_2 8, p2p_64 7, p2p_32 5, p2p_128 3.
 LADDER = [
-    ("default", {}),
-    ("p2p_128", {"globalPoint2PointFittingWeight": 128.0}),
-    ("p2p_64",  {"globalPoint2PointFittingWeight": 64.0}),
-    ("p2p_4",   {"globalPoint2PointFittingWeight": 4.0}),
-    ("p2p_2",   {"globalPoint2PointFittingWeight": 2.0}),
-    ("p2p_32",  {"globalPoint2PointFittingWeight": 32.0}),
+    ("default",  {}, ()),
+    ("p2p_4",    {"globalPoint2PointFittingWeight": 4.0}, ()),
+    ("p2p_64",   {"globalPoint2PointFittingWeight": 64.0}, ()),
+    ("p2p_2",    {"globalPoint2PointFittingWeight": 2.0}, ()),
+    ("p2p_32",   {"globalPoint2PointFittingWeight": 32.0}, ()),
+    ("p2p_128",  {"globalPoint2PointFittingWeight": 128.0}, ()),
+    # anchor rescue: cheapest first (asc broke only 1 of 8 clean ears,
+    # lobe broke 5), and each is also tried at the strongest p2p rung
+    ("asc",      {}, (1, 3)),
+    ("asc_128",  {"globalPoint2PointFittingWeight": 128.0}, (1, 3)),
+    ("lobe",     {}, (15, 17, 19)),
+    ("lobe_128", {"globalPoint2PointFittingWeight": 128.0}, (15, 17, 19)),
+    ("both",     {}, (1, 3, 15, 17, 19)),
 ]
 
 
@@ -119,10 +146,26 @@ def refit(ear, cfg):
     if ear.endswith("_right"):
         Vs, Fs = Vs * np.array([1.0, 1.0, -1.0]), Fs[:, ::-1]
     mesh = trimesh.Trimesh(vertices=Vs, faces=Fs, process=False)
-    cl, _, st = trimesh.proximity.closest_point(mesh, Vfit[cfg["idx"]])
-    bb = trimesh.triangles.points_to_barycentric(Vs[Fs[st]], cl)
-    right = [[int(st[j]), float(bb[j][0]), float(bb[j][1])]
-             for j in range(len(cfg["idx"]))]
+
+    def anchors(extra):
+        """Template-side and scan-side anchors for a rung.
+
+        The scan-side position of every anchor is read from this ear's
+        existing automatic fit, so an anchor without a counterpart there
+        would be silently dropped -- which is how an earlier run ended up
+        fitting on three points. Extra anchors are template VERTICES, so
+        they always have one.
+        """
+        idx = list(cfg["idx"])
+        for j in extra:
+            v = int(cfg["lm_vert"][j])
+            if v not in idx:
+                idx.append(v)
+        cl, _, st = trimesh.proximity.closest_point(mesh, Vfit[idx])
+        bb = trimesh.triangles.points_to_barycentric(Vs[Fs[st]], cl)
+        return ([cfg["left_of"][v] for v in idx],
+                [[int(st[j]), float(bb[j][0]), float(bb[j][1])]
+                 for j in range(len(idx))])
     work = cfg["work_size"] / float(np.ptp(Vs, axis=0).max())
     out = pathlib.Path(cfg["out"])
     (out / "work").mkdir(parents=True, exist_ok=True)
@@ -130,12 +173,13 @@ def refit(ear, cfg):
     trimesh.Trimesh(vertices=Vs * work, faces=Fs, process=False).export(scan_p)
 
     trace, best = [], None
-    for rung, params in LADDER[:cfg["max_rungs"]]:
+    for rung, params, extra in LADDER[:cfg["max_rungs"]]:
+        left, right = anchors(extra)
         dst = out / f"{ear}.obj"
         t0 = time.perf_counter()
         try:
             V, F, torn = fit_once(cfg["base"], cfg["template"],
-                                  (cfg["left"], right), scan_p, dst, params,
+                                  (left, right), scan_p, dst, params,
                                   work, cfg["project"], cfg["project_dist"])
         except Exception as e:
             trace.append((rung, None, str(e)[:100]))
@@ -150,8 +194,16 @@ def refit(ear, cfg):
         ang_full = fold_stats(V, F)
         ang = fold_stats(V[:nb], Ft_) if len(V) > nb else ang_full
         n90 = int((ang > 90).sum())
-        acc = accuracy(V, F, Vs, Fs)
+        # accuracy() is a closest-point query over the whole scan, ~1s, and
+        # it is only ever read to break a tie on equal fold counts. Skipping
+        # it on rungs that cannot win saves roughly a second per rung across
+        # the corpus for no change in which fit is chosen.
+        if best is None or n90 <= best["folds"]:
+            acc = accuracy(V, F, Vs, Fs)
+        else:
+            acc = (float("inf"), float("nan"), float("nan"), float("nan"))
         rec = dict(rung=rung, folds=n90, folds_full=int((ang_full > 90).sum()),
+                   anchors=len(right),
                    maxdih=float(ang.max()), maxdih_full=float(ang_full.max()),
                    torn=torn, scan2fit=acc[0], p95=acc[1], cov=acc[3],
                    sec=time.perf_counter() - t0)
@@ -230,6 +282,18 @@ def main():
     cn = corner_barycentric(Ft)
     uv = [(1.0, 0.0), (0.0, 1.0), (0.0, 0.0)]
     left = [[int(cn[v][0]), *map(float, uv[cn[v][1]])] for v in idx]
+    left_of = {int(v): [int(cn[v][0]), *map(float, uv[cn[v][1]])]
+               for v in range(len(Vt))}
+    if not a.front_only:                     # lm_vert is set above when front-only
+        from ear3d.wrap import rigid_fit as _rf
+        from gt_landmark_check import read_marks as _rm, DEFAULT_MARKS as _DM
+        _Vm, _Fm = load_mesh(WRAP / "templates/ear_mean_v3.obj")
+        _t, _b, _ = _rm(_DM)
+        _L = np.einsum("ij,ijk->ik", _b[:55], _Vm[_Fm[_t[:55]]])
+        _R, _tt, _s = _rf(Vt, _Vm, with_scale=True)
+        _Vi = (Vt @ _R.T) * _s + _tt
+        nr = [int(np.argmin(np.linalg.norm(_Vi - _L[j], axis=1)))
+              for j in range(55)]
     dirs = [(a.fits, a.scans), (a.fits2, a.scans2)]
     ears = a.ears or []
     if a.all:
@@ -239,8 +303,9 @@ def main():
                template=str(pathlib.Path(a.template).resolve()), out=str(out),
                work_size=a.work_size, project=a.project,
                project_dist=a.project_dist * a.work_size,
-               max_rungs=a.max_rungs, base_faces=Ft, n_base=len(Vt))
-    print(f"{len(ears)} ears, ladder {[r for r, _ in LADDER[:a.max_rungs]]}",
+               max_rungs=a.max_rungs, base_faces=Ft, n_base=len(Vt),
+               left_of=left_of, lm_vert=list(nr))
+    print(f"{len(ears)} ears, ladder {[r for r, _, _ in LADDER[:a.max_rungs]]}",
           flush=True)
 
     res = []
