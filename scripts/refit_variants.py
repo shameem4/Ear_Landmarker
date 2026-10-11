@@ -277,6 +277,7 @@ def main():
         return Vt, [[int(cn[v][0]), *map(float, uv[cn[v][1]])] for v in ix], ix
 
     Vt, left, idx = control_points(a.template)
+    Ft = load_mesh(a.template)[1]      # base topology, for base-resolution folds
     sub_tpl, sub_left, sub_idx, sub_Vt = None, None, None, None
     if any(VARIANTS[v].get("sub_template") for v in names):
         sub_tpl = pathlib.Path(a.sub_template)
@@ -368,21 +369,22 @@ def main():
                 Fo = np.asarray(wm.faces)
                 trimesh.Trimesh(vertices=Vo, faces=Fo, process=False).export(dst)
                 ang = fold_stats(Vo, Fo)
+                angb = fold_stats(Vo[:len(Vt)], Ft)
                 m1, p1, m2, p2 = accuracy(Vo, Fo, Vs, Fs)
                 rows.append([ear, vn, len(Vo), len(Fo), dt, float(ang.max()),
                              int((ang > 90).sum()), int((ang > 60).sum()),
-                             float(np.median(ang)), m1, p1, m2, p2])
-                print(f"  {ear:14s} {vn:18s} {dt:5.1f}s  max {ang.max():6.1f}"
-                      f"  >90 {int((ang>90).sum()):4d}  >60 "
-                      f"{int((ang>60).sum()):4d}  scan>fit {m1:.4f}% "
-                      f"p95 {p1:.4f}%  cov {p2:.0f}%", flush=True)
+                             float(np.median(ang)), m1, p1, m2, p2,
+                             int((angb > 90).sum()), float(angb.max())])
+                print(f"  {ear:14s} {vn:20s} {dt:5.1f}s  base>90 "
+                      f"{int((angb>90).sum()):3d}  full>90 {int((ang>90).sum()):3d}"
+                      f"  scan>fit {m1:.4f}%  p95 {p1:.4f}%", flush=True)
             except Exception as e:
                 print(f"  {ear:14s} {vn:12s} FAILED: {str(e)[:140]}", flush=True)
 
     if not rows:
         return
-    print(f"\n{'variant':18s} {'sec':>5s} {'maxdih':>7s} {'>90':>5s} "
-          f"{'>60':>5s} {'scan>fit':>9s} {'p95':>8s}   "
+    print(f"\n{'variant':20s} {'sec':>5s} {'base>90':>8s} {'clean':>7s} "
+          f"{'full>90':>8s} {'scan>fit':>9s} {'p95':>8s}   "
           f"(mean over ears, % of ear extent)")
     for vn in names:
         r = [x for x in rows if x[1] == vn]
@@ -390,8 +392,9 @@ def main():
             continue
         def g(i):
             return float(np.mean([x[i] for x in r]))
-        print(f"{vn:18s} {g(4):5.1f} {g(5):7.1f} {g(6):5.1f} {g(7):5.1f} "
-              f"{g(9):8.4f}% {g(10):7.4f}%")
+        nclean = sum(1 for x in r if x[13] == 0)
+        print(f"{vn:20s} {g(4):5.1f} {g(13):8.2f} {nclean:4d}/{len(r):<2d} "
+              f"{g(6):8.2f} {g(9):8.4f}% {g(10):7.4f}%")
     json.dump(rows, open(out / "rows.json", "w"), indent=1)
 
 

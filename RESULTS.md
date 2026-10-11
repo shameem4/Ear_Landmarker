@@ -2013,3 +2013,51 @@ improvement is regression to the mean -- the claim that best-of-ladder beats
 any single setting rests on the twelve-ear sweep (0.33 vs 2.25 folds), not on
 this run. And 5 of 20 never reach zero, bottoming at 1-4 folds, so a residue
 needs a wider ladder or a de-folding pass.
+
+### The corpus re-fit, and what folding actually is
+
+476 ears re-fitted with the escalation ladder, 3.4 fits each. At the BASE
+1188-vertex resolution that base_topology, the PCA and the template consume:
+
+| base resolution     | old faceform2 | new adaptive_v1 |
+|---------------------|--------------:|----------------:|
+| fold-free           |     0/476 (0%)|    221/476 (46%)|
+| median folds        |            40 |               1 |
+| mean folds          |         40.45 |            1.27 |
+| worst               |            69 |              23 |
+
+31.8x fewer. Note the ladder's own exit condition scored the SUBDIVIDED 4676-
+vertex output, where it reports 400/476 (84%) clean; that is the wrong mesh,
+and 46% is the honest figure for the one downstream uses.
+
+**A fold is vertex bunching, not a mis-fit.** Measured on the worst ears:
+folded vertices sit 0.1-0.5 mm from the scan, the template is 99%+ supported,
+face normals still agree with the scan at +0.80, and the scan itself is smooth
+there (median dihedral 1.0 deg, nothing past 90). What collapses is the
+SPACING: triangle area falls to 0.33-0.53x the mesh median and edge length to
+0.64-0.70x. Vertices drift tangentially along a smooth surface, crowd, and the
+surplus surface pleats. This is why no distance check ever caught it -- a
+folded fit is ON the scan.
+
+**No single parameter fixes it.** Three independent attempts: p2p weight (13x
+on four ears, did not replicate), minCos/nNodesToUse (overlap with p2p, add
+only accuracy cost), step limits maxDp/minDp (19->4 folds on P0057_left, no
+effect on four of six others). All perturb a non-convex solve into a different
+local minimum rather than removing the tangential-drift freedom; a real fix
+needs an edge-length or as-rigid-as-possible term, which Wrapping does not
+expose. Per-ear search is what works.
+
+### scripts/wrap_qa.py
+
+A gate for future data. The checks are INTRINSIC -- computable from the fit
+alone -- because the defect is invisible to any distance-to-scan test. It
+scores folded edges and near-folds at base resolution, max dihedral, triangle
+area and edge-length collapse ratios, torn edges, and with --scan the
+discriminating test: a crease in the fit where the scan has no ridge.
+--baseline calibrates thresholds to a corpus's own percentiles.
+
+One calibration note: min_area_ratio is a property of the TEMPLATE
+(ear_L_template is itself 0.1447), so it must be scored relative to the
+template rather than against an absolute, or every fit fails by inheritance.
+All 476 fits come out below the template's value (median 0.0575), which is the
+bunching signature showing up corpus-wide.
