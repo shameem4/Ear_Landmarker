@@ -14,6 +14,13 @@ of 12 ears while 10 of 12 are clean at SOME weight, and scan->fit is flat
 across the whole ladder (0.122-0.130% of ear extent), so choosing per ear
 costs nothing on the other axis. So: fit, count folds, escalate, stop clean.
 
+FOLDS ARE COUNTED AT BASE RESOLUTION, which is what the exit condition tests.
+Wrap returns a subdivided mesh, but everything downstream reads the first
+len(template) vertices with the template's faces; the two counts disagree and
+sometimes anti-correlate, so exiting on the subdivided one can stop on a fit
+that is still folded where it matters. `folds_full` keeps the subdivided
+count for comparison.
+
 THE LADDER STARTS AT THE SHIPPED DEFAULT. An ear that does not fold today is
 refitted with today's parameters and stops there, so its output is unchanged
 rather than merely re-checked. Integrity for the ears that are already fine is
@@ -133,11 +140,20 @@ def refit(ear, cfg):
         except Exception as e:
             trace.append((rung, None, str(e)[:100]))
             continue
-        ang = fold_stats(V, F)
+        # SCORE THE EXIT AT BASE RESOLUTION. Wrap's output is subdivided,
+        # but base_topology, the canonical corpus, the PCA and the template
+        # all use the first len(Vt) vertices with the template's own faces.
+        # The two resolutions disagree and sometimes anti-correlate, so a
+        # ladder that exits on the subdivided count can stop on a fit that is
+        # still folded in the only mesh anything downstream reads.
+        nb, Ft_ = cfg["n_base"], cfg["base_faces"]
+        ang_full = fold_stats(V, F)
+        ang = fold_stats(V[:nb], Ft_) if len(V) > nb else ang_full
         n90 = int((ang > 90).sum())
         acc = accuracy(V, F, Vs, Fs)
-        rec = dict(rung=rung, folds=n90, maxdih=float(ang.max()), torn=torn,
-                   scan2fit=acc[0], p95=acc[1], cov=acc[3],
+        rec = dict(rung=rung, folds=n90, folds_full=int((ang_full > 90).sum()),
+                   maxdih=float(ang.max()), maxdih_full=float(ang_full.max()),
+                   torn=torn, scan2fit=acc[0], p95=acc[1], cov=acc[3],
                    sec=time.perf_counter() - t0)
         trace.append(rec)
         if best is None or (n90, rec["scan2fit"]) < (best["folds"],
@@ -193,7 +209,7 @@ def main():
                template=str(pathlib.Path(a.template).resolve()), out=str(out),
                work_size=a.work_size, project=a.project,
                project_dist=a.project_dist * a.work_size,
-               max_rungs=a.max_rungs)
+               max_rungs=a.max_rungs, base_faces=Ft, n_base=len(Vt))
     print(f"{len(ears)} ears, ladder {[r for r, _ in LADDER[:a.max_rungs]]}",
           flush=True)
 

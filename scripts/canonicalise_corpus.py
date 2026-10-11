@@ -160,7 +160,21 @@ def main():
                          "align_resid_mm": res, "roundtrip": err})
         print(f"{dataset:9s} {len(rows) - n0:4d} ears -> {od}")
 
-    with open(out_root / "manifest.csv", "w", newline="") as fh:
+    # MERGE, DO NOT REWRITE. --sources names a subset, and a plain rewrite
+    # drops the provenance rows of every dataset not in this run -- the to_mm
+    # factor, the mirror and the round-trip check, which is the only record
+    # that an ear's units were recovered correctly. Rows for the datasets
+    # rebuilt here replace their old ones; the rest are carried over.
+    man = out_root / "manifest.csv"
+    if man.exists():
+        done = {r["dataset"] for r in rows}
+        prev = [r for r in csv.DictReader(open(man))
+                if r.get("dataset") not in done]
+        if prev:
+            print(f"carried {len(prev)} manifest rows for "
+                  f"{sorted({r['dataset'] for r in prev})}")
+            rows = rows + [{k: r.get(k, "") for k in rows[0]} for r in prev]
+    with open(man, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows)

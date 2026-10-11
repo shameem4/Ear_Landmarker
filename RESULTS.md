@@ -2266,3 +2266,35 @@ holds on it unchanged: 1989 faces, 75.4% of area, 55/55 landmarks, no
 non-manifold edges, min landmark margin 2.17 mm.
 
 ccby_plus is now 225 ears and still reports d = 1.63 on mode 1.
+
+## Three fixes
+
+**The ladder exited on the wrong resolution.** Wrap returns a subdivided mesh,
+but `base_topology`, the canonical corpus, the PCA and the template all read
+the first `len(template)` vertices with the template's own faces. The exit
+condition scored the subdivided mesh. The two counts disagree and sometimes
+anti-correlate, so the ladder could stop on a fit that was still folded in the
+only mesh anything downstream uses. Caught in a four-ear run:
+
+```
+P0122_left
+   default    base   8  full  15
+   p2p_128    base   2  full   5     <- now kept as best
+   p2p_32     base  10  full   0     <- old rule exited HERE, "fold-free"
+```
+
+It would have shipped a 10-fold base mesh as clean. `folds` is now the base
+count and drives the exit; `folds_full` keeps the subdivided count for
+comparison.
+
+**`canonicalise_corpus.py --sources` destroyed manifest rows.** It rewrote
+`manifest.csv` from only the datasets named in the run, dropping the to_mm
+factor, mirror and round-trip check for every other dataset -- the only record
+that an ear's units were recovered correctly. It now merges: rows for the
+datasets rebuilt in this run replace their old ones, the rest carry over.
+Verified by re-running one source against a complete manifest: 589 rows in,
+589 out, all byte-identical, none lost.
+
+**`validate_marks.py` pointed at a file that does not exist**
+(`ear_pca_v4_all.npz`, retired when the corpus went to millimetres). Now
+`ear_pca_v5_all_mm.npz`; the script runs to completion.
