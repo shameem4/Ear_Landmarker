@@ -20,7 +20,7 @@ mean's own projection are aligned with reflection allowed and the better fit
 kept, so a corpus of mixed left and right ears costs nothing.
 
     python scripts/suggest_landmarks.py --project mark_mean_v2.wrap \\
-        --mesh ear_mean_v2.obj --fix 8 9 10 14 --out suggest_v3.wrap
+        --mesh ear_mean_v3.obj --fix 8 9 10 14 --out suggest_v3.wrap
 """
 import argparse
 import json

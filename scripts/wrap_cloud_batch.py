@@ -18,7 +18,7 @@ Both are reported, because neither alone is enough: a template that collapsed
 onto a single ridge scores well on cloud->surface over that ridge and terribly
 on coverage.
 
-    python scripts/wrap_cloud_batch.py --root AudioEar3D --template ear_mean_v2.obj \\
+    python scripts/wrap_cloud_batch.py --root AudioEar3D --template ear_mean_v3.obj \\
         --out fits/ --workers 8
 """
 import argparse

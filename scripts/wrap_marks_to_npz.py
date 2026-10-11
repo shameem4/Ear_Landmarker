@@ -6,7 +6,7 @@ and hands the rest of the pipeline a plain array. The conversion is the one in
 ear3d.wrap.wrap_barycentric, so the convention lives in a single place.
 
     python scripts/wrap_marks_to_npz.py --project mark_mean_v4.wrap \\
-        --mesh ear_mean_v2.obj --out mean_v4_marks.npz
+        --mesh ear_mean_v3.obj --out mean_v4_marks.npz
 """
 import argparse
 import json

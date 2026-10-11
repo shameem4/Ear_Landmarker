@@ -87,7 +87,7 @@ def save_obj(path, V, F):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--template", default=str(TPL / "ear_mean_v2.obj"))
+    p.add_argument("--template", default=str(TPL / "ear_mean_v3.obj"))
     p.add_argument("--out-root", default=str(CORPUS / "canonical"))
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--assume-mm", action="store_true",

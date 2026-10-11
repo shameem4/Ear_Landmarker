@@ -27,7 +27,7 @@ separate question, and ear3d.label documents the lift putting landmarks off
 the pinna when the detection falls near the silhouette. Intersecting rays from
 several views never consults a depth value.
 
-ONE FRAME. ear_mean_v2.obj is already canonical millimetres -- its centroid is
+ONE FRAME. ear_mean_v3.obj is already canonical millimetres -- its centroid is
 the canonical corpus's to the last digit -- so nothing here converts units or
 datasets. Framing varies the CAMERA DISTANCE, never the mesh, so every view's
 rays live in the same frame.
@@ -267,7 +267,7 @@ def write_wrap(src, dst, tri, bary, names_55):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--template", default=str(WRAP / "templates/ear_mean_v2.obj"))
+    p.add_argument("--template", default=str(WRAP / "templates/ear_mean_v3.obj"))
     p.add_argument("--marks", default=str(WRAP / "templates/mark_mean_v5.wrap"),
                    help="the project to copy; points 55+ are carried over")
     p.add_argument("--out", default=str(WRAP / "templates/mark_mean_v6_landmarker.wrap"))

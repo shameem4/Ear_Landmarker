@@ -230,6 +230,19 @@ def main():
                    help="NAME=v1,v2,... one variant per value, projection "
                         "off. Isolates Wrapping's own contribution")
     p.add_argument("--points", type=int, default=14)
+    p.add_argument("--front-only", action="store_true",
+                   help="sample control points only from front-facing template "
+                        "vertices. 5 of the 14 farthest-point anchors are not "
+                        "clearly front-facing and one points backwards; the "
+                        "back of the ear is not of interest and its anchors "
+                        "spend budget away from the region that folds")
+    p.add_argument("--extra-lm", nargs="*", type=int, default=[],
+                   help="landmark indices to add as EXTRA control points. "
+                        "Farthest-point sampling spreads over the surface and "
+                        "puts nothing in the inner helix (none of the 14 land "
+                        "in landmarks 20-35), which is the least-constrained "
+                        "region and where the folds are. Hand-fixing the three "
+                        "worst ears needed 21 of 23 extra points there")
     p.add_argument("--work-size", type=float, default=100.0)
     p.add_argument("--project-dist", type=float, default=0.02)
     a = p.parse_args()
@@ -260,6 +273,20 @@ def main():
     base = json.load(open(a.base))
     uv = [(1.0, 0.0), (0.0, 1.0), (0.0, 0.0)]
 
+    def front_mask(V, F):
+        from ear3d.wrap import rigid_fit, vertex_normals
+        from gt_landmark_check import read_marks, DEFAULT_MARKS
+        Vm_, Fm_ = load_mesh(WRAP / "templates/ear_mean_v3.obj")
+        tm, bm, _ = read_marks(DEFAULT_MARKS)
+        Lm_ = np.einsum("ij,ijk->ik", bm[:55], Vm_[Fm_[tm[:55]]])
+        R_, t_, s_ = rigid_fit(V, Vm_, with_scale=True)
+        Vi = (V @ R_.T) * s_ + t_
+        N = vertex_normals(V, F)
+        nr = np.array([int(np.argmin(np.linalg.norm(Vi - Lm_[j], axis=1)))
+                       for j in range(55)])
+        f = N[nr].mean(0); f /= np.linalg.norm(f)
+        return (N @ f) > 0.3
+
     def control_points(tpl, limit=None):
         """Spread control points over the template.
 
@@ -272,12 +299,43 @@ def main():
         SONICOM ended up 30x worse while HUTUBS looked merely poor.
         """
         Vt, Ft = load_mesh(tpl)
+        if a.front_only:
+            m = front_mask(Vt, Ft)
+            if limit:
+                m[limit:] = False
+            sub = np.flatnonzero(m)
+            ix = sub[spread_vertices(Vt[sub], a.points)]
+            cn = corner_barycentric(Ft)
+            return Vt, [[int(cn[v][0]), *map(float, uv[cn[v][1]])] for v in ix], list(ix)
         ix = spread_vertices(Vt[:limit] if limit else Vt, a.points)
         cn = corner_barycentric(Ft)
         return Vt, [[int(cn[v][0]), *map(float, uv[cn[v][1]])] for v in ix], ix
 
     Vt, left, idx = control_points(a.template)
-    Ft = load_mesh(a.template)[1]      # base topology, for base-resolution folds
+    Ft = load_mesh(a.template)[1]
+    if a.extra_lm:
+        # the marks address ear_mean_v3; carry them onto the template frame and
+        # take the nearest template VERTEX, so the anchor has a counterpart on
+        # our coarse automatic fit (which is where its scan position is read)
+        from ear3d.wrap import rigid_fit
+        from gt_landmark_check import read_marks, DEFAULT_MARKS
+        Vm, Fm = load_mesh(WRAP / "templates/ear_mean_v3.obj")
+        tri_m, bary_m, _ = read_marks(DEFAULT_MARKS)
+        Lm = np.einsum("ij,ijk->ik", bary_m[:55], Vm[Fm[tri_m[:55]]])
+        R0, t0, s0 = rigid_fit(Vt, Vm, with_scale=True)
+        Vin = (Vt @ R0.T) * s0 + t0
+        cn = corner_barycentric(Ft)
+        uvv = [(1.0, 0.0), (0.0, 1.0), (0.0, 0.0)]
+        add = []
+        for j in a.extra_lm:
+            v = int(np.argmin(np.linalg.norm(Vin - Lm[j], axis=1)))
+            if v in set(idx) or v in add:
+                continue
+            add.append(v)
+        left = left + [[int(cn[v][0]), *map(float, uvv[cn[v][1]])] for v in add]
+        idx = list(idx) + add
+        print(f"added {len(add)} control points at landmarks {a.extra_lm} "
+              f"-> {len(idx)} total", flush=True)      # base topology, for base-resolution folds
     sub_tpl, sub_left, sub_idx, sub_Vt = None, None, None, None
     if any(VARIANTS[v].get("sub_template") for v in names):
         sub_tpl = pathlib.Path(a.sub_template)

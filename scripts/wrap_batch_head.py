@@ -28,7 +28,7 @@ recorded alongside; SONICOM STLs are already mm. Each output records the units,
 the frame, the scale and the provenance of every input.
 
     python scripts/wrap_batch_head.py --fits corpus/faceform2_sonicom \\
-        --transforms corpus/tf_sonicom --template templates/ear_mean_v2.obj \\
+        --transforms corpus/tf_sonicom --template templates/ear_mean_v3.obj \\
         --base ear_wrap_pp12_left.wrap --out corpus/head_sonicom
 """
 import argparse

@@ -67,13 +67,20 @@ def save_obj(path, V, F):
 
 
 def main():
+    global CAN
     p = argparse.ArgumentParser()
     p.add_argument("--marks", default=str(TPL / "mean_v5_marks.npz"))
-    p.add_argument("--template", default=str(TPL / "ear_mean_v2.obj"))
+    p.add_argument("--template", default=str(TPL / "ear_mean_v3.obj"))
     p.add_argument("--archive", default=str(TPL / "archive_mixed_units"))
+    p.add_argument("--canonical", default=str(CAN),
+                   help="canonical corpus to rebuild from. Defaults to the "
+                        "original; canonical_v7 is the adaptive re-fit "
+                        "(fold-free hutubs+sonicom, audioear carried over "
+                        "unchanged since it was never adaptively re-fit).")
     p.add_argument("--no-retire", action="store_true")
     a = p.parse_args()
 
+    CAN = pathlib.Path(a.canonical)
     Vt, Ft = load_mesh(a.template)
 
     # ---- per-source mean ears, rebuilt in the canonical frame -------------

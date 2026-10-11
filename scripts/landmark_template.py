@@ -285,7 +285,7 @@ def check(V, F, V2, F2, recipe, L_want, verbose=True):
 def main():
     global EDGE_TOL, SNAP_TOL_MM
     p = argparse.ArgumentParser()
-    p.add_argument("--template", default=str(WRAP / "templates/ear_mean_v2.obj"))
+    p.add_argument("--template", default=str(WRAP / "templates/ear_mean_v3.obj"))
     p.add_argument("--marks", default=str(
         WRAP / "templates/mark_mean_v6_spacing.wrap"))
     p.add_argument("--n-points", type=int, default=55)
@@ -295,8 +295,8 @@ def main():
                         "where it is and accepts the sliver")
     p.add_argument("--snap-budget", type=float, default=SNAP_TOL_MM,
                    help="refuse if --edge-tol would move a mark further (mm)")
-    p.add_argument("--out", default=str(WRAP / "templates/ear_lmv_v1.obj"))
-    p.add_argument("--recipe", default=str(WRAP / "templates/ear_lmv_v1.npz"))
+    p.add_argument("--out", default=str(WRAP / "templates/ear_lmv_v2.obj"))
+    p.add_argument("--recipe", default=str(WRAP / "templates/ear_lmv_v2.npz"))
     p.add_argument("--replay", nargs="*", default=[],
                    help="directories of fits sharing the template topology; "
                         "each is converted and checked, nothing is written")

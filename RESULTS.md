@@ -2061,3 +2061,208 @@ One calibration note: min_area_ratio is a property of the TEMPLATE
 template rather than against an absolute, or every fit fails by inheritance.
 All 476 fits come out below the template's value (median 0.0575), which is the
 bunching signature showing up corpus-wide.
+
+## Back of the ear: delete the control points, keep the geometry
+
+Hair bridges to the head on the posterior surface, so the back is where the
+scan is least trustworthy. Two ways to act on that were tested separately on
+the same 12 ears (5 worst folders + 7 clean), projection off, 14 anchors.
+
+**Control points off the back — a large win.** Restricting the 14 farthest-point
+anchors to front-facing template vertices:
+
+| anchors | base folds | clean | full folds | scan>fit |
+|---|---|---|---|---|
+| 14 shipped | 5.50 | 1/12 | 6.00 | 0.1326% |
+| + inner helix (lm 21,23,25,27,29) | 5.58 | 1/12 | 6.42 | 0.1334% |
+| **front-facing only** | **3.33** | **3/12** | **1.50** | 0.1333% |
+| front-facing + inner helix | 3.92 | 3/12 | 1.83 | 0.1340% |
+
+Full-resolution folds fall 75% for +0.0007 pp of scan>fit, which is noise.
+No geometry is lost -- this only moves where anchors sit.
+
+**Geometry off the back — a large loss.** Deleting the posterior surface from
+the template *before* the fit (dot <= -0.6, 90.6% of area kept, same 14
+anchors in both arms, verified identical), scored over the same 2145 faces in
+both arms so that less mesh cannot flatter the trimmed one:
+
+```
+folds>90   full  4.75   trimmed 16.42      (3.5x worse, worse on all 12 ears)
+folds>60   full 17.42   trimmed 46.33
+scan>fit   full 0.5720%  trimmed 0.5818%
+coverage   full 61.0%    trimmed 54.9%
+```
+
+The damage is worst at the cut and decays inward, but does not vanish --
+removing a collar around the new boundary from the scored region leaves the
+trimmed arm 8.0x / 7.2x / 3.4x / 2.1x worse at 0/1/2/3 rings. The full arm is
+flat at ~1.25 wherever it is scored. So it propagates into the front; it is
+not a free-edge artifact.
+
+The back's *tension* is load-bearing: it is what the deformation graph braces
+the front against. The back's *control points* are the part that drags the fit
+onto a hair bridge. Drop the points, keep the mesh. If the back is unwanted in
+the output, trim it after the fit, not before.
+
+**Dead hypothesis.** The 14 anchors have nothing in landmarks 20-35, and the
+manual fixes to the three worst projects added 21 of 23 extra points exactly
+there, so the inner helix looked under-constrained. Adding those points does
+not help (5.58 vs 5.50) and hurts on top of front-only anchors (3.92 vs 3.33).
+What fixed those three projects was the gross anchor misplacement on P0057 and
+the hair-bridge exclusion on pp16, not the point count.
+
+Caveat: 12 ears chosen as 5 worst + 7 clean, not a random sample. The
+direction is large and consistent, but confirm on fresh ears before adopting
+front-only anchors corpus-wide.
+
+## The template artifacts were in the averaged mean
+
+`ear_mean_v2.obj` carries 39 edges past 90 degrees, max 179.2, including 4 in
+the intertragic incisure (max 142.8). `ear_L_template.obj` has none.
+`ear_lmv_v1` inherited all 39 because it was promoted from v2 -- the landmark
+promotion did not create them. This is the artifact complaint that started
+the re-fit work, and it was never in the fitting.
+
+**Mean, not median -- measured.** Candidates from the 476 re-fits:
+
+| candidate | >90 | >60 | >40 | max |
+|---|---|---|---|---|
+| mean | 0 | 0 | 59 | 54.5 |
+| geometric median | 0 | 0 | 61 | 55.6 |
+| componentwise median | 5 | 37 | 169 | 131.7 |
+| ear_mean_v2 | 39 | 100 | 225 | 179.2 |
+
+The componentwise median *creates* folds: adjacent vertices take their values
+from different ears, so it manufactures the roughness it is supposed to
+resist. It is also not rotation-equivariant. The geometric median is robust
+and fold-free but ties the plain mean for more cost. Restricting to the 221
+fold-free fits changes nothing, which shows v2's folds were never outlier
+ears -- they are inconsistent correspondence, which no robust estimator fixes.
+
+**Two traps on the way, both worth remembering.** `corpus/adaptive_v1` is raw
+Wrap output, and HUTUBS fits there are in per-subject normalised units while
+SONICOM is in millimetres. An extent filter reads the 112 HUTUBS ears as
+"degenerate" at 0.4 mm and silently deletes the entire CC-BY half of the
+corpus. Substituting Procrustes-with-scale hides the split but discards the
+real size distribution, which is exactly what `canonicalise_corpus.py`
+refuses to do. The fix is to canonicalise the re-fit first
+(`corpus/canonical_v7`, 476 fits, round-trip 7.8e-14, caliper r = +0.854) and
+take a plain mean of that.
+
+**Shipped.** `templates/ear_mean_v3.obj` (0 folds, centroid identical to v2 to
+four decimals, extent 61.78 vs 62.00 -- a drop-in in the canonical mm frame)
+and `templates/ear_lmv_v2.obj`, built by *replaying* the stored v1 promotion
+recipe rather than recomputing it, so connectivity is byte-identical to
+`ear_lmv_v1` and face-index masks transfer unchanged. Incisure max 46.7, down
+from 142.8.
+
+**Landmark margins and the switch to v3.** The hand-marked exclusion left lm19
+0.52 mm from the cut -- the value that got trim 2 rejected, against trim 1's
+accepted 2.00 mm. Releasing selected faces within 2.4 mm of any deficient
+landmark brings all 55 to >= 2.00 mm (worst lm11 at 2.10) for 29 polygons,
+leaving 1936 faces, 72.6% of area, one component, no non-manifold edges.
+
+Every script now defaults to `ear_mean_v3`. This is free: as a Procrustes
+target v3 is *identical* to v2 -- 0.000 deg rotation, 0.0000 mm displacement,
+centroid difference 1e-08 mm -- because v3 was built in the canonical frame,
+so switching `canonicalise_corpus.py` cannot move the canonical frame. The
+marks carry over unchanged ((triangle, u, v) on shared topology); they land
+1.33 mm from their v2 positions on average, max 3.24 mm at lm15, which is the
+new mean's shape, not a re-marking.
+
+Pre-existing and untouched: `validate_marks.py` defaults to
+`ear_pca_v4_all.npz`, which does not exist.
+
+## Front-only anchors confirmed out of sample
+
+20 ears drawn at random from the 438 never used in any earlier tuning
+(seed 20261011; 17 SONICOM, 3 HUTUBS), control vs `--front-only`, projection
+off, default p2p:
+
+```
+base folds  4.00 -> 1.10   (-72.5%)
+full folds  6.30 -> 1.75   (-72.2%)
+clean       2/20 -> 8/20
+scan>fit    0.1282% -> 0.1297%   (+0.0016 pp)
+per-ear: better 17, worse 0, tied 3    one-sided sign test p < 0.0001
+```
+
+Not one ear got worse. The out-of-sample base-fold reduction is larger than
+on the 12 tuning ears (-39%), so the original result was not selection
+driven. Front-only anchor placement is settled: adopt it.
+
+## The folded template was most of the cloud path's folding
+
+The AudioEar3D cloud fits were written off as intrinsically harder than the
+mesh path -- partial support (~0.4), and an adaptive ladder run that returned
+0/10 fold-free at a mean of 42.50 folds. That run used `ear_mean_v2` as the
+template, which carries 39 folds of its own.
+
+Re-fitting against `ear_mean_v3` (0 folds), same ladder, same clouds: the
+first 103 of 113 come back fold-free, with cloud-to-surface and support in
+the same range as before (0.08-0.16 and ~0.35-0.39, against 0.11-0.64 and
+0.28-0.47). So the folding was inherited from the template, not a property of
+clouds, and the "clouds fold badly" conclusion never held.
+
+## A processing confound in the ccby_plus re-test
+
+`regen_mm_artefacts.py` rebuilt on v3 reports mode 1 separating the sources at
+Cohen's d = 6.11, up from v4's 2.01, and concludes "still source-driven, keep
+the warning". That verdict is not about the data. HUTUBS and SONICOM had been
+adaptively re-fit; AudioEar3D was carried over unchanged, so the model was
+being asked to separate re-fit from not-re-fit:
+
+```
+hutubs  vs sonicom    m1 0.52  m2 0.27  m3 0.85    both adaptively re-fit
+hutubs  vs audioear   m1 0.28  m2 5.24             audioear NOT re-fit
+sonicom vs audioear   m1 0.22  m2 5.25             audioear NOT re-fit
+```
+
+Two sources sharing processing do not separate at all; the one that does not
+share it separates from both at d ~ 5.2. The test has to be re-run with
+AudioEar3D on equal footing before the "DO NOT USE AS A SHAPE MODEL" warning
+can be read as a statement about the data.
+
+**AudioEar3D re-fit, and the confound resolved.** All 113 clouds re-fit
+against `ear_mean_v3` with the same adaptive ladder: 113/113 fold-free, mean
+0.00 folds, against 0/10 and mean 42.50 on `ear_mean_v2`. Accuracy improved
+at the same time -- cloud-to-surface median 0.3100 -> 0.2225, support
+0.400 -> 0.438 -- so this is not a slacker fit. `corpus/canonical_v7` now
+holds all 589 ears from one pipeline (round trip 8.5e-14; HUTUBS alignment
+residual 2.33 -> 1.92 mm now that canonicalisation targets v3).
+
+Re-running the separation with every source on equal footing:
+
+| pair | before (audioear not re-fit) | after |
+|---|---|---|
+| ccby_plus mode 1 | d = 6.11 | **d = 1.63** |
+| hutubs vs audioear | d = 5.24 | d = 1.43 |
+| sonicom vs audioear | d = 5.25 | d = 1.16 |
+| hutubs vs sonicom | d = 0.85 | d = 1.01 |
+
+About three quarters of the apparent source separation was processing. The
+residual 1.63 is below v4's 2.01 and sits in the same range as HUTUBS vs
+SONICOM (1.01), two sources nobody disputes are different populations. That
+does not clear ccby_plus -- 1.63 on a mode carrying 17.8% of variance is
+real -- but the warning rests on much less than it did.
+
+`ear_mean_v3` is left as the mean of the 476 HUTUBS+SONICOM fits. It is a
+fixed point: re-canonicalising against itself moves it 0.001 mm. Adding
+AudioEar3D would move it 0.155 mm and keep it fold-free, so that is a
+judgement call about whether a different capture modality belongs in the
+template, not a correctness question.
+
+One trap: `canonicalise_corpus.py --sources` REWRITES manifest.csv with only
+the sources named, so running one dataset at a time silently drops the others'
+provenance rows. Pass every source in one invocation.
+
+**AudioEar3D folded into the template.** Adding it keeps the mean fold-free,
+so it is in: `ear_mean_v3` is now the mean of all 589 canonical fits (0 edges
+>90, 0 >60, max 56.1, centroid unchanged, 0.155 mm from the 476-ear version).
+`ear_lmv_v2` replayed on it is also fold-free, and the intertragic incisure
+improves slightly (max 45.6 from 46.7). Re-canonicalising against the new mean
+moves it 0.0001 mm, so it is a fixed point. The hand-marked exclusion still
+holds on it unchanged: 1989 faces, 75.4% of area, 55/55 landmarks, no
+non-manifold edges, min landmark margin 2.17 mm.
+
+ccby_plus is now 225 ears and still reports d = 1.63 on mode 1.
