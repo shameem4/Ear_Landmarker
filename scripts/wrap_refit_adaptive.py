@@ -183,6 +183,14 @@ def main():
     p.add_argument("--ears", nargs="+", default=None)
     p.add_argument("--all", action="store_true")
     p.add_argument("--points", type=int, default=14)
+    p.add_argument("--front-only", action="store_true",
+                   help="place the anchors only on front-facing template "
+                        "vertices. Confirmed on 20 ears never used in "
+                        "tuning: base folds -72%%, better on 17, worse on 0, "
+                        "p < 0.0001, for +0.0016 pp of scan>fit. The back's "
+                        "geometry still matters and must stay -- deleting it "
+                        "is 3.5x worse -- it is only its control points that "
+                        "drag the fit onto a hair bridge.")
     p.add_argument("--work-size", type=float, default=100.0)
     p.add_argument("--project", action="store_true",
                    help="keep ProjectGeom. Off by default: it buys a 5.4x "
@@ -196,7 +204,29 @@ def main():
     out = pathlib.Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     Vt, Ft = load_mesh(a.template)
-    idx = spread_vertices(Vt, a.points)
+    if a.front_only:
+        from ear3d.wrap import vertex_normals
+        N = vertex_normals(Vt, Ft)
+        mean_p = WRAP / "templates/ear_mean_v3.obj"
+        if mean_p.exists() and str(pathlib.Path(a.template).resolve()) != str(mean_p.resolve()):
+            from ear3d.wrap import rigid_fit
+            from gt_landmark_check import read_marks, DEFAULT_MARKS
+            Vm, Fm = load_mesh(mean_p)
+            tm, bm, _ = read_marks(DEFAULT_MARKS)
+            Lm = np.einsum("ij,ijk->ik", bm[:55], Vm[Fm[tm[:55]]])
+            R0, t0, s0 = rigid_fit(Vt, Vm, with_scale=True)
+            Vi = (Vt @ R0.T) * s0 + t0
+            nr = [int(np.argmin(np.linalg.norm(Vi - Lm[j], axis=1)))
+                  for j in range(55)]
+        else:
+            nr = list(range(55))
+        f = N[nr].mean(0)
+        f /= np.linalg.norm(f)
+        sub = np.flatnonzero((N @ f) > 0.3)
+        idx = sub[spread_vertices(Vt[sub], a.points)]
+        print(f"front-only anchors: {len(sub)}/{len(Vt)} front-facing vertices")
+    else:
+        idx = spread_vertices(Vt, a.points)
     cn = corner_barycentric(Ft)
     uv = [(1.0, 0.0), (0.0, 1.0), (0.0, 0.0)]
     left = [[int(cn[v][0]), *map(float, uv[cn[v][1]])] for v in idx]

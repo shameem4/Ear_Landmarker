@@ -2298,3 +2298,56 @@ Verified by re-running one source against a complete manifest: 589 rows in,
 **`validate_marks.py` pointed at a file that does not exist**
 (`ear_pca_v4_all.npz`, retired when the corpus went to millimetres). Now
 `ear_pca_v5_all_mm.npz`; the script runs to completion.
+
+## Extra anchors do not help, and the lobe gap is missing template
+
+A visual observation -- "part of the lobe was missing" -- caught what fold
+count and median scan>fit both missed. Neither metric can see a region the
+template never reaches. Per-region coverage over 20 fresh ears:
+
+```
+ascending_helix   85.1%        tragus      99.8%
+ear_lobe          90.3%        antitragus  99.7%
+superior_crus     95.3%        concha      99.4%
+```
+
+Adding anchors in the deficient regions, with front-only held fixed and the
+minimum detectable change pre-specified from the paired variance:
+
+```
+             ear_lobe    ascending_helix   base folds   clean
+F_base          --             --             1.10      8/20
++lobe pts    +0.36 [1.39]   +0.61 [0.36]      2.10      7/20
++asc pts     +0.21          -0.23             1.15      7/20
++both        +0.34          +0.33             2.05      7/20
+```
+
+The lobe gain is below detection and closes 1/28 of a 10 pp gap. Anchors
+placed directly in the ascending helix moved that region -0.23 pp. Folds
+roughly double. So extra anchors buy nothing measurable and cost real
+quality -- the earlier inner-helix null was right, but for a reason the
+earlier test could not have established.
+
+**Why no anchor helps.** Locating the unsupported scan surface relative to
+the template's free boundary:
+
+| region | unsupported | distance of that surface to the template edge |
+|---|---|---|
+| ear_lobe | 12.2% | 0.07% of extent |
+| ascending_helix | 17.3% | 0.91% |
+| helix | 11.7% | 0.87% |
+| descending_helix | 5.9% | 8.77% |
+| descending_inner_helix | 4.3% | 9.62% |
+
+Two different faults. The lobe and helix rim are EDGE TRUNCATION: the
+template stops short of real ears, and no constraint can pull geometry that
+does not exist -- the fix is to extend the template, which is also what the
+scheme-extension work needs. The descending helix and descending inner helix
+are INTERIOR mis-fit, 8-10% of extent inside the boundary, a genuine fitting
+problem and the one front-only slightly worsens (-2.6 and -1.2 pp).
+
+Method note: fold count and median scan>fit are blind to both. Per-region
+coverage against the scheme groups is the metric that sees them, and the
+minimum detectable change should be fixed from paired variance before the
+comparison is run, so that a null result can be distinguished from a test
+too weak to see anything.
