@@ -172,3 +172,28 @@ the landmark hull and so rarely decided a landmark's nearest structure. It
 is kept because it is correct and because it WILL matter on tight crops,
 not because it changed this answer. Pass --keep-padding to reproduce the
 old numbers.
+
+## Finding bad annotations (a different defect)
+
+`qa_find_bad_contours.py` ranks rows by how many of the 20 outer landmarks
+sit more than --tol% of ear height off the SAM silhouette. This is NOT what
+qa_agreement.py measures and the two do not overlap: agreement finds hard
+IMAGES, this finds wrong LABELS. Measured on 200 agreement-worst rows
+against 200 agreement-best, the misrouted-point rate was the same in both
+(4.84% vs 4.70%), so filtering a corpus on agreement drops the wrong rows.
+
+THE HEADLINE RATE IS SET BY THE MASK GATE, so quote it with the gate:
+
+    all trusted masks        11.4% of rows have >=3 misrouted points
+    tight masks (bloat<1.4)   2.4% of rows   <- use this one
+
+The count tracks mask bloat at rho +0.474, because a mask carrying hair
+pushes the rim outward and makes a correct contour look wrong. Spot-checked
+by eye at the tight threshold, about two thirds of flags are genuine, so the
+true bad-annotation rate is near 1.5% -- roughly 125 rows of the 8,427-row
+train split. Real, worth fixing by hand, far too small to move a model.
+
+SAM 2.1 IS THE BOTTLENECK HERE, not the method: it is rejected on a third of
+images and only ~43% of the rest give a tight enough mask to judge a
+contour. A dedicated ear segmenter would raise the usable fraction and the
+precision together.

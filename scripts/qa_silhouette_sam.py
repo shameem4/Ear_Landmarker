@@ -82,7 +82,14 @@ for c, i in enumerate(pick):
     if n == 0:
         continue
     if n > 1:                      # keep the largest blob only
-        mk = lab == (1 + np.argmax(ndimage.sum(mk, lab, range(1, n+1))))
+        sizes = ndimage.sum(mk, lab, range(1, n+1))
+        # A FRAGMENTED MASK IS NOT EVIDENCE. On low-contrast ears SAM returns
+        # confetti -- dozens of specks whose largest piece is a sliver. That
+        # passes both hull gates (small area, inside the hull) and then every
+        # landmark reads as "off the rim" because the rim is not in the mask.
+        if sizes.max() / max(sizes.sum(), 1.0) < 0.80:
+            dropped.append(int(i)); continue
+        mk = lab == (1 + np.argmax(sizes))
     frac = mk.mean()
     if frac < 0.02 or frac > 0.95:        # degenerate mask, not a usable test
         continue
@@ -102,6 +109,14 @@ for c, i in enumerate(pick):
     covered = float((mk & inhull).sum() / max(inhull.sum(), 1))
     if covered < 0.60:
         dropped.append(int(i)); continue
+    # AND AN UPPER BOUND. `covered` only rejects UNDER-segmentation: a mask
+    # that takes the whole crop covers the hull perfectly and sails through,
+    # which is how a run of "landmarks off the rim" turned out to be SAM
+    # segmenting the image border. The ear is a convex-ish blob, so a real
+    # mask cannot be much larger than the landmark hull; 2x is generous.
+    bloat = float(mk.sum()) / max(float(inhull.sum()), 1.0)
+    if bloat > 2.0:
+        dropped.append(int(i)); continue
     # distance to the mask BOUNDARY, signed negative inside
     din = ndimage.distance_transform_edt(mk)
     dout = ndimage.distance_transform_edt(~mk)
@@ -110,7 +125,7 @@ for c, i in enumerate(pick):
     py = np.clip(np.round(xy[:, 1]).astype(int), 0, h-1)
     d = sd[py, px] / eh * 100.0            # % of ear height
     res.append(dict(idx=int(i), iou=float(iou.max()), frac=float(frac),
-                    covered=covered,
+                    covered=covered, bloat=bloat,
                     outer_abs=float(np.abs(d[OUTER]).mean()),
                     inner_abs=float(np.abs(d[INNER]).mean()),
                     outer_in=float((d[OUTER] < 0).mean()),
@@ -120,7 +135,7 @@ for c, i in enumerate(pick):
 
 json.dump(res, open(OUT/"sam2_silhouette.json", "w"))
 D = np.array([r["per"] for r in res])
-print(f"\nSAM failures dropped by the hull gate: {len(dropped)} "
+print(f"\nSAM failures dropped by the hull gates (under+over): {len(dropped)} "
       f"({len(dropped)/max(len(dropped)+len(res),1)*100:.1f}%)")
 print(f"\nn={len(res)} images   mean mask IoU {np.mean([r['iou'] for r in res]):.3f}"
       f"   mask area {np.mean([r['frac'] for r in res])*100:.1f}% of crop")
