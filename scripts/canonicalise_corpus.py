@@ -32,6 +32,16 @@ caliper anthropometry, so recovered pinna height is compared with the measured
 d5. Plausibility is what let the mixed units survive this long; an external
 measurement is what actually fails when a per-subject factor is wrong.
 
+THE CHECK MEASURES BETWEEN LANDMARKS, NOT ACROSS THE BOUNDING BOX. d5 is a
+caliper height from the top of the helix to the bottom of the lobule, and
+`ear_mm` -- max extent of the whole fitted template -- is not that: the
+template carries geometry past the pinna, so the box overshoots d5 by 4%
+even on a good corpus, and by 11% on no-control-point fits, whose surplus
+floats further out. That is a difference in what is measured, not in units:
+the same fits give 1.012 +- 0.029 of d5 landmark-to-landmark. `ear_mm` is
+still reported, because it is the number every earlier manifest carries,
+but `pinna_mm` is what the check gates on.
+
     python scripts/canonicalise_corpus.py
 """
 import argparse
@@ -45,7 +55,11 @@ import numpy as np
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+sys.path.insert(0, str(ROOT / "scripts"))
+
 from ear3d.wrap import base_topology, load_mesh, rigid_fit     # noqa: E402
+from ear3d.scheme import GROUPS, GROUP_NAMES                   # noqa: E402
+from gt_landmark_check import DEFAULT_MARKS, read_marks        # noqa: E402
 
 TPL = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/wrap_work/templates")
 CORPUS = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/wrap_work/corpus")
@@ -53,6 +67,21 @@ ANTH = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/clean_3d_data/"
                     "hutubs_extras/AntrhopometricMeasures.csv")
 SOURCES = {"sonicom": "faceform2_sonicom", "hutubs": "faceform2_hutubs",
            "audioear": "ae3d_fits"}
+
+
+def pinna_height(V, F, tri_m, bary_m):
+    """Top of the helix to the bottom of the lobule, along the long axis.
+
+    The caliper definition of HUTUBS d5. Taken along the canonical long
+    axis rather than straight-line because that is how a caliper held
+    against a head measures it, and it tracks d5 slightly better
+    (1.012 vs 1.031 of measured, over the 112 HUTUBS ears).
+    """
+    g = {n: list(range(lo, hi)) for n, (lo, hi) in zip(GROUP_NAMES, GROUPS)}
+    helix = g["ascending_helix"] + g["helix"] + g["descending_helix"]
+    L = np.einsum("ij,ijk->ik", bary_m, V[F[tri_m]])
+    ax = int(np.argmax(np.ptp(V, axis=0)))
+    return float(abs(L[helix][:, ax].max() - L[g["ear_lobe"]][:, ax].min()))
 
 
 def to_mm_scale(dataset, name, tf_dir, cache, assume_mm=False):
@@ -103,6 +132,8 @@ def main():
     sources = (dict(s.split("=", 1) for s in a.sources) if a.sources
                else SOURCES)
     Vt, Ft = load_mesh(a.template)
+    tri_m, bary_m, _ = read_marks(DEFAULT_MARKS)
+    tri_m, bary_m = tri_m[:55], bary_m[:55]
     mirrors = {"z": np.diag([1.0, 1.0, -1.0]), "x": np.diag([-1.0, 1.0, 1.0])}
     out_root = pathlib.Path(a.out_root)
     out_root.mkdir(parents=True, exist_ok=True)
@@ -157,6 +188,7 @@ def main():
             rows.append({"name": name, "dataset": dataset, "to_mm": k,
                          "mirror": tag, "side": name.rsplit("_", 1)[-1],
                          "ear_mm": float(np.ptp(Vc, axis=0).max()),
+                         "pinna_mm": pinna_height(Vc, F, tri_m, bary_m),
                          "align_resid_mm": res, "roundtrip": err})
         print(f"{dataset:9s} {len(rows) - n0:4d} ears -> {od}")
 
@@ -204,7 +236,7 @@ def main():
                 continue
             sid, side = int(m.group(1)), m.group(2)
             if sid in rec:
-                mine.append(r["ear_mm"])
+                mine.append(r["pinna_mm"])
                 ref.append(10.0 * float(
                     rec[sid][("L_" if side == "left" else "R_") + "d5"]))
         if mine:
@@ -212,6 +244,7 @@ def main():
             ratio = mine / ref
             print(f"\nUNIT CHECK against HUTUBS caliper anthropometry "
                   f"(d5, pinna height), n={len(mine)}")
+            print("  measured helix-top to lobule-bottom, not bounding box")
             print(f"  recovered {mine.mean():.1f} mm vs measured {ref.mean():.1f} mm")
             print(f"  ratio {ratio.mean():.3f} +- {ratio.std():.3f}   "
                   f"r = {np.corrcoef(mine, ref)[0, 1]:+.3f}   "

@@ -198,9 +198,21 @@ def accuracy(V, F, Vs, Fs):
     cuts are in normalised head units and SONICOM is in millimetres.
     """
     import trimesh
+    # THE FIT AND THE SCAN MUST BE IN THE SAME UNITS. Fits written at the
+    # 100-unit working scale have to be divided by w before they get here.
+    # Forgetting it does not look like an error: on SONICOM (native ~104)
+    # it is a 4% discrepancy that passes, while on HUTUBS (native ~0.85) it
+    # is 118x, and the proximity query below then searches a fit that
+    # dwarfs its scan -- 21.9 GB per worker, and an empty `cov` mask.
+    ext = float(np.ptp(Vs, axis=0).max())
+    ratio = max(ext, (ef := float(np.ptp(V, axis=0).max()))) / max(min(ext, ef), 1e-12)
+    if ratio > 3.0:
+        raise ValueError(
+            f"accuracy(): fit and scan are {ratio:.0f}x apart in extent "
+            f"({ef:.4g} vs {ext:.4g}). A fit saved at work scale must be "
+            f"divided by w first.")
     fit = trimesh.Trimesh(vertices=V, faces=F, process=False)
     scan = trimesh.Trimesh(vertices=Vs, faces=Fs, process=False)
-    ext = float(np.ptp(Vs, axis=0).max())
     d1 = trimesh.proximity.closest_point(scan, V)[1]          # fit -> scan
     d2 = trimesh.proximity.closest_point(fit, Vs)[1]          # scan -> fit
     cov = d2 < 0.03 * ext

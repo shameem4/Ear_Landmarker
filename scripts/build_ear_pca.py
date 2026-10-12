@@ -56,13 +56,29 @@ def main():
         names.append(f.stem)
     print(f"{len(files)} fits, {len(Vt)} vertices each")
 
+    def centroid_size(M):
+        return float(np.sqrt(((M - M.mean(0)) ** 2).sum()))
+
+    # THE MEAN'S SIZE IS HELD FIXED. Scaling every ear onto the running mean
+    # makes the next mean smaller, so an unnormalised loop shrinks ~1.1% per
+    # iteration and never converges -- it drifts, and the iteration count
+    # silently sets the basis scale. Every ear_pca_v5/v6 file was built that
+    # way and is a few percent small. Pinning centroid size converges to
+    # machine precision in three iterations.
     A = V.copy()
     mean = A[0]
-    for _ in range(a.iters):
+    s0 = centroid_size(mean)
+    for it in range(a.iters):
         for i in range(len(A)):
             R, t, s = rigid_fit(A[i], mean)
             A[i] = s * A[i] @ R.T + t
-        mean = A.mean(0)
+        new_mean = A.mean(0)
+        c = new_mean.mean(0)
+        new_mean = (new_mean - c) * (s0 / centroid_size(new_mean)) + c
+        shift = float(np.linalg.norm(new_mean - mean, axis=1).mean())
+        mean = new_mean
+        print(f"  Procrustes iter {it}: shift {shift:.6f}, "
+              f"centroid size {centroid_size(mean):.2f}")
     resid = np.linalg.norm(A - mean, axis=2).mean(axis=1)
     k = float(np.ptp(mean, axis=0).max())
     print(f"  after Procrustes: residual from the mean median "
