@@ -197,3 +197,34 @@ SAM 2.1 IS THE BOTTLENECK HERE, not the method: it is rejected on a third of
 images and only ~43% of the rest give a tight enough mask to judge a
 contour. A dedicated ear segmenter would raise the usable fraction and the
 precision together.
+
+## Segmenter options, reviewed Oct 2026
+
+SAM 2.1 is the bottleneck for the contour audit -- rejected on 33% of
+images, and only ~43% of the rest give a mask tight enough to judge a
+contour. What else there is:
+
+    SAM 3          best model; gated weights, Meta's custom SAM License
+    Florence-2     MIT and ungated -- TRIED, REJECTED, see below
+    Roboflow 590   CC BY 4.0 DATASET; download it, do not use the API
+    umitkacar      MIT U-Net scaffold, no weights, no training data named
+    jorge-jrzz     no LICENSE file at all, and YOLOv8 (Ultralytics AGPL)
+
+Florence-2 was the obvious pick on licence -- MIT for code and weights,
+ungated, natively supported in transformers 5.x (use
+florence-community/Florence-2-large, NOT microsoft/Florence-2-large, whose
+remote-code layout has no image_token and raises in the native processor;
+and the class is Florence2ForConditionalGeneration, not
+AutoModelForCausalLM). It does not work here: coarse low-vertex polygons,
+60% dropped by the gates against SAM's 33%, and empty or degenerate masks on
+most ears when rendered. Right tool for "where is the object", wrong one for
+"where exactly is the rim".
+
+The Roboflow entry's value is the DATASET, not the hosted model: CC BY 4.0
+means it can be downloaded and trained on locally, which avoids both the
+rate limit and sending images to a third party.
+
+On jorge-jrzz, the two blockers are different in kind. Ultralytics AGPL-3.0
+triggers on distribution or network service, so purely internal use does not
+trip it. The absent LICENSE file is not a restrictive licence to read
+permissively -- it is the absence of any grant, so there is nothing to read.
