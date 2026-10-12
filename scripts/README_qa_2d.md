@@ -10,6 +10,8 @@ property that makes them worth running.
     scripts/qa_depth_dump.py       DA3 depth maps, feeds the depth channel
     scripts/qa_silhouette_show.py  best/worst cases, with the mask drawn
     scripts/qa_ridge_show.py       what the filters actually draw
+    scripts/qa_agreement.py        PER-IMAGE agreement with the GT landmarks
+    scripts/qa_common.py           padding mask, shared by all of the above
 
 Everything heavy goes through `scripts/guard_run.sh <mem> <secs> <log> <cmd>`.
 
@@ -102,3 +104,47 @@ Measure distance to the nearest traced structure, never the filter
 response at the landmark's own pixel: ridges are 1-2 px wide, so a
 one-pixel annotation offset reads as no response and understates a filter
 that the overlay plainly shows working.
+
+## Per-image agreement with GT
+
+`qa_ridge_cv.py` gives a corpus-wide ratio, which is the wrong shape for
+auditing: 0.55 overall is equally consistent with every image being
+mediocre and with most being perfect and a few being wrong.
+`qa_agreement.py` scores each image on its own, using the channel that
+covers each group, and writes a CSV so the disagreeing rows can be pulled.
+
+Over 500 images of data/manual:
+
+    p10 0.25   p25 0.35   p50 0.48   p75 0.66   p90 0.79   p95 0.93
+
+    on structure (<0.70)   81.2%
+    marginal (0.70-1.00)   15.8%
+    DISAGREES    (>1.00)    3.0%
+
+The disagreeing 3% are NOT bad annotations. Looked at: ears occluded by
+hair, by a finger or by a foreground object; near edge-on poses; severe
+motion blur. In several the annotation is the best a human could place and
+the image simply has no visible structure to agree with. Agreement tracks
+the depth channel's own confidence (rho -0.48 against ear-vs-surround
+separation) and NOT ear size in pixels (rho +0.01), so it is measuring
+image quality, not annotation scale.
+
+Treat the CSV as a triage list, not a verdict. The honest reading is "these
+images cannot be verified from pixels", which for a model-seeded corpus
+also means these are the rows where a seeded landmark could be a
+hallucination and nothing in the image would contradict it.
+
+## Letterbox padding
+
+45.6% of data/manual images carry more than 5% constant-valued padding and
+26.8% carry more than 15%. A flat pad meets the photo at a perfectly
+straight, perfectly sharp edge -- the strongest ridge in the frame -- so
+the filters trace the LETTERBOX and it counts as structure.
+`qa_common.padding_mask` removes it and all four scripts apply it.
+
+Correcting it moved the corpus numbers almost not at all (median agreement
+0.47 -> 0.48, on-structure 81.6% -> 81.2%), because the pad lies outside
+the landmark hull and so rarely decided a landmark's nearest structure. It
+is kept because it is correct and because it WILL matter on tight crops,
+not because it changed this answer. Pass --keep-padding to reproduce the
+old numbers.

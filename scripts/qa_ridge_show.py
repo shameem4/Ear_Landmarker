@@ -33,6 +33,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
 from ear3d.scheme import GROUPS, GROUP_NAMES          # noqa: E402
+from qa_common import padding_mask                    # noqa: E402
 
 g = {n: list(range(lo, hi)) for n, (lo, hi) in zip(GROUP_NAMES, GROUPS)}
 HELIX = g["ascending_helix"] + g["descending_helix"] + g["helix"] + g["ear_lobe"]
@@ -79,6 +80,8 @@ def main():
         yy, xx = np.mgrid[0:h, 0:w]
         inh = MPath(hull).contains_points(
             np.c_[xx.ravel(), yy.ravel()]).reshape(h, w)
+        valid = ~padding_mask(gray)
+        inh &= valid
         maps = {"sato base": sato(gray, sigmas=sg, black_ridges=True),
                 "sato clahe": sato(cl, sigmas=sg, black_ridges=True)}
         if a.depth_dir:
@@ -116,7 +119,7 @@ def main():
                 axc.set_title(f"{nm}: no map", fontsize=9)
                 continue
             val = maps[nm]
-            hit = val >= np.percentile(val[inh], a.q)
+            hit = (val >= np.percentile(val[inh], a.q)) & valid
             axc.imshow(gray, cmap="gray")
             ov = np.zeros((h, w, 4))
             ov[hit] = (1, .2, .1, .55)

@@ -49,6 +49,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
 from ear3d.scheme import GROUPS, GROUP_NAMES  # noqa: E402
+from qa_common import padding_mask            # noqa: E402
 
 CHANNELS = ("base", "clahe", "depth")
 
@@ -105,6 +106,10 @@ def main():
         if inh.sum() < 50:
             continue
         gray = np.asarray(im.convert("L"), float) / 255.0
+        valid = ~padding_mask(gray)
+        inh &= valid
+        if inh.sum() < 50:
+            continue
         s = 2.0 * eh / 100.0
         sg = [max(s * .6, 1.), s, s * 1.6]
         maps = {}
@@ -144,7 +149,7 @@ def main():
         outer = (g["helix"] + g["ascending_helix"]
                  + g["descending_helix"] + g["ear_lobe"])
         for k, val in maps.items():
-            hit = val >= np.percentile(val[inh], a.q)
+            hit = (val >= np.percentile(val[inh], a.q)) & valid
             if not hit.any():
                 blank[k] += 1
                 continue
