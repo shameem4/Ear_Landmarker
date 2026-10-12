@@ -113,13 +113,23 @@ mediocre and with most being perfect and a few being wrong.
 `qa_agreement.py` scores each image on its own, using the channel that
 covers each group, and writes a CSV so the disagreeing rows can be pulled.
 
-Over 500 images of data/manual:
+Over 500 images with the depth channel:
 
     p10 0.25   p25 0.35   p50 0.48   p75 0.66   p90 0.79   p95 0.93
+    on structure 81.2%   marginal 15.8%   DISAGREES 3.0%
 
-    on structure (<0.70)   81.2%
-    marginal (0.70-1.00)   15.8%
-    DISAGREES    (>1.00)    3.0%
+Over the WHOLE corpus, 10,535 images, pure CV with no GPU (omit
+--depth-dir; the rim groups fall back per BEST_CV, which is base for the
+helix, descending helix and antihelix and clahe for the inner helix):
+
+    p10 0.35   p25 0.45   p50 0.59   p75 0.74   p90 0.88   p95 0.97
+    on structure 69.0%   marginal 27.3%   DISAGREES 3.8%
+
+Dropping depth costs the rim and nothing else -- inner helix 0.15 -> 0.61,
+antihelix 0.13 -> 0.47, helix 0.19 -> 0.30 -- and barely moves the
+disagreement rate (3.0% -> 3.8%), so the pure-CV run is the right default
+for triage and the depth run is for characterising the rim. The whole
+corpus takes about 40 s on 24 cores.
 
 The disagreeing 3% are NOT bad annotations. Looked at: ears occluded by
 hair, by a finger or by a foreground object; near edge-on poses; severe
@@ -128,6 +138,20 @@ the image simply has no visible structure to agree with. Agreement tracks
 the depth channel's own confidence (rho -0.48 against ear-vs-surround
 separation) and NOT ear size in pixels (rho +0.01), so it is measuring
 image quality, not annotation scale.
+
+Audited with SAM, the independent check: the 200 worst rows against 200
+from the best half. The outer ring sits a MEDIAN 1.15% of ear height INSIDE
+the silhouette in the worst rows (control 1.55% inside); no row has it more
+than 10% outside, and 1 of 175 is beyond 8% -- those few have SAM masks
+covering only 0.63-0.80 of the landmark hull, i.e. SAM under-segmented. So
+the annotations hold up even in the tail; what fails there is the image.
+
+Do not trust an eyeball of a crushed-black crop on this point. Stretching
+the exposure made the helix ring look inflated onto the background in every
+one of the worst rows, and the measurement says the opposite -- what reads
+as background in a dark crop is dark ear. The render is the right tool for
+"is this channel tracing hair", and the wrong one for "is this landmark a
+few pixels out".
 
 Treat the CSV as a triage list, not a verdict. The honest reading is "these
 images cannot be verified from pixels", which for a model-seeded corpus

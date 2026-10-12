@@ -52,14 +52,21 @@ from qa_common import padding_mask                    # noqa: E402
 G = {n: list(range(lo, hi)) for n, (lo, hi) in zip(GROUP_NAMES, GROUPS)}
 
 # which channel covers which group, from the n=150 sweep in README_qa_2d.md
+# concha is in neither table: nothing traces it, so it is never scored
 BEST = {
     "helix": "depth", "descending_helix": "depth", "inner_helix": "depth",
     "descending_inner_helix": "depth",
     "ascending_helix": "base", "ear_lobe": "base", "inferior_crus": "base",
     "ascending_inner_helix": "clahe", "superior_crus": "clahe",
     "antitragus": "clahe", "tragus": "clahe", "canal": "clahe",
-    # concha: nothing traces it, so it is excluded from the score entirely
 }
+# Pure-CV assignment, for running the whole corpus without a GPU. The four
+# groups depth covers best fall back to the better of base/clahe for each,
+# which is NOT clahe across the board: base wins the helix (0.67 vs 0.80),
+# the descending helix (0.62 vs 0.80) and the antihelix (0.55 vs 0.66),
+# and only the inner helix prefers clahe (0.76 vs 0.79).
+BEST_CV = dict(BEST, helix="base", descending_helix="base",
+               descending_inner_helix="base", inner_helix="clahe")
 _ROWS = None
 _L = None
 
@@ -71,7 +78,7 @@ def _init():
 
 
 def score(args):
-    i, depth_dir, q = args
+    i, depth_dir, q, best = args
     if _ROWS is None:
         _init()
     try:
@@ -134,7 +141,7 @@ def score(args):
         ctrl[k] = float(np.mean(d[iy[sel], ix[sel]]))
 
     num, den, per = [], [], {}
-    for nm, ch in BEST.items():
+    for nm, ch in best.items():
         if ch not in dist:
             ch = "clahe" if "clahe" in dist else next(iter(dist), None)
         if ch is None:
@@ -153,7 +160,9 @@ def score(args):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--n", type=int, default=500)
-    p.add_argument("--depth-dir", default=None)
+    p.add_argument("--depth-dir", default=None,
+                   help="omit for a pure-CV run: base+clahe only, no GPU, "
+                        "and the rim groups fall back per BEST_CV")
     p.add_argument("--out", default="/tmp/agreement.csv")
     p.add_argument("--jobs", type=int, default=8)
     p.add_argument("--q", type=float, default=85.0)
@@ -164,16 +173,20 @@ def main():
     rows = list(csv.DictReader(open(ROOT / "data/manual/manifest.csv")))
     pick = [int(i) for i in np.random.default_rng(a.seed)
             .choice(len(rows), size=min(a.n, len(rows)), replace=False)]
+    best = BEST if a.depth_dir else BEST_CV
+    if not a.depth_dir:
+        print("pure-CV run: base+clahe only, no depth channel")
     out = []
     with ProcessPoolExecutor(max_workers=a.jobs, initializer=_init) as ex:
-        for n, r in enumerate(ex.map(score, [(i, a.depth_dir, a.q) for i in pick],
+        for n, r in enumerate(ex.map(score,
+                                     [(i, a.depth_dir, a.q, best) for i in pick],
                                      chunksize=4), 1):
             if r:
                 out.append(r)
             if n % 100 == 0:
                 print(f"  {n}/{len(pick)}", flush=True)
     keys = ["idx", "agree", "ear_px", "depth_sep", "has_depth"] + \
-           [f"g_{k}" for k in BEST]
+           [f"g_{k}" for k in best]
     with open(a.out, "w", newline="") as fh:
         wtr = csv.DictWriter(fh, fieldnames=keys, extrasaction="ignore")
         wtr.writeheader()
@@ -189,10 +202,10 @@ def main():
     hd = np.array([r["has_depth"] for r in out], bool)
     print(f"\n  {hd.sum()} of {len(out)} had a depth map")
     print(f"\nper group, median over images")
-    for nm in sorted(BEST, key=lambda n: -np.nanmedian(
+    for nm in sorted(best, key=lambda n: -np.nanmedian(
             [r.get(f"g_{n}", np.nan) for r in out])):
         v = np.nanmedian([r.get(f"g_{nm}", np.nan) for r in out])
-        print(f"  {nm:<24}{v:>8.2f}  via {BEST[nm]}")
+        print(f"  {nm:<24}{v:>8.2f}  via {best[nm]}")
     print(f"\nworst 15 by agreement (look at these):")
     for r in sorted(out, key=lambda r: -r["agree"])[:15]:
         print(f"  row {r['idx']:<7} agree {r['agree']:.2f}  "

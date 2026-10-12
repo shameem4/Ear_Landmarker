@@ -23,6 +23,10 @@ sys.path.insert(0, "scripts"); sys.path.insert(0, ".")
 from ear3d.scheme import GROUPS, GROUP_NAMES
 R = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/Ear_Landmarker")
 OUT = pathlib.Path(sys.argv[1]); N = int(sys.argv[2]) if len(sys.argv) > 2 else 300
+# sys.argv[3], if given, is a file of manifest row ids to run INSTEAD of a
+# random sample -- for auditing a triage list from qa_agreement.py rather
+# than characterising the corpus.
+IDX_FILE = sys.argv[3] if len(sys.argv) > 3 else None
 g = {n: list(range(lo, hi)) for n, (lo, hi) in zip(GROUP_NAMES, GROUPS)}
 OUTER = g["ascending_helix"] + g["descending_helix"] + g["helix"] + g["ear_lobe"]
 INNER = (g["ascending_inner_helix"] + g["descending_inner_helix"]
@@ -35,7 +39,12 @@ model = Sam2Model.from_pretrained(mid, dtype=torch.float16).to(dev).eval()
 L = np.load(R/"data/manual/landmarks.npy")
 rows = list(csv.DictReader(open(R/"data/manual/manifest.csv")))
 rng = np.random.default_rng(0)
-pick = rng.choice(len(rows), size=min(N, len(rows)), replace=False)
+if IDX_FILE:
+    pick = np.array([int(x) for x in
+                     pathlib.Path(IDX_FILE).read_text().split()][:N])
+    print(f"auditing {len(pick)} listed rows from {IDX_FILE}")
+else:
+    pick = rng.choice(len(rows), size=min(N, len(rows)), replace=False)
 
 res, dropped = [], []
 for c, i in enumerate(pick):
