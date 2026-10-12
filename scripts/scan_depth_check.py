@@ -734,7 +734,7 @@ def main():
                        (uvq[:, 1] - cam2.cy) / cam2.fy * zcp, zcp], axis=1)
         return (pc - cam2.t) @ cam2.R
 
-    mu = np.load(TPL / "lm_basis_v6_55_unitheight.npz", allow_pickle=True)
+    mu = np.load(TPL / "lm_basis_v8_all_55_unitheight.npz", allow_pickle=True)
     mean_u = mu["mean"][:K] - mu["mean"][:K].mean(0)
     comp_u = mu["components"][:, :K]
 

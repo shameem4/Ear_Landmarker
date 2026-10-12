@@ -58,8 +58,8 @@ cd "$(dirname "$0")/.."
 PY="${PY:-/home/shameem/.conda/envs/mocap/bin/python}"
 TPL=/mnt/14BE47C2BE479ADE/Code/ear_stuff/wrap_work/templates
 COMMON="--data data/depth3d_v5 --head shape --n-points 55 --epochs 150 \
-  --batch 64 --workers 8 --basis $TPL/lm_basis_v6_55_unitheight.npz \
-  --coeffs $TPL/gt_coeffs_v6_mm.npz"
+  --batch 64 --workers 8 --basis $TPL/lm_basis_v8_all_55_unitheight.npz \
+  --coeffs $TPL/gt_coeffs_v7_mm.npz"
 AUG="--photo-aug 1.0 --photo-aug-shading 0.0"
 PIDS=()
 launch() {  # name, extra flags...

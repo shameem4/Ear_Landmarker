@@ -288,7 +288,7 @@ def main():
     def front_mask(V, F):
         from ear3d.wrap import rigid_fit, vertex_normals
         from gt_landmark_check import read_marks, DEFAULT_MARKS
-        Vm_, Fm_ = load_mesh(WRAP / "templates/ear_mean_v3.obj")
+        Vm_, Fm_ = load_mesh(WRAP / "templates/ear_mean_v4.obj")
         tm, bm, _ = read_marks(DEFAULT_MARKS)
         Lm_ = np.einsum("ij,ijk->ik", bm[:55], Vm_[Fm_[tm[:55]]])
         R_, t_, s_ = rigid_fit(V, Vm_, with_scale=True)
@@ -331,7 +331,7 @@ def main():
         # our coarse automatic fit (which is where its scan position is read)
         from ear3d.wrap import rigid_fit
         from gt_landmark_check import read_marks, DEFAULT_MARKS
-        Vm, Fm = load_mesh(WRAP / "templates/ear_mean_v3.obj")
+        Vm, Fm = load_mesh(WRAP / "templates/ear_mean_v4.obj")
         tri_m, bary_m, _ = read_marks(DEFAULT_MARKS)
         Lm = np.einsum("ij,ijk->ik", bary_m[:55], Vm[Fm[tri_m[:55]]])
         R0, t0, s0 = rigid_fit(Vt, Vm, with_scale=True)

@@ -22,7 +22,7 @@ THREE TRAPS, each of which produced a plausible-looking result first. All
 three share a signature -- the landmarks stay ON the surface, so a
 surface-distance check passes while the answer is wrong.
 
-  THE BARYCENTRICS ADDRESS THE CANONICAL MESH, in corpus/canonical/. Applied
+  THE BARYCENTRICS ADDRESS THE CANONICAL MESH, in corpus/canonical_esc/. Applied
   to the faceform2_* fit, which has different topology, every point still
   lands on that fit's surface, so it reads 3.2 mm and looks like ordinary
   error while actually scattering the landmarks at random. The giveaway is
@@ -129,7 +129,7 @@ def gt_landmarks(dataset, subject, ear, n_points, verify=True, marks=None):
 
     name = f"{subject}_{ear}"
     tri, bary, _ = read_marks(marks or DEFAULT_MARKS)
-    gp = WRAP / f"corpus/canonical/{dataset}/{name}.obj"
+    gp = WRAP / f"corpus/canonical_esc/{dataset}/{name}.obj"
     if not gp.exists():
         sys.exit(f"{gp} not found")
     m = o3d.io.read_triangle_mesh(str(gp))

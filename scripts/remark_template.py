@@ -267,7 +267,7 @@ def write_wrap(src, dst, tri, bary, names_55):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--template", default=str(WRAP / "templates/ear_mean_v3.obj"))
+    p.add_argument("--template", default=str(WRAP / "templates/ear_mean_v4.obj"))
     p.add_argument("--marks", default=str(WRAP / "templates/mark_mean_v5.wrap"),
                    help="the project to copy; points 55+ are carried over")
     p.add_argument("--out", default=str(WRAP / "templates/mark_mean_v6_landmarker.wrap"))

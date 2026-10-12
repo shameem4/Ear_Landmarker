@@ -124,7 +124,7 @@ def qdeim(B, k, allowed=None):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--template", default=str(TPL / "ear_mean_v3.obj"))
+    p.add_argument("--template", default=str(TPL / "ear_mean_v4.obj"))
     p.add_argument("--fits", nargs="+",
                    default=[str(CORPUS / "faceform2_sonicom"),
                             str(CORPUS / "faceform2_hutubs")])

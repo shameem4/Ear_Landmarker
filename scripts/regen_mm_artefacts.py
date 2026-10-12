@@ -39,7 +39,7 @@ sys.path.insert(0, str(ROOT))
 from ear3d.wrap import load_mesh                                # noqa: E402
 
 TPL = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/wrap_work/templates")
-CAN = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/wrap_work/corpus/canonical")
+CAN = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/wrap_work/corpus/canonical_esc")
 PY = sys.executable
 RETIRE = ["lm3d_v4_all.npz", "lm3d_v4_hutubs.npz", "lm3d_v4_sonicom.npz",
           "lm3d_v4_audioear.npz", "ear_pca_v4_all.npz", "ear_pca_v4_ccby.npz",
@@ -70,7 +70,7 @@ def main():
     global CAN
     p = argparse.ArgumentParser()
     p.add_argument("--marks", default=str(TPL / "mean_v5_marks.npz"))
-    p.add_argument("--template", default=str(TPL / "ear_mean_v3.obj"))
+    p.add_argument("--template", default=str(TPL / "ear_mean_v4.obj"))
     p.add_argument("--archive", default=str(TPL / "archive_mixed_units"))
     p.add_argument("--canonical", default=str(CAN),
                    help="canonical corpus to rebuild from. Defaults to the "
@@ -165,7 +165,7 @@ def main():
     # ---- landmark basis and ground-truth coefficients ---------------------
     print("\nlandmark basis and coefficients")
     run(["scripts/build_landmark_basis.py", "--pca",
-         str(TPL / "ear_pca_v5_all_mm.npz"), "--marks", a.marks,
+         str(TPL / "ear_pca_v7_all_mm.npz"), "--marks", a.marks,
          "--template", a.template, "--out", str(TPL / "lm_basis_v5_95_unitheight.npz")])
     zb = np.load(TPL / "lm_basis_v5_95_unitheight.npz", allow_pickle=True)
     print(f"  lm_basis_v5_95_unitheight.npz  {zb['components'].shape}, "

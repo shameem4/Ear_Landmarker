@@ -82,7 +82,7 @@ def main():
     p.add_argument("--old-marks", default=str(WRAP / "templates/mean_v5_marks.npz"),
                    help="the marks the corpus was built with")
     p.add_argument("--out", required=True)
-    p.add_argument("--canonical", default=str(WRAP / "corpus/canonical"))
+    p.add_argument("--canonical", default=str(WRAP / "corpus/canonical_esc"))
     p.add_argument("--tol", type=float, default=1e-3,
                    help="max allowed reprojection of the OLD labels, in crop "
                         "units; above this the view was not recovered")

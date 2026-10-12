@@ -52,9 +52,9 @@ def main():
     p.add_argument("--canonical", required=True)
     p.add_argument("--template", default=str(WRAP / "templates/ear_L_template.obj"),
                    help="topology donor: supplies the faces")
-    p.add_argument("--out", default=str(WRAP / "templates/ear_mean_v3.obj"))
+    p.add_argument("--out", default=str(WRAP / "templates/ear_mean_v4.obj"))
     p.add_argument("--recipe", default=str(WRAP / "templates/ear_lmv_v1.npz"))
-    p.add_argument("--lmv-out", default=str(WRAP / "templates/ear_lmv_v2.obj"))
+    p.add_argument("--lmv-out", default=str(WRAP / "templates/ear_lmv_v3.obj"))
     p.add_argument("--sources", nargs="*",
                    default=["sonicom", "hutubs", "audioear"])
     p.add_argument("--max-folds", type=int, default=0,

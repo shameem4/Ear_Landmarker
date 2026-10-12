@@ -97,7 +97,7 @@ def main():
     base = json.load(open(a.base))
     rec = {r["ear"]: r for r in
            json.load(open(pathlib.Path(a.fits)/"adaptive.json")) if r.get("ok")}
-    Vm, Fm = load_mesh(WRAP/"templates/ear_mean_v3.obj")
+    Vm, Fm = load_mesh(WRAP/"templates/ear_mean_v4.obj")
     from gt_landmark_check import read_marks, DEFAULT_MARKS
     tri_m, bary_m, _ = read_marks(DEFAULT_MARKS)
     L = np.einsum("ij,ijk->ik", bary_m[:55], Vm[Fm[tri_m[:55]]])

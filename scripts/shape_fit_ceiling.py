@@ -30,13 +30,13 @@ TPL = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/wrap_work/templates")
 _R = ROOT
 exec(open(ROOT/"scripts/fit_photo_depth.py").read().split("def main()")[0].split('"""',2)[2])
 ROOT = _R; K = 55
-B = np.load(TPL/"lm_basis_v6_55_unitheight.npz", allow_pickle=True)
+B = np.load(TPL/"lm_basis_v8_all_55_unitheight.npz", allow_pickle=True)
 size=float(B["ear_size"]); mean_mm=B["mean"]*size; comp_mm=B["components"]*size
 A = comp_mm.reshape(len(comp_mm),-1).T; M=(mean_mm-mean_mm.mean(0)).ravel()
 z3 = np.load(TPL/"lm3d_v6_all_mm.npz", allow_pickle=True)
 names=[str(n) for n in z3["names"]]; X3=np.asarray(z3["landmarks"][:,:K],float)
 lut={n:i for i,n in enumerate(names)}
-g = np.load(TPL/"gt_coeffs_v6_mm.npz", allow_pickle=True)
+g = np.load(TPL/"gt_coeffs_v7_mm.npz", allow_pickle=True)
 gc = {str(n):c for n,c in zip(g["names"], g["coeffs"])}
 D=(X3-X3.mean(1,keepdims=True)).reshape(len(X3),-1)
 Cls,*_=np.linalg.lstsq(A,(D-M).T,rcond=None)

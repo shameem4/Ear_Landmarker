@@ -116,7 +116,7 @@ def save_obj(path, V, F):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--template", default=str(TPL / "ear_mean_v3.obj"))
+    p.add_argument("--template", default=str(TPL / "ear_mean_v4.obj"))
     p.add_argument("--out-root", default=str(CORPUS / "canonical"))
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--assume-mm", action="store_true",
@@ -205,7 +205,24 @@ def main():
         if prev:
             print(f"carried {len(prev)} manifest rows for "
                   f"{sorted({r['dataset'] for r in prev})}")
-            rows = rows + [{k: r.get(k, "") for k in rows[0]} for r in prev]
+            # CARRIED ROWS COME BACK FROM CSV AS STRINGS. Every numeric
+            # column has to be coerced here, or a run that recomputes only
+            # one dataset mixes str and float and the summaries below die
+            # with a ufunc type error -- which is exactly how the first
+            # audioear merge failed, twice, one statistic at a time.
+            num = {"to_mm", "ear_mm", "pinna_mm", "align_resid_mm", "roundtrip"}
+            def _coerce(r):
+                out = {}
+                for k in rows[0]:
+                    v = r.get(k, "")
+                    if k in num and v != "":
+                        try:
+                            v = float(v)
+                        except ValueError:
+                            pass
+                    out[k] = v
+                return out
+            rows = rows + [_coerce(r) for r in prev]
     with open(man, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))
         w.writeheader()
@@ -236,7 +253,7 @@ def main():
                 continue
             sid, side = int(m.group(1)), m.group(2)
             if sid in rec:
-                mine.append(r["pinna_mm"])
+                mine.append(float(r["pinna_mm"]))
                 ref.append(10.0 * float(
                     rec[sid][("L_" if side == "left" else "R_") + "d5"]))
         if mine:

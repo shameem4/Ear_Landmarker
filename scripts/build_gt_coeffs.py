@@ -26,7 +26,7 @@ gaussian prior is the right one. The per-mode sd is printed; far from 1 means
 the basis and the corpus do not match.
 
     python scripts/build_gt_coeffs.py --pca ear_pca_v5_all_mm.npz \
-        --fits corpus/canonical/sonicom ... --out gt_coeffs_v5_mm.npz
+        --fits corpus/canonical_esc/sonicom ... --out gt_coeffs_v7_mm.npz
 """
 import argparse
 import pathlib

@@ -259,7 +259,7 @@ def main():
     if a.front_only:
         from ear3d.wrap import vertex_normals
         N = vertex_normals(Vt, Ft)
-        mean_p = WRAP / "templates/ear_mean_v3.obj"
+        mean_p = WRAP / "templates/ear_mean_v4.obj"
         if mean_p.exists() and str(pathlib.Path(a.template).resolve()) != str(mean_p.resolve()):
             from ear3d.wrap import rigid_fit
             from gt_landmark_check import read_marks, DEFAULT_MARKS
@@ -287,7 +287,7 @@ def main():
     if not a.front_only:                     # lm_vert is set above when front-only
         from ear3d.wrap import rigid_fit as _rf
         from gt_landmark_check import read_marks as _rm, DEFAULT_MARKS as _DM
-        _Vm, _Fm = load_mesh(WRAP / "templates/ear_mean_v3.obj")
+        _Vm, _Fm = load_mesh(WRAP / "templates/ear_mean_v4.obj")
         _t, _b, _ = _rm(_DM)
         _L = np.einsum("ij,ijk->ik", _b[:55], _Vm[_Fm[_t[:55]]])
         _R, _tt, _s = _rf(Vt, _Vm, with_scale=True)

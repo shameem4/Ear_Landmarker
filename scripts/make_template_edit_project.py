@@ -77,7 +77,7 @@ def visual(r, g, b):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--template", default=str(WRAP / "templates/ear_lmv_v2.obj"))
+    p.add_argument("--template", default=str(WRAP / "templates/ear_lmv_v3.obj"))
     p.add_argument("--n-landmarks", type=int, default=55)
     p.add_argument("--suggest-dot", type=float, default=-0.6,
                    help="write the faces this normal test would remove, as a "

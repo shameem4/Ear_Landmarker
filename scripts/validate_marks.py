@@ -78,8 +78,8 @@ def main():
     p.add_argument("--project", default=str(TPL / "mark_mean_v5.wrap"))
     p.add_argument("--base", default=str(TPL / "mark_mean_v4.wrap"),
                    help="the 55-point project the extension started from")
-    p.add_argument("--pca", default=str(TPL / "ear_pca_v5_all_mm.npz"))
-    p.add_argument("--mesh", default=str(TPL / "ear_mean_v3.obj"))
+    p.add_argument("--pca", default=str(TPL / "ear_pca_v7_all_mm.npz"))
+    p.add_argument("--mesh", default=str(TPL / "ear_mean_v4.obj"))
     p.add_argument("--sigma", type=float, default=0.0106)
     p.add_argument("--margin", type=float, default=0.0,
                    help="mm from the template boundary to exclude from the "

@@ -68,7 +68,7 @@ def compose(name, dataset, side, scan_cache):
     """The 4x4 canonical mm -> scan mm, plus what it was checked against."""
     import open3d as o3d
 
-    cn = np.load(WRAP / f"corpus/canonical/{dataset}/{name}.npz",
+    cn = np.load(WRAP / f"corpus/canonical_esc/{dataset}/{name}.npz",
                  allow_pickle=True)
     tf = np.load(WRAP / f"corpus/tf_{dataset}/{name}.npz", allow_pickle=True)
     scan_path = str(tf["source"])
@@ -104,7 +104,7 @@ def compose(name, dataset, side, scan_cache):
     T[:3, :3], T[:3, 3] = A, b
 
     g = o3d.io.read_triangle_mesh(
-        str(WRAP / f"corpus/canonical/{dataset}/{name}.obj"))
+        str(WRAP / f"corpus/canonical_esc/{dataset}/{name}.obj"))
     X = np.asarray(g.vertices) @ A.T + b
     d = scene.compute_distance(o3d.core.Tensor(
         np.ascontiguousarray(X, np.float32))).numpy()
@@ -122,7 +122,7 @@ def main():
     a = p.parse_args()
 
     rows = [r for r in csv.DictReader(
-        open(WRAP / "corpus/canonical/manifest.csv", encoding="utf-8"))
+        open(WRAP / "corpus/canonical_esc/manifest.csv", encoding="utf-8"))
         if r["dataset"] in a.dataset]
     # sorted by subject so both ears reuse one loaded scan
     rows.sort(key=lambda r: (r["dataset"], r["name"]))

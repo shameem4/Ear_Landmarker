@@ -58,7 +58,7 @@ def components(n, F):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--template", default=str(WRAP / "templates/ear_lmv_v2.obj"))
+    p.add_argument("--template", default=str(WRAP / "templates/ear_lmv_v3.obj"))
     p.add_argument("--trimmed", required=True)
     p.add_argument("--n-landmarks", type=int, default=55)
     p.add_argument("--tol", type=float, default=1e-5,

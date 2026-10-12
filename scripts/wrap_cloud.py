@@ -21,7 +21,7 @@ sensible distances and with agreeing normals, so without that test they pass
 every check and drag the template down into the hole.
 
     python scripts/wrap_cloud.py --cloud AudioEar3D/001/left.ply \\
-        --template templates/ear_mean_v3.obj --out fit_001_left.obj
+        --template templates/ear_mean_v4.obj --out fit_001_left.obj
 """
 import argparse
 import pathlib

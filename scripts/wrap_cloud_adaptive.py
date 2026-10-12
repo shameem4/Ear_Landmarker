@@ -149,7 +149,7 @@ def _one(job):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--root", required=True, help="AudioEar3D root")
-    p.add_argument("--template", default=str(WRAP / "templates/ear_mean_v3.obj"))
+    p.add_argument("--template", default=str(WRAP / "templates/ear_mean_v4.obj"))
     p.add_argument("--out", required=True)
     p.add_argument("--jobs", type=int, default=8)
     p.add_argument("--max-dist", type=float, default=0.06)

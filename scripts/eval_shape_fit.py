@@ -79,7 +79,7 @@ def main():
     p.add_argument("--bench", default="data/photo3d/audioear3d_depth.npz")
     p.add_argument("--photo-data", default="data/preprocessed")
     p.add_argument("--render-data", default="data/depth3d_v5")
-    p.add_argument("--basis", default=str(TPL / "lm_basis_v6_55_unitheight.npz"))
+    p.add_argument("--basis", default=str(TPL / "lm_basis_v8_all_55_unitheight.npz"))
     p.add_argument("--lm3d-photo", default=str(TPL / "lm3d_v5_audioear_mm.npz"))
     p.add_argument("--onnx", default="docs/EarLandmarker_web.onnx")
     p.add_argument("--label-2d", choices=["hand", "avg"], default="hand")
