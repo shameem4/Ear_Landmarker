@@ -4068,3 +4068,28 @@ the row, reverting is pointing `--train-csv` back. The drop list lives at
 
 Currently 2 rows. The non-ear rate in this corpus is on the order of a
 handful, not hundreds.
+
+### The review came back: 84 dropped, 24 kept
+
+All 108 flagged rows were reviewed by hand in the Non-Ear Triage artifact
+and the verdicts were read back out of the artifact's database, never
+retyped. Splits: train 8,427 -> 8,355, val 1,054 -> 1,049,
+test 1,054 -> 1,047. 0.8% of the corpus.
+
+**The user dropped 84 where I had argued for about 2.** My read of the
+lowest-confidence renders was that only two frames contained no ear and
+the rest were hard-but-valid -- ears under red light, behind white hair,
+in black and white. The call went the other way on most of them, and the
+call belongs to whoever knows what these annotations are for: a frame
+where the ear is technically present but unusable is still unusable, and
+that is a judgement about the training target, not about the pixels.
+
+Worth stating plainly for whoever reads this later: this is the one place
+in the session where a decision was made on judgement rather than
+measurement, and the earlier measurement -- filtering low-agreement rows
+removed hard IMAGES rather than bad LABELS -- argues for keeping rows like
+these. If a model trained on `train_clean.csv` loses to one trained on
+`train.csv`, that measurement is the reason, and the drop list is where to
+look. Reverting is one flag: `--train-csv train.csv`.
+
+24 kept rows are in `qa_lists/review_keep.txt`.

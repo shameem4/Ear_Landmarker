@@ -1,7 +1,95 @@
-# Rows with no ear in the image. Each one visually confirmed -- the
-# BlazeEar confidence ranking (runs/earness) proposes candidates, a human
-# decides. See scripts/qa_make_clean_splits.py.
+# Rows dropped from training: no ear in the image.
 #
-# Confirmed by eye, 2026-10-13:
-7397   # blurred shoulder and a red-striped shirt; the 55 points trace nothing
-10     # neck/shoulder and hair; no ear in frame
+# BlazeEar confidence ranks the candidates (runs/earness) and a human
+# decides -- the detector is a ranker, not a drop rule. Reviewed by hand
+# in the Non-Ear Triage artifact, 108 verdicts, 2026-10-13; read back
+# from the artifact database rather than transcribed.
+#
+# Nothing here is deleted: scripts/qa_make_clean_splits.py rewrites the
+# split CSVs, leaving the images, the manifest and landmarks.npy intact,
+# so every QA artefact keeps its row indices.
+#
+10     # conf 0.28  IoU 0.00
+11     # conf 0.46  IoU 0.54
+17     # conf 0.31  IoU 0.56
+71     # conf 0.61  IoU 0.00
+90     # conf 0.46  IoU 0.32
+269    # conf 0.23  IoU 0.00
+467    # conf 0.47  IoU 0.26
+509    # conf 0.45  IoU 0.70
+526    # conf 0.65  IoU 0.17
+543    # conf 0.54  IoU 0.03
+1190   # conf 0.51  IoU 0.14
+1441   # conf 0.48  IoU 0.74
+1739   # conf 0.30  IoU 0.30
+1740   # conf 0.56  IoU 0.28
+1789   # conf 0.60  IoU 0.24
+1975   # conf 0.35  IoU 0.04
+2119   # conf 0.49  IoU 0.01
+2126   # conf 0.36  IoU 0.33
+2280   # conf 0.69  IoU 0.01
+2447   # conf 0.40  IoU 0.00
+2463   # conf 0.42  IoU 0.25
+2747   # conf 0.44  IoU 0.00
+2772   # conf 0.37  IoU 0.45
+3263   # conf 0.28  IoU 0.70
+3303   # conf 0.32  IoU 0.06
+3334   # conf 0.34  IoU 0.00
+3583   # conf 0.50  IoU 0.53
+3786   # conf 0.29  IoU 0.04
+3978   # conf 0.54  IoU 0.02
+5752   # conf 0.45  IoU 0.69
+5816   # conf 0.52  IoU 0.27
+5899   # conf 0.41  IoU 0.70
+5923   # conf 0.49  IoU 0.00
+6103   # conf 0.61  IoU 0.09
+6172   # conf 0.39  IoU 0.38
+6315   # conf 0.53  IoU 0.23
+6386   # conf 0.48  IoU 0.11
+6428   # conf 0.62  IoU 0.15
+6487   # conf 0.52  IoU 0.00
+6638   # conf 0.45  IoU 0.23
+6938   # conf 0.41  IoU 0.46
+7001   # conf 0.50  IoU 0.66
+7007   # conf 0.53  IoU 0.00
+7135   # conf 0.47  IoU 0.16
+7166   # conf 0.58  IoU 0.08
+7174   # conf 0.65  IoU 0.21
+7220   # conf 0.36  IoU 0.07
+7230   # conf 0.60  IoU 0.11
+7268   # conf 0.48  IoU 0.44
+7307   # conf 0.46  IoU 0.58
+7327   # conf 0.70  IoU 0.00
+7372   # conf 0.37  IoU 0.75
+7397   # conf 0.32  IoU 0.03
+7459   # conf 0.65  IoU 0.06
+7527   # conf 0.35  IoU 0.10
+7586   # conf 0.32  IoU 0.28
+7646   # conf 0.46  IoU 0.10
+7888   # conf 0.45  IoU 0.07
+7980   # conf 0.32  IoU 0.00
+8022   # conf 0.33  IoU 0.62
+8059   # conf 0.41  IoU 0.14
+8131   # conf 0.43  IoU 0.54
+8195   # conf 0.38  IoU 0.45
+8223   # conf 0.55  IoU 0.17
+8251   # conf 0.68  IoU 0.05
+8578   # conf 0.64  IoU 0.09
+8766   # conf 0.47  IoU 0.71
+8781   # conf 0.60  IoU 0.20
+8868   # conf 0.46  IoU 0.53
+9116   # conf 0.49  IoU 0.00
+9271   # conf 0.46  IoU 0.00
+9351   # conf 0.53  IoU 0.22
+9356   # conf 0.65  IoU 0.04
+9478   # conf 0.31  IoU 0.00
+9517   # conf 0.49  IoU 0.64
+9664   # conf 0.48  IoU 0.49
+9665   # conf 0.42  IoU 0.09
+9699   # conf 0.28  IoU 0.39
+10119  # conf 0.49  IoU 0.68
+10174  # conf 0.51  IoU 0.27
+10175  # conf 0.39  IoU 0.64
+10295  # conf 0.26  IoU 0.00
+10359  # conf 0.38  IoU 0.37
+10448  # conf 0.40  IoU 0.22
