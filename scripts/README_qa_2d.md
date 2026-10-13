@@ -228,3 +228,37 @@ On jorge-jrzz, the two blockers are different in kind. Ultralytics AGPL-3.0
 triggers on distribution or network service, so purely internal use does not
 trip it. The absent LICENSE file is not a restrictive licence to read
 permissively -- it is the absence of any grant, so there is nothing to read.
+
+## Which segmenter -- measured, Oct 2026
+
+Same 40 rows, same gates, head to head:
+
+    model          gates dropped   interior/outer   renders
+    SAM 2.1             30.8%          3.05x        noisy, fragments, takes hair
+    SAM 3               12.5%          3.52x        TIGHT, accurate rim  <-- use
+    U-Net (local)        5.0%          3.62x        blobby, misses the rim
+    Florence-2          60.0%          2.30x        empty or degenerate
+
+USE SAM 3. And note what nearly went wrong here: the U-Net wins every gate
+statistic and loses badly on the renders. It emits ear-ISH, roughly
+ear-SIZED regions, which is precisely what gates on area, coverage and hull
+overlap reward -- it swallowed an eye and a slab of background on one row
+while scoring the best separation of any model. Gate pass rate measures
+"produced a plausible blob", not "found the rim". Do not pick a segmenter on
+these numbers without drawing the masks.
+
+SAM 3 is prompted with the CONCEPT "ear" and needs no box or point; the
+instance overlapping the landmark hull best is kept, which is the same
+coarse localisation SAM 2.1 got from its box, so the comparison is fair.
+Licence: Meta's custom SAM License, gated weights, accepted by the user for
+this account. The text carries NO Llama-style restriction on using outputs
+to train or distil, the grant is royalty-free with no commercial-use bar,
+and the live restrictions are acceptable-use and no-reverse-engineering.
+
+The local U-Net stays as the licence-clean fallback -- torchvision (BSD) on
+the CC BY 4.0 Roboflow set (590 images, v3), trained locally, val IoU 0.9185
+and test IoU 0.9434 IN DOMAIN. In-domain IoU on 256px Roboflow crops says
+little about rim precision on wild ears, as the renders show. Its encoder is
+ImageNet-pretrained, which is a grey area against the commercially-clean
+rule; --scratch trains a fully clean one. CC BY requires crediting SaifulULL
+wherever this model or its outputs are published.
