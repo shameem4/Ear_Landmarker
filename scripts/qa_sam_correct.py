@@ -127,12 +127,43 @@ def tps_warp(src, dst, pts, lam=1e-3):
     return out
 
 
+def fit_similarity_warp(src, dst):
+    """The 4-DOF transform that best explains src->dst. Applied to anything.
+
+    This is the conservative alternative to the TPS: a thin-plate spline
+    has about as many degrees of freedom as there are control points, so it
+    fits the NOISE in the per-point silhouette corrections and carries that
+    noise inward. A similarity has four, estimated from all 20 points at
+    once, so the noise averages down. When the defect is a contour that
+    inflated or shifted as a whole -- which is the direction every real
+    defect took -- this is the right model of it.
+    """
+    mu_s, mu_d = src.mean(0), dst.mean(0)
+    s0, d0 = src - mu_s, dst - mu_d
+    U, S, Vt = np.linalg.svd(d0.T @ s0)
+    d = np.sign(np.linalg.det(U @ Vt))
+    R = U @ np.diag([1, d]) @ Vt
+    sc = (S[0] + d * S[1]) / max((s0 ** 2).sum(), 1e-9)
+    return lambda pts: sc * (R @ pts.T).T + (mu_d - sc * (R @ mu_s))
+
+
+def fit_affine_warp(src, dst):
+    """6-DOF least squares: allows shear and anisotropic scale."""
+    A = np.c_[src, np.ones(len(src))]
+    M, *_ = np.linalg.lstsq(A, dst, rcond=None)
+    return lambda pts: np.c_[pts, np.ones(len(pts))] @ M
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
     ap.add_argument("--mode", choices=["noharm", "recover", "inner"],
                     default="noharm")
     ap.add_argument("--n", type=int, default=120)
+    ap.add_argument("--warp", choices=["tps", "similarity", "affine"],
+                    default="tps")
+    ap.add_argument("--corrupt", choices=["global", "local"],
+                    default="global")
     ap.add_argument("--tol", type=float, default=TOL)
     a = ap.parse_args()
     OUT = pathlib.Path(a.out); OUT.mkdir(parents=True, exist_ok=True)
@@ -147,7 +178,7 @@ def main():
     proc = Sam3Processor.from_pretrained("facebook/sam3")
     sam = Sam3Model.from_pretrained("facebook/sam3",
                                     dtype=torch.float16).to(dev).eval()
-    before, after, moved = [], [], []
+    before, after, moved, resid = [], [], [], []
     for c, i in enumerate(pick):
         im = Image.open(ROOT / "data/manual" / rows[i]["image_file"]).convert("RGB")
         w, h = im.size
@@ -167,6 +198,17 @@ def main():
             # the whole annotation inflates together, which is how the real
             # defects look: the interior drifts with the contour
             start55 = ctr + (truth55 - ctr) * 1.12
+            if a.corrupt == "local":
+                # a defect that is NOT a similarity: one stretch of the
+                # contour wanders off while the rest stays put. A global
+                # transform cannot represent this, which is the point of
+                # testing it.
+                start = truth.copy(); start55 = truth55.copy()
+                seg = slice(4, 12)
+                nrm0 = truth[seg] - truth.mean(0)
+                nrm0 /= np.maximum(np.linalg.norm(nrm0, axis=1, keepdims=True), 1e-9)
+                start[seg] = truth[seg] + nrm0 * 0.13 * eh
+                start55[seg] = start[seg]
         yy, xx = np.mgrid[0:h, 0:w]
         inann = MPath(g[:20]).contains_points(
             np.c_[xx.ravel(), yy.ravel()]).reshape(h, w)
@@ -198,7 +240,21 @@ def main():
         if a.mode == "inner":
             # score the INTERIOR only: 20-54, carried by the warp the outer
             # correction defines. The interior is never replaced.
-            warped = tps_warp(start, fixed, start55[20:])
+            # Is this correction actually a TRANSFORMATION? Fit a
+            # similarity to it and look at what is left over. A contour
+            # that inflated as a whole is explained by 4 parameters and
+            # leaves little; a contour with one wandering stretch is not a
+            # transformation at all, and propagating it damages a correct
+            # interior (measured: 100% of rows made worse).
+            fs = fit_similarity_warp(start, fixed)
+            resid.append(float(np.sqrt(((fixed - fs(start)) ** 2)
+                                       .sum(1).mean())) / eh * 100)
+            if a.warp == "tps":
+                warped = tps_warp(start, fixed, start55[20:])
+            else:
+                f = (fit_similarity_warp if a.warp == "similarity"
+                     else fit_affine_warp)(start, fixed)
+                warped = f(start55[20:])
             b = np.median(np.linalg.norm(start55[20:] - truth55[20:],
                                          axis=1)) / eh * 100
             af = np.median(np.linalg.norm(warped - truth55[20:],
@@ -223,6 +279,10 @@ def main():
     print(f"  the correction moved      median {np.median(mv):6.2f}%")
     print(f"  rows made WORSE           {100*(af > b + 0.1).mean():5.0f}%")
     print(f"  rows made better          {100*(af < b - 0.1).mean():5.0f}%")
+    if resid:
+        r = np.array(resid)
+        print(f"  similarity-fit residual   median {np.median(r):5.2f}%"
+              f"  p90 {np.percentile(r,90):5.2f}%")
     json.dump(dict(before=b.tolist(), after=af.tolist(), moved=mv.tolist()),
               open(OUT / f"correct_{a.mode}.json", "w"))
 

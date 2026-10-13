@@ -3702,3 +3702,59 @@ of downside. Propagate inward only where the outer correction was large
 enough to matter -- on a row whose contour barely moved, the warp is near
 identity and the 26% is all that is left. Propagation corpus-wide is not
 justified on these numbers.
+
+### Correction: use the same transform, but only when it IS one
+
+The TPS above was the wrong model. A thin-plate spline has roughly as many
+degrees of freedom as control points, so it fits the NOISE in the
+per-point silhouette corrections and carries that noise inward. Estimating
+ONE transform from all 20 points averages the noise down instead.
+
+Interior error under a contour that inflated as a whole:
+
+| warp applied to the interior | before -> after | better | worse |
+|---|---|---|---|
+| similarity, 4 DOF | 2.69% -> **1.15%** | 100% | **0%** |
+| affine, 6 DOF | 2.69% -> **1.08%** | 100% | **0%** |
+| thin-plate spline, ~20 DOF | 2.69% -> 1.89% | 70% | 26% |
+
+Halves the error and harms nothing -- far better than the TPS result
+reported above, which is superseded.
+
+**But that test is partly rigged, and the honest one reverses it.** The
+corruption there is a uniform scaling, which a similarity can represent
+exactly. Repeat it with a defect that is NOT a global transform -- one
+stretch of the contour wanders off, the interior untouched:
+
+| warp | before -> after | worse |
+|---|---|---|
+| similarity | 0.00% -> 2.83% | **100%** |
+| affine | 0.00% -> 2.69% | **100%** |
+| TPS | 0.00% -> 2.29% | **100%** |
+
+Every warp damages a correct interior, because there was nothing wrong
+with it and the fix belonged to one stretch of the contour alone.
+
+**So the question is whether the correction IS a transformation**, and
+that is measurable before applying it. Fit a similarity to the outer
+chain's own displacement and look at the residual:
+
+| defect | similarity-fit residual | p90 |
+|---|---|---|
+| global (contour inflated) | 2.33% | 2.95% |
+| local (one stretch wandered) | 4.23% | 4.68% |
+
+A threshold near 3.5% of ear height separates them. The rule:
+
+1. correct points 0-19 from the silhouette wherever the gate passes --
+   always safe, 0% of rows harmed;
+2. fit a similarity to that correction and take the residual;
+3. below ~3.5%, the defect was global: apply the same similarity to points
+   20-54, halving their error with no downside;
+4. above it, the defect was local: correct the contour and LEAVE THE
+   INTERIOR ALONE, because propagating would damage a correct annotation
+   in 100% of rows.
+
+Prefer the similarity to the affine despite its slightly worse number
+(1.15 vs 1.08): four parameters cannot introduce shear into an ear, and
+the gap is inside the noise.
