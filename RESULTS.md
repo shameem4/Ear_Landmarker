@@ -3436,3 +3436,54 @@ of the same chain.
 
 The practical rule: use segmentation for detection and gross framing,
 never as the arbiter of a rim landmark.
+
+### SAM 3 DOES carve around occluders -- and the first metric for it was wrong
+
+A first attempt said it did not: mask-area / convex-hull-area came out at
+0.935 on disputed rows and 0.934 on controls, and almost no annotated
+point fell inside the hull deficit. Both numbers were artefacts.
+
+- **An ear is not convex.** The intertragic notch alone puts a perfectly
+  good mask at ~0.93, so solidity scored both sets identically. The metric
+  had no resolution and its agreement meant nothing.
+- **The 20 outer points sit ON the rim**, and SAM under-reaches, so they
+  are outside the mask already and can never land "inside a bite". The
+  bites are in the ear's INTERIOR, where that test had no points at all.
+
+Rendering the masks showed obvious carving the numbers denied. Measuring
+the right quantity -- deficit depth from the annotated rim, in ear heights
+-- reverses the result:
+
+| | disputed | control |
+|---|---|---|
+| coverage of annotated ear | 68% | 91% |
+| total deficit | 31.8% | 8.7% |
+| **of which deeper than 10% of ear height** | **5.6%** | **0.0%** |
+| deepest point of the deficit | 19.0% | 8.0% |
+| rows with intrusion > 5% of the ear | **57%** | **2%** |
+
+On control rows the deficit is a pure rind: zero deep intrusion. On
+disputed rows SAM reaches 19% of ear height inside the rim, on 57% of rows
+against 2%.
+
+**Where the intrusion lands is the point.** Rendered, it sits on hair
+across the top of the ear and on hands (rows 1743 and 7000); row 3191 is
+an unambiguous carve, a blob taken out of the mid-ear where hair crosses,
+nowhere near the rim. SAM is excluding the occluder and sacrificing ear
+shape to do it.
+
+**So the occlusion-map idea is live, not dead.** An earlier paragraph
+retracted it on the strength of the bad solidity metric; that retraction
+is itself withdrawn. SAM's deep deficit marks where something non-ear
+crosses the annotated ear, it separates 57% from 2%, and it costs nothing
+beyond a forward pass we already run. It gives a per-row occlusion score,
+a way to scope any segmenter-based check to rim segments that are not
+adjacent to an intrusion, and a direct explanation of the disputed set.
+
+It also corroborates the central finding by a third route: the annotation
+runs through the occluder, SAM stops at it.
+
+**The methodological lesson, for the third time this session:** the
+standing directive is render first and let statistics support. Both wrong
+turns here came from trusting a metric whose resolution was never checked
+against a picture.

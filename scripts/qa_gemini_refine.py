@@ -97,6 +97,38 @@ Reply with JSON only, coordinates normalised to 0-1000, y first:
 {{"outer_helix": [[y,x], ...], "inner_helix": [...],
   "concha_border": [...], "superior_crus": [...]}}"""
 
+GTTPL_PROMPT = """The FIRST image is a photo of one human {side} ear.
+
+The SECOND image is a template: the average shape of a {side} ear's four
+contours, with the point indices labelled. It is what a {side} ear looks
+like in general. It is NOT this ear.
+
+Below is an EXISTING trace of THIS ear's four contours, as [y, x]
+normalised to 0-1000. It may be wrong: points may sit off the ear, a
+contour may cut a corner or wander onto hair, cheek or jaw.
+
+{pts}
+
+Correct the trace so that point j marks the same structure the template
+labels j. Where the trace already does that, LEAVE THE POINT WHERE IT IS.
+The template gives the correspondence and the general shape; the photo
+decides the exact position. The template is not this ear's shape, so do
+not pull the trace towards the template where the photo disagrees.
+
+Rules:
+- Return every point, in the same order and the same count per contour:
+  outer_helix 20, inner_helix 15, concha_border 15, superior_crus 5.
+- Make each contour SMOOTH: no kinks or zigzags between neighbours, and
+  keep the points roughly evenly spaced along it.
+- Where hair, an earring, a hand or deep shadow hides a contour,
+  EXTRAPOLATE where it would run and place the points there. Do not follow
+  the occluder and do not bunch the points up at the edge of it.
+
+Reply with JSON only, coordinates normalised to 0-1000, y first:
+{{"outer_helix": [[y,x], ...], "inner_helix": [...],
+  "concha_border": [...], "superior_crus": [...]}}"""
+
+
 IMG_PROMPT = """The FIRST image is a photo of one human ear.
 
 The SECOND and THIRD images are templates: the average shape of an ear's
@@ -184,7 +216,7 @@ def main():
     ap.add_argument("--model", default="gemini-3.8-flash")
     ap.add_argument("--template", default="runs/shape_template/template.json")
     ap.add_argument("--seed",
-                    choices=["numbers", "images", "both", "one", "gt"],
+                    choices=["numbers", "images", "both", "one", "gt", "gttpl"],
                     default="numbers")
     # The gt seed is NOT an audit -- it shows the model the answer. It is an
     # upper bound on achievable fit, and it is only interpretable next to
@@ -197,7 +229,7 @@ def main():
     tdir = (ROOT / a.template).parent
     TILE = {s_: (tdir / f"template_{s_}.png").read_bytes()
             for s_ in ("right", "left")}
-    if a.seed == "one":
+    if a.seed in ("one", "gttpl"):
         prompt, tiles = None, None          # chosen per row below
     elif a.seed == "numbers":
         prompt, tiles = build_prompt(tpl), []
@@ -230,7 +262,7 @@ def main():
         gx, gy = g0[:20, 0], g0[:20, 1]
         area0 = 0.5 * np.sum(gx * np.roll(gy, -1) - np.roll(gx, -1) * gy)
         this_side = "right" if area0 < 0 else "left"
-        if a.seed == "gt":
+        if a.seed in ("gt", "gttpl"):
             seed = g0[:55].copy()
             if a.corrupt:
                 span0 = float(g0[:20, 1].max() - g0[:20, 1].min())
@@ -244,7 +276,17 @@ def main():
                        for x, y in seed[lo:hi]]
                 blocks.append(f'"{nm}" (points {lo}-{hi-1}):\n  '
                               + json.dumps(pts))
-            use, body = [], GT_PROMPT.format(pts="\n".join(blocks))
+            if a.seed == "gttpl":
+                # the correct-side template AND the trace: the template
+                # supplies the index-to-structure correspondence, the photo
+                # supplies the position. Asked explicitly NOT to pull the
+                # trace towards the template, which is the failure the
+                # numbers-only gt seed showed as an echo.
+                use = [TILE[this_side]]
+                body = GTTPL_PROMPT.format(side=this_side,
+                                           pts="\n".join(blocks))
+            else:
+                use, body = [], GT_PROMPT.format(pts="\n".join(blocks))
             SEEDS[str(i)] = seed.tolist()
         elif a.seed == "one":
             use, body = [TILE[this_side]], ONE_PROMPT.format(side=this_side)
@@ -266,7 +308,7 @@ def main():
         txt = o.text or ""
         got = parse(txt)
         ms = re.search(r'"side"\s*:\s*"(right|left)"', txt)
-        said = ms.group(1) if ms else (this_side if a.seed in ("one", "gt")
+        said = ms.group(1) if ms else (this_side if a.seed in ("one", "gt", "gttpl")
                                        else "?")
         if np.isnan(got).all():
             print(f"{i:>7}  no points"); continue
