@@ -44,10 +44,12 @@ L = np.load(ROOT / "data/manual/landmarks.npy")
 rows = list(csv.DictReader(open(ROOT / "data/manual/manifest.csv")))
 pick = [int(x) for x in (ROOT / "runs/gate/proper_rows.txt").read_text().split()]
 
-done, acc_idx, acc_pts, acc_off = set(), [], [], []
+done, acc_idx, acc_pts, acc_off, acc_bnd = set(), [], [], [], []
 if NPZ.exists():
     z = np.load(NPZ)
     acc_idx, acc_pts, acc_off = list(z["idx"]), list(z["pts"]), list(z["off"])
+    cuts = np.cumsum(z["blen"])[:-1]
+    acc_bnd = list(np.split(z["bnd"], cuts))
     done = set(int(i) for i in acc_idx)
     print(f"resuming: {len(done)} rows already corrected")
 todo = [i for i in pick if i not in done]
@@ -62,7 +64,9 @@ sam = Sam3Model.from_pretrained("facebook/sam3", dtype=torch.float16).to(dev).ev
 
 def flush():
     np.savez(NPZ, idx=np.array(acc_idx), pts=np.array(acc_pts),
-             off=np.array(acc_off))
+             off=np.array(acc_off),
+             bnd=np.concatenate(acc_bnd) if acc_bnd else np.zeros((0, 2), np.float32),
+             blen=np.array([len(b) for b in acc_bnd]))
 
 
 t0 = time.time()
@@ -104,6 +108,14 @@ for c, i in enumerate(todo):
         nomask += 1
         continue
     mk = lab == (1 + np.argmax(ndimage.sum(mk, lab, range(1, nn + 1))))
+    B = _sc.boundary_polyline(mk)
+    if B is None or len(B) < 20:
+        nomask += 1
+        continue
+    # cache the boundary, normalised, so every later correction experiment is
+    # free: SAM is 99% of the cost of this pass and the mask is all it gives.
+    if len(B) > 800:
+        B = B[np.round(np.linspace(0, len(B) - 1, 800)).astype(int)]
     fixed, off = _sc.correct(g[:20], mk, eh)
     if fixed is None:
         nomask += 1
@@ -111,6 +123,7 @@ for c, i in enumerate(todo):
     acc_idx.append(i)
     acc_pts.append(fixed / np.array([w, h]))     # normalised, as landmarks.npy
     acc_off.append(off)
+    acc_bnd.append((B / np.array([w, h])).astype(np.float32))
     if (c + 1) % CHUNK == 0:
         flush()
         el = time.time() - t0

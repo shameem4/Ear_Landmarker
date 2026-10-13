@@ -3904,3 +3904,49 @@ witness the corrected rim without sharing its evidence. On that witness
 the corrector is **not safe unsupervised at the current settings**.
 
 The corrected array stands as built, flagged, and not yet trained on.
+
+## Fixing the corrector: the guards are local, the gate threshold is not
+
+**Raising `covered` is not the fix.** Measured on the 6,107 gated rows,
+against the 669 the v1 corrector damaged:
+
+| covered >= | rows kept | damage rate | good rows lost |
+|---|---|---|---|
+| 0.85 (shipped gate) | 6,107 | 11.0% | 0% |
+| 0.93 | 3,112 | 3.6% | 45% |
+| 0.97 | 1,019 | 0.5% | 81% |
+| 1.00 | **2** | -- | 100% |
+
+It works directionally and costs four good rows per damaged row removed.
+**A 100% threshold admits 2 rows out of 6,107** -- SAM's lobe cutoff is
+conceptual, so coverage is never complete. Damaged rows sit at covered
+0.893 against 0.937 for clean ones: overlapping distributions, which is
+what a thin hairline band that costs almost no AREA has to look like.
+
+So both guards are local (`scripts/qa_correct_offline.py`):
+
+**clamp** -- offsets above 10% of ear height are not corrections, they are
+teleports; chain length may not change by more than 25%.
+
+**clearance guard** -- no point may move if it drives an inner-helix
+clearance below that index's 1st percentile in the original corpus. The
+offsets of the outer points the violated inner point leans on are zeroed,
+and it re-checks, up to six times.
+
+| | crossing | too close | too far | caused by the correction |
+|---|---|---|---|---|
+| original annotation | 3 | 18 | 459 | -- |
+| v1 | 90 | 616 | 299 | **669** |
+| v2 (guarded) | 3 | 15 | 338 | **16** |
+
+Damage 669 -> 16 rows (0.26%), while still moving 8.3% of points on 47%
+of rows. Renders confirm it: on every row v1 clipped the top of the helix
+down into the ear, v2 holds the original.
+
+**Read the first two columns with suspicion and the third without.** The
+guard is built from clearance, so crossing and too-close improve partly by
+construction. "Too far" is the column the guard does not control -- it
+only vetoes moves that REDUCE clearance -- and it fell 459 -> 338. That is
+121 rows improved on a dimension the constraint cannot reach.
+
+`data/manual/landmarks_sil_corrected.npy` is rebuilt from v2.
