@@ -3067,3 +3067,79 @@ not one row in either arm. Its own error floor (control held-out p90 =
 3.3%) is the noise. Memorisation inflates agreement only mildly, though --
 train 1.3 vs held-out 1.7 on controls -- so the held-out slice is honest
 as far as it goes.
+
+
+## Can classical CV repair SAM 3? Only with a shape prior, and ours is not enough yet
+
+**The diagnostic that decides it.** On 200 clean rows, the gradient along
+SAM 3's mask boundary nearest the annotated lobe is **1.18x** the gradient
+along the rest of its own boundary, and 2.4x the texture inside the ear
+(0.0476 vs 0.0452 vs 0.0198). The mask is already sitting ON an edge. So
+every edge-driven repair -- GrabCut, snakes, region growing, matting,
+guided-filter matting -- converges to the edge it can see, which is the
+one SAM already found. That family cannot help, and it is worth not
+spending a day finding out the slow way. Only a shape prior can carry a
+contour through locally ambiguous evidence.
+
+Worth noting from the same run: on CLEAN rows the lobe gap is small --
+lobe points +0.94% outside versus +0.65% mid-chain. The dramatic lobe
+shortfall is concentrated in the harder rows, not uniform.
+
+**Prior art says the same thing, on this exact landmark scheme.** The iBUG
+in-the-wild ear work built the 55-point annotation scheme this project
+uses and compared Constrained Local Models, Supervised Descent Method and
+Active Appearance Models, finding AAMs best. Classical ear SEGMENTATION
+has a separate lineage -- Canny plus longest-edge, circular Hough on the
+helix (which is roughly three-quarters of a circle), Haar cascades, and
+3D shape-model registration to step edges or curvature maps -- all of
+which report high numbers on small lab datasets and are documented as
+failing on occlusion and poor quality, which is precisely our tail. The
+consistent finding across that literature is that the TEXTURE model is
+what makes the shape model work.
+
+**What we built.** A point distribution model from the 10,003 clean
+shapes (`qa_build_pdm.py`): Procrustes-aligned, one handedness, PCA.
+Mode 1 alone is 53.1% of shape variance, **21 modes reach 95%**. The
+median template already sent to Gemini is mode 0 of this; the PDM is the
+same prior with its variability attached, which is what lets a fit deform
+rather than only translate and scale.
+
+Then a Cootes-style ASM (`qa_asm_fit.py`): initialise from SAM 3's mask,
+pull the outer chain to the nearest mask-boundary pixel, pull interior
+points to the strongest sato ridge along their normal, refit pose and
+shape params, clamp b to +-3sd.
+
+| | outer | inner | concha | crus |
+|---|---|---|---|---|
+| ASM, median | 26.9 | 20.4 | **12.7** | 18.7 |
+| ASM, p90 | 68.7 | 39.5 | 26.0 | 38.0 |
+| Gemini shape fit, clean rows | **6.1** | **5.1** | 4.9 | 10.9 |
+
+**It is not competitive yet, and the renders say why.** Where
+initialisation is right the fit is genuinely good -- 4%, 4%, 7% on the
+best rows, tracking the rim closely. Every catastrophic fit is a POSE
+failure, not a shape-model failure: the contour lands rotated off the
+ear's axis. Sweeping 12 initial rotations instead of 2 improved the tail
+(p90 79.3 -> 68.7) and the concha (16.0 -> 12.7) but not the median,
+because the data term cannot SCORE pose: a shape collapsed onto the mask
+boundary scores well whichever way round it is. That is the appearance
+model's job, and this prototype has none -- which is exactly the gap the
+iBUG comparison identifies when it finds AAM beating the alternatives.
+
+**Three bugs worth recording**, each of which made the method look worse
+than it is, and none of which a statistic revealed:
+
+- the PDM is built in ONE handedness and nothing mirrored it per row, so
+  ~44% of ears were fitted with a flipped template;
+- the mean shape was rotated by the mask's axis angle without first
+  measuring the mean's OWN axis;
+- scale came from the square root of the mask covariance eigenvalue,
+  which puts a 24px model on a 100px ear. Fixing that alone took the
+  outer chain from 46.0% to 23.1%.
+
+**Where this leaves the choice.** Fitting shapes to the disputed rows with
+Gemini costs **$12.14** and works today. The ASM is free, offline and
+runs at corpus scale, but needs local appearance profiles learned from
+the 10,003 shapes -- a real implementation, not a parameter tweak -- to
+get from ~23% to anywhere near 6%. Worth doing only if offline
+corpus-scale fitting is wanted for its own sake.
