@@ -262,3 +262,48 @@ little about rim precision on wild ears, as the renders show. Its encoder is
 ImageNet-pretrained, which is a grey area against the commercially-clean
 rule; --scratch trains a fully clean one. CC BY requires crediting SaifulULL
 wherever this model or its outputs are published.
+
+## The bad-annotation rate, measured with SAM 3
+
+SAM 3 changes this number, because the old one was limited by SAM 2.1's
+masks rather than by the annotations. Over the same 1,500 screened rows:
+
+    segmenter   usable masks   rows with >=3 misrouted points   precision
+    SAM 2.1      989 (then 424 after the bloat gate)   2.4%     ~2 in 3
+    SAM 3       1390                                   4.9%     8 of 8
+
+SAM 3's masks come out TIGHTER than the landmark hull on every row (bloat
+0.61-0.90), so the over-segmentation gate never binds and a flag now means
+what it should: the annotation is bigger than the ear. Spot-checking the top
+eight by eye, all eight are genuine.
+
+So the honest rate is ~4.9%, about 412 rows of the 8,427-row train split --
+roughly three times the earlier estimate, which was measuring SAM 2.1.
+
+ONE FAILURE MODE DOMINATES. The annotated contour over-extends past the ear
+into HAIR, and almost always at the top:
+
+    ascending_helix   3.02% of its points >15% off the rim
+    ear_lobe          2.04%
+    descending_helix  1.37%
+    helix             0.14%
+
+The ascending helix is where the ear meets the hairline, and that is where
+the annotations run on. The helix proper, with sky or background behind it,
+is nearly clean. Worth fixing as a class rather than row by row.
+
+## jorge-jrzz, evaluated
+
+Tried on the same rows, in a throwaway venv so the AGPL package never
+entered the mocap env. best_v2 dropped 20.0% of images with interior/outer
+2.17x; best_v4 dropped 42.5% at 1.47x -- both well behind SAM 3's 12.5% and
+3.52x. The renders show why: YOLOv8-seg crops its prototype masks to the
+detection box, so the masks are chopped by hard rectangular edges and carry
+slabs of background. Rejected on quality, independently of the missing
+LICENCE.
+
+Its real value is a pointer: the dataset bundled in it
+(universe.roboflow.com/mutyi/ear-segmentation v3, 434 images) is **MIT**,
+which is a better licence than the CC BY set since it carries no attribution
+obligation. Combine the two for ~1,024 images if the local U-Net is ever
+retrained.
