@@ -2351,3 +2351,204 @@ coverage against the scheme groups is the metric that sees them, and the
 minimum detectable change should be fixed from paired variance before the
 comparison is run, so that a null result can be distinguished from a test
 too weak to see anything.
+
+# v5: auditing the 2D annotations without the model
+
+Everything above judges the landmark model with numbers derived, somewhere
+up the chain, from the landmark model or from annotations it seeded. This
+section is the independent check: does the image itself agree with the
+annotations? Three tools answer it, and they are deliberately not fused --
+their value is that they fail for different reasons.
+
+    scripts/qa_silhouette_sam3.py    ear silhouette -> is the outer contour ON the ear
+    scripts/qa_ridge_cv.py           traced ridges  -> do landmarks sit on real structure
+    scripts/qa_agreement.py          per-image agreement, for triage
+    scripts/qa_find_bad_contours.py  ranks rows by misrouted outer points
+    scripts/README_qa_2d.md          how to run them and how to read them
+
+## The annotations are good: 81% sit on traced image structure
+
+Per-image agreement over 500 rows with the depth channel, and over all
+10,535 rows without it:
+
+    with depth (n=500)   p50 0.48   on structure 81.2%   disagrees 3.0%
+    pure CV  (n=10,535)  p50 0.59   on structure 69.0%   disagrees 3.8%
+
+"On structure" means the landmarks sit closer to a traced ridge than a
+random point inside the ear, by a factor better than 0.70. The pure-CV run
+needs no GPU and takes about 40 s on 24 cores, so it is the default for
+triage; the depth channel is for characterising the rim.
+
+**The 3.8% that disagrees is not bad annotation.** Rendered and looked at:
+ears occluded by hair, by a finger or by a foreground object, near edge-on
+poses, severe motion blur. Agreement tracks the depth channel's own
+confidence (rho -0.48) and NOT ear size in pixels (rho +0.01), so it
+measures image quality. For a model-seeded corpus the honest reading is
+"these rows cannot be verified from pixels", which is also where a seeded
+landmark could be a hallucination with nothing in the image to contradict
+it.
+
+## Which channel sees which part of the ear
+
+Scored as distance from each landmark to the nearest traced structure,
+against random in-hull controls (<1 better, <0.70 traced):
+
+| group | sato base | + CLAHE | DA3 depth |
+|---|---|---|---|
+| descending_inner_helix | 0.55 | 0.66 | **0.31** |
+| inner_helix | 0.79 | 0.76 | **0.39** |
+| helix / descending_helix | 0.67 / 0.62 | 0.80 | **0.42 / 0.39** |
+| antitragus | 0.74 | **0.54** | 1.48 |
+| canal | 0.76 | **0.57** | 1.75 |
+| tragus | 0.79 | **0.63** | 2.01 |
+| superior_crus | 0.55 | **0.46** | 0.69 |
+| concha | 1.05 | 1.03 | 1.04 |
+
+CLAHE before sato is free and strictly better on the interior and worse on
+the rim, so both are run. DA3 depth owns the rim and the inner helix and is
+the worst channel for everything else; it traces on 67% of images and knows
+which -- ear-vs-surround depth separation is 3.45 sd where it works against
+1.21 sd where it fails, so gate on that.
+
+**The concha resists every channel** (1.03 of control at best, over five
+tried). DA3-SMALL renders the ear as a smooth blob with no internal bowl, so
+depth does not see it either. It needs a shape prior, not another filter.
+
+## The bad annotations are real: 4.9%, and one failure mode
+
+Measured against the SAM 3 silhouette, counting outer landmarks more than
+15% of ear height off the rim:
+
+    rows with >=3 misrouted points   4.9%   (~412 of the 8,427 train rows)
+    spot-checked precision           8 of the top 8 genuine
+
+One failure mode dominates. The annotated contour runs past the ear into
+HAIR, at the top:
+
+| group | share of its points >15% off the rim |
+|---|---|
+| **ascending_helix** | **3.02%** |
+| ear_lobe | 2.04% |
+| descending_helix | 1.37% |
+| helix | 0.14% |
+
+The ascending helix is where the ear meets the hairline, and that is where
+the annotations run on; the helix proper, with background behind it, is
+nearly clean. This is fixable as a CLASS rather than row by row.
+
+**This defect is invisible to the agreement metric.** On 200 agreement-worst
+rows against 200 agreement-best, the misrouted-point rate was the same --
+4.84% vs 4.70%. Agreement finds hard IMAGES; this finds wrong LABELS.
+Filtering the corpus on agreement would drop the wrong rows entirely.
+Contour jaggedness does not find it either: a ring routed along the wrong
+curve is perfectly smooth.
+
+## Which segmenter, measured
+
+Same 40 rows, same gates:
+
+| model | gates dropped | interior/outer | what the renders show |
+|---|---|---|---|
+| SAM 2.1 | 30.8% | 3.05x | noisy, fragments, takes hair |
+| **SAM 3** | **12.5%** | **3.52x** | **tight, accurate rim** |
+| U-Net (local) | 5.0% | 3.62x | blobby, misses the rim |
+| Florence-2 | 60.0% | 2.30x | empty or degenerate |
+| jorge-jrzz YOLOv8 | 20.0% | 2.17x | masks cropped to the box, hard rectangular edges |
+
+At scale SAM 3 drops 7.3% of 1,500 rows against SAM 2.1's 32.9%, and its
+masks come out TIGHTER than the landmark hull on every row (bloat
+0.61-0.90), so a flag means what it should.
+
+**Licences, since this corpus has to stay commercially clean.** SAM 2.1 is
+Apache 2.0 for code and weights. SAM 3 is Meta's custom SAM License with
+gated weights -- its text carries NO Llama-style restriction on using
+outputs to train or distil, the grant is royalty-free with no commercial
+bar, and the live restrictions are acceptable-use and no-reverse-engineering.
+Florence-2 is MIT. The local U-Net is torchvision (BSD) on the CC BY 4.0
+Roboflow set, trained locally. jorge-jrzz has NO LICENSE file at all, which
+is the absence of a grant rather than a restrictive licence, plus Ultralytics
+AGPL-3.0 -- though AGPL triggers on distribution or network service, so
+internal use does not trip it. Its one useful contribution is a pointer: the
+dataset bundled in it (mutyi/ear-segmentation v3, 434 images) is MIT.
+
+## Four traps, each of which produced a confident wrong answer
+
+These cost the most time and are the most likely to be repeated.
+
+**1. A dark blob scores like a traced line.** A "shadow" channel -- blurred
+negative intensity above the 85th percentile -- appeared to recover the
+ascending helix from 0.62 to 0.34 and three groups with it. It had found the
+HAIR, which is dark and borders exactly those groups: 83-95% of its hits lay
+outside the landmark hull.
+
+**2. Clipping it to the hull does not fix that**, because the outer groups
+DEFINE the hull and sit on its edge -- measured at 0.04 of the control
+distance. Any broad region touching that edge scores ~0 for them whatever it
+contains. qa_ridge_cv.py now prints that edge distance beside every ratio.
+
+**3. A mask that takes the whole crop passes a covers-the-hull gate
+perfectly.** That is how a batch of "twenty landmarks off the rim" turned
+out to be SAM segmenting the image border. Three gates are needed, not one:
+coverage (under-segmentation), bloat vs hull area (over-segmentation), and
+largest-component share (confetti). With all three, SAM 2.1 fails on 33% of
+images, not the 7% first measured. The headline bad-annotation rate moved
+from 12% to 2.4% to 4.9% purely as a function of this gate -- always quote
+it with the gate.
+
+**4. Gate pass rate measures "produced a plausible blob", not "found the
+rim".** The locally-trained U-Net wins every gate statistic -- 5.0% dropped,
+best interior/outer separation of any model -- and loses badly on the
+renders, swallowing an eye and a slab of background on one row. Do not pick
+a segmenter on these numbers without drawing the masks.
+
+The common thread: every one of the four was caught by RENDERING and
+looking, and none of them by any statistic. Several were cases where every
+number agreed with every other number and all of them were wrong. The
+converse also holds and is worth stating -- when the renders of
+exposure-corrected dark crops made the helix ring look plainly inflated onto
+the background, the measurement said the opposite and the measurement was
+right. A render answers "is this channel tracing hair or anatomy", which is
+a blob-vs-line question statistics cannot see. It does not answer "is this
+landmark a few pixels out". Pick the tool to the size of the claim.
+
+## Dropping rows: measured before training anything
+
+| filter | train rows | % |
+|---|---|---|
+| agreement > 1.0 (hard images) | 321 | 3.81% |
+| contour jaggedness, top 5% | 435 | 5.16% |
+| BOTH of the above | 39 | 0.46% |
+| **misrouted contour, SAM 3** | **~412** | **4.9%** |
+
+The first three are the wrong criterion: agreement selects hard images whose
+labels are fine, and jaggedness cannot see a smooth ring on the wrong curve.
+Their intersection, 39 rows, is the only set those two agree is mislabelled,
+and 0.46% cannot move a model.
+
+The SAM 3 contour criterion is the right one and is ten times larger. If the
+drop experiment is run it needs THREE arms -- full, drop-worst-N, and
+drop-RANDOM-N of the same size -- because without the random arm "dropped
+bad data" is confounded with "dropped data", and val/test must stay
+unfiltered or the improvement is manufactured.
+
+## Infrastructure notes worth keeping
+
+**Letterbox padding.** 45.6% of data/manual images carry >5% constant-valued
+padding and 26.8% carry >15%. A flat pad meets the photo at a perfectly
+straight, perfectly sharp edge -- the strongest ridge in the frame -- so the
+filters traced the LETTERBOX and counted it as structure.
+`qa_common.padding_mask` removes it. Correcting it moved the corpus numbers
+almost not at all (median 0.47 -> 0.48) because the pad lies outside the
+landmark hull; it is kept for being correct, not for this result.
+
+**DA3 in .venv_da3** lacks libnvrtc-builtins.so.13.0, so the second
+inference in a process dies with an nvrtc JIT error. Nothing needs
+installing: `exrcise_trainer/.venv_cu130/.../nvidia/cu13/lib` already carries
+that exact library, so putting it on LD_LIBRARY_PATH runs a whole batch in
+one process instead of one image per process.
+
+**Florence-2 loading**, if anyone retries it: use
+`florence-community/Florence-2-large`, NOT `microsoft/Florence-2-large`
+(whose remote-code layout has no image_token and raises in the native
+processor), and the class is `Florence2ForConditionalGeneration`, not
+`AutoModelForCausalLM`.
