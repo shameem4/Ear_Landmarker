@@ -3837,3 +3837,70 @@ correction, the landmarker shares the convention, and Gemini and the ASM
 sit at a 5-6% floor, coarser than the effect being judged. Establishing
 whether these corrections are right needs an instrument outside the
 corpus -- the 3D wrap, or a human.
+
+## The corrected outer chain, and the clash review that found it damaged
+
+The silhouette correction was applied to all 6,107 gated rows and written
+as a separate array, `data/manual/landmarks_sil_corrected.npy`. Nothing in
+`data/manual` was modified: `train.py` already takes `--landmarks`, so a
+corrected run differs from a baseline run only in points 0-19 on those
+rows. Points 20-54 and all 4,428 non-gated rows are asserted identical.
+
+**12.8% of outer points moved; 2,243 rows (37%) were left completely
+alone**, which is the corrector doing what it was built to do -- the
+2% tolerance means an already-correct row is not jittered.
+
+### The review: inner-helix clearance
+
+The outer correction moves the rim and leaves the inner helix where it
+was, so the inner helix is an **untouched witness** to whether the new rim
+is plausible. Clearance = signed distance from each inner-helix point
+(20-34) to the outer polyline, % of ear height, with a reference
+distribution built per index from the original annotations.
+
+**First version of this metric was wrong and the render caught it.** It
+closed the outer chain into a polygon. The chain is OPEN -- 0 at the
+tragus round the rim to 19 at the lobe -- so closing it draws a chord
+across the front of the ear, and point 20 (the crus) sits on that chord.
+It scored 14.8% of the ORIGINAL annotations as "inner helix outside the
+ear". That was the chord. With an open polyline and a sign taken from the
+local inward normal, the original corpus has **3 crossings, not 904**.
+
+| | crossing | too close (z<=-3) | too far (z>=+3) |
+|---|---|---|---|
+| original annotation | 3 (0.0%) | 18 (0.3%) | 459 (7.5%) |
+| after correction | 90 (1.5%) | 616 (10.1%) | 299 (4.9%) |
+
+144 rows had an anomaly the correction FIXED. **669 rows have one the
+correction CAUSED** -- 11% of the gated set, against 0% harmed in the
+synthetic test. The synthetic test corrupted the annotation and left the
+mask perfect; on real rows the mask is the thing that is wrong.
+
+### What the renders show, by category
+
+**crossing (90)** -- correction blow-ups, not GT defects. The corrected
+chain detours across the ear or bulges past the lobe. Cause: the
+correspondence maps an OPEN 20-point chain onto the CLOSED mask boundary
+loop, and the monotone unwrap can traverse the wrong way round, including
+across the mask's front edge where the chain has no business being.
+
+**too close (616)** -- the known systematic, inside the gate. The rim at
+the top of the helix is under hair; SAM stops at the visible rim; the
+correction pulls the rim down onto the inner helix. `covered >= 0.85` does
+not exclude this, because the occlusion is a thin band along one arc and
+costs little coverage.
+
+**too far (299)** -- mostly near-frontal, foreshortened ears where the
+inner helix genuinely sits far from the rim, plus statues and high
+contrast art. Partly a pose detector, partly the contamination with no
+other detector.
+
+### What this changes
+
+The clash metric is the referee the previous section said did not exist.
+It is not out-of-corpus truth, but it is an independent CONSISTENCY
+constraint: the inner helix was not touched by the correction, so it can
+witness the corrected rim without sharing its evidence. On that witness
+the corrector is **not safe unsupervised at the current settings**.
+
+The corrected array stands as built, flagged, and not yet trained on.
