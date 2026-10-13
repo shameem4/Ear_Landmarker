@@ -19,7 +19,7 @@ WrapCmd computes under the trial licence -- the "License state: Inactive" line
 refers to maintenance, not to whether it runs.
 
     python scripts/wrap_batch_faceform.py --fits corpus/wrapped3_hutubs \\
-        --scans corpus/ears3_hutubs --out batch/ --base ear_wrap_pp12_left.wrap
+        --scans corpus/ears4_hutubs --out batch/ --base ear_wrap_pp12_left.wrap
 """
 import argparse
 import json

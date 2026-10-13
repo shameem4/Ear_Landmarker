@@ -225,7 +225,7 @@ def accuracy(V, F, Vs, Fs):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--fits", default=str(WRAP / "corpus/wrapped3_hutubs"))
-    p.add_argument("--scans", default=str(WRAP / "corpus/ears3_hutubs"))
+    p.add_argument("--scans", default=str(WRAP / "corpus/ears4_hutubs"))
     p.add_argument("--fits2", default=str(WRAP / "corpus/wrapped3_sonicom"))
     p.add_argument("--scans2", default=str(WRAP / "corpus/ears3_sonicom"))
     p.add_argument("--template", default=str(WRAP / "templates/ear_L_template.obj"))

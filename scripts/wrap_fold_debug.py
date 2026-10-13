@@ -78,6 +78,10 @@ def main():
     p.add_argument("--ears", nargs="+", required=True)
     p.add_argument("--template", default=str(WRAP/"templates/ear_L_template.obj"))
     p.add_argument("--base", default=str(WRAP/"ear_wrap_pp12_left.wrap"))
+    # corpus/adaptive_v1 held the ladder's PER-RUNG outputs (1,428 objs for
+    # 478 ears) and was deleted in the Oct 2026 cleanup; the picked winners
+    # live in corpus/escalated_v1, but this tool reads adaptive.json and
+    # needs the per-rung set, so re-run wrap_refit_adaptive.py to use it.
     p.add_argument("--fits", default=str(WRAP/"corpus/adaptive_v1"))
     p.add_argument("--out", default=str(WRAP/"debug_folds"))
     p.add_argument("--points", type=int, default=14)
@@ -85,7 +89,7 @@ def main():
     a = p.parse_args()
 
     import trimesh
-    SCANS = {"pp": WRAP/"corpus/ears3_hutubs", "P": WRAP/"corpus/ears3_sonicom"}
+    SCANS = {"pp": WRAP/"corpus/ears4_hutubs", "P": WRAP/"corpus/ears3_sonicom"}
     OURS  = {"pp": WRAP/"corpus/wrapped3_hutubs", "P": WRAP/"corpus/wrapped3_sonicom"}
     Vt, Ft = load_mesh(a.template)
     Fk = trim1(Ft)

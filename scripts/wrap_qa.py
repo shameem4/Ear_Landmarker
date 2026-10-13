@@ -24,8 +24,9 @@ surface pleats. The scan is not creased there -- median dihedral 1.0 degrees,
 nothing past 90 -- so a dihedral spike in the FIT with no matching ridge in
 the SCAN is the signature, and `--scan` checks exactly that.
 
-    python scripts/wrap_qa.py --fits corpus/adaptive_v1 --scans corpus/ears3_hutubs
-    python scripts/wrap_qa.py --fits corpus/adaptive_v1 --baseline   # set thresholds
+    python scripts/wrap_qa.py --fits corpus/escalated_v1/hutubs \
+        --scans corpus/ears4_hutubs
+    python scripts/wrap_qa.py --fits corpus/escalated_v1/hutubs --baseline
 """
 import argparse
 import collections
