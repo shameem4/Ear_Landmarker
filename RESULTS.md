@@ -3303,3 +3303,47 @@ its own training data.
 What is still NOT established, and would need a different instrument: the
 rate of errors between 2% and 15% of ear height. Every method tried this
 session is blind there.
+
+
+## Web demo refreshed onto the 256 px detector
+
+`docs/` now carries BlazeEar's 2026-10 export: `BlazeEar_web.onnx` at
+256x256 (was 128) and the matching `blazeear_inference.js`.
+`BlazeFace_web.onnx` was not copied -- it is byte-identical (md5
+ba452736) because stage one is still MediaPipe's 128 px front model.
+
+**The two files must move together.** The old JS hardcoded
+`numAnchors = 896`, the anchor count at 128 px; the 256 px graph emits
+3584. Swapping only the ONNX leaves the loop reading the top fourteen
+rows of the anchor grid, returning low-confidence boxes from anchors that
+do not cover the subject. It throws nothing and all 467 Python tests pass,
+so only running the real graph in a browser shows it.
+
+Measured in-browser (wasm EP, 4 full-face images, old and new on the same
+page so warmup is shared):
+
+| arm | detections | confidence | ms/frame |
+|---|---|---|---|
+| old 128 px | 1 / 1 / 2 / 1 | 0.983 0.968 0.907/0.888 0.978 | 121-201 |
+| new 256 px, 1 view | 1 / 1 / 2 / 1 | **0.999 0.998 0.942/0.918** 0.974 | 121-227 |
+| new 256 px, 4 views | 1 / 1 / 2 / 1 | 0.999 0.998 0.951/0.935 0.974 | 265-698 |
+
+Same ears, higher confidence, **no latency cost** -- 4x the input pixels
+is free here because stage two runs on a face crop, not the frame. A first
+pass that showed the new graph as *faster* was warmup: `old` had run
+first and absorbed the WASM compile. Reversing the order removed the
+effect, which is the only reason the table says "no cost" rather than "a
+gain".
+
+**TTA is off in the demo.** The refreshed detector defaults to
+`views: 4`, four ear-model passes per face, worth +0.047 mAP@0.5 upstream.
+Here it bought +0.01 confidence and not one extra detection for 1.7-3.5x
+the latency, which is the wrong trade in a `requestAnimationFrame` loop,
+so `EarLandmarkerPipeline` asks for `views: 1` and exposes
+`detectorViews` for callers doing still images.
+
+Two things deliberately NOT changed: the demo's 0.70 confidence threshold
+(upstream's single-view default is now 0.80, and moving it is a
+detection-quality change that wants measuring, not a refresh), and the
+Python path, which already reads the 256 px checkpoint through
+`DETECTOR_WEIGHTS` and needs no copy step.

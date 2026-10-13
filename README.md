@@ -9,7 +9,7 @@ Real-time 55-point ear landmark regression using a BlazeBlock backbone (FaceMesh
 ## Pipeline
 
 ```
-Webcam/Image -> BlazeFace (128x128) -> face crop (1.5x) -> BlazeEar (128x128)
+Webcam/Image -> BlazeFace (128x128) -> face crop (1.5x) -> BlazeEar (256x256)
              -> ROI crop -> EarLandmarker (192x192) -> 55 landmarks
 ```
 
@@ -356,6 +356,16 @@ pipeline. After updating it:
 ```bash
 cp ../BlazeEar/docs/BlazeEar_web.onnx ../BlazeEar/docs/BlazeFace_web.onnx docs/
 cp ../BlazeEar/docs/blazeear_inference.js docs/
+```
+
+**Copy the graph and its JS together, always.** The pre-2026-10 JS hardcoded
+`numAnchors = 896`, the anchor count at a 128 px input. The ear graph is now
+256 px and emits 3584, so an ONNX refreshed on its own leaves the loop reading
+the top fourteen rows of the anchor grid and quietly returning low-confidence
+boxes from anchors that do not cover the subject. Nothing throws, and every
+Python test still passes.
+
+```bash
 python -m pytest tests/ -q
 ```
 

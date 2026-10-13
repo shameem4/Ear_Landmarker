@@ -40,7 +40,10 @@ const LINESTRIP_GROUPS = [
     { name: 'superior crus', start: 50, end: 55, color: '#FF0080' },
 ];
 
-const DETECTOR_INPUT_SIZE = 128;
+// No DETECTOR_INPUT_SIZE here. It sat at 128, was never read, and the ear
+// graph now runs at 256 -- a stale copy of a number owned by
+// blazeear_inference.js, which carries one edge per graph (ear 256,
+// face 128) because the two no longer agree.
 const LANDMARKER_INPUT_SIZE = 192;
 const ROI_EXPAND = 1.3;
 
@@ -83,10 +86,16 @@ class EarLandmarkerPipeline {
      * @param {Object} options
      * @param {number} options.confidenceThreshold - Detection confidence (default: 0.70)
      * @param {number} options.iouThreshold - NMS IoU threshold (default: 0.3)
+     * @param {number} options.detectorViews - Detector TTA views (default: 1)
      */
     constructor(options = {}) {
+        // 0.70 predates the 256 px detector, whose own single-view default is
+        // 0.80. Kept, not silently raised: it is the threshold this demo's
+        // behaviour and fixtures were set against, and moving it is a
+        // detection-quality change that wants measuring, not a refresh.
         this.confidenceThreshold = options.confidenceThreshold ?? 0.70;
         this.iouThreshold = options.iouThreshold ?? 0.3;
+        this.detectorViews = options.detectorViews ?? 1;
         // Suppress a box whose overlap covers this much of the SMALLER box.
         // Calibrated on 104 duplicate pairs logged from a live webcam run: they
         // measured IoU 0.19-0.30 and IoMin 0.39-0.59, i.e. they sat just under
@@ -136,9 +145,15 @@ class EarLandmarkerPipeline {
      * Detection is two-stage as of BlazeEar v2, so it takes a face graph as
      * well: BlazeFace locates the head, the ear model runs on a square crop
      * around it. On 500 annotated full scenes that lifts ear recall at
-     * IoU>=0.3 from 47.6% to 78.6%, because a full frame squeezed into 128x128
-     * leaves the median ear about 14 pixels across, and cropping first makes
-     * it 32.
+     * IoU>=0.3 from 47.6% to 78.6%, because a full frame squeezed into the
+     * detector's input leaves the median ear about 14 pixels across, and
+     * cropping first makes it 32.
+     *
+     * The ear graph is 256x256 as of this refresh (the face graph stays at
+     * MediaPipe's 128). Both files must come from the same BlazeEar export:
+     * the old inference JS hardcoded 896 anchors, and the 256 px graph emits
+     * 3584, so an ONNX swapped in on its own reads the top fourteen rows of
+     * the anchor grid and silently returns junk boxes without throwing.
      *
      * @param {string} facePath - Path to BlazeFace_web.onnx
      * @param {string} detectorPath - Path to BlazeEar_web.onnx (crop-trained)
@@ -164,6 +179,13 @@ class EarLandmarkerPipeline {
             createTwoStageDetector(facePath, detectorPath, {
                 confidenceThreshold: this.confidenceThreshold,
                 iouThreshold: this.iouThreshold,
+                // The refreshed detector defaults to 4-view TTA, which is four
+                // ear-model passes per face. That is the right default for a
+                // batch job and the wrong one for a webcam loop, so this demo
+                // asks for one view unless the caller says otherwise. Upstream
+                // measured the other three at +0.047 mAP@0.5; set views: 4 to
+                // spend that on still images.
+                views: this.detectorViews,
             }, opts),
             ort.InferenceSession.create(landmarkerPath, opts),
         ]);

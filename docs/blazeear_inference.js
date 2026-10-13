@@ -24,6 +24,24 @@
 const ort = (typeof window !== 'undefined' && window.ort) || 
             (typeof globalThis !== 'undefined' && globalThis.ort) ||
             (typeof require !== 'undefined' ? require('onnxruntime-web') : null);
+// Deployed score thresholds, mirroring utils/config.DETECTION_SCORE_THRESHOLD
+// and TTA_SCORE_THRESHOLD; see that file for the measured sweep. Fusion takes
+// a cluster's best member score, so it shifts the whole distribution up and
+// the fused path needs its own, higher threshold. Running TTA at the plain
+// threshold was a measured regression on F1 against no TTA at all, which is
+// what this page shipped.
+// Model input edges, mirroring utils/config.DEFAULT_INPUT_SIZE and
+// FACE_INPUT_SIZE. The two graphs no longer agree: the face graph is
+// MediaPipe's 128 px front model, the ear graph runs at 256. Preprocessing
+// still letterboxes through a 256 square first, matching
+// utils.preprocess.resize_pad's intermediate_size, so for the ear model the
+// second resize is a no-op rather than a downsample.
+const EAR_INPUT_SIZE = 256;
+const FACE_INPUT_SIZE = 128;
+const INTERMEDIATE_SIZE = 256;
+
+const SCORE_THRESHOLD = 0.80;
+const TTA_SCORE_THRESHOLD = 0.85;
 
 /**
  * BlazeEar Ear Detection Pipeline
@@ -42,11 +60,13 @@ class BlazeEarInference {
      *
      * Create a BlazeEar detector instance
      * @param {Object} options - Configuration options
-     * @param {number} options.confidenceThreshold - Minimum confidence for detections (default: 0.70)
+     * @param {number} options.confidenceThreshold - Minimum confidence for detections (default: 0.80)
      * @param {number} options.iouThreshold - IoU threshold for NMS (default: 0.3)
+     * @param {number} options.inputSize - Model input edge (default: 256,
+     *     the ear graph; the face graph is 128)
      */
     constructor(options = {}) {
-        this.confidenceThreshold = options.confidenceThreshold ?? 0.70;
+        this.confidenceThreshold = options.confidenceThreshold ?? SCORE_THRESHOLD;
         this.iouThreshold = options.iouThreshold ?? 0.3;
         // Geometric filter, off by default to match the Python paths. With the
         // previous bounds it rejected 25.86% of real ears, and it ran only here
@@ -58,7 +78,7 @@ class BlazeEarInference {
         this.maxAspectRatio = options.maxAspectRatio ?? 2.57;
         this.minSizeFrac = options.minSizeFrac ?? 0.022;
         this.maxSizeFrac = options.maxSizeFrac ?? 0.733;
-        this.inputSize = 128;
+        this.inputSize = options.inputSize ?? EAR_INPUT_SIZE;
         this.session = null;
         this.isLoaded = false;
     }
@@ -111,24 +131,26 @@ class BlazeEarInference {
         const { imageData, width, height } = this._getImageData(source);
         
         // Calculate preprocessing parameters
+        const side = this.inputSize;
+        const mid = INTERMEDIATE_SIZE;
         const maxDim = Math.max(height, width);
-        const scale = maxDim / 256.0;
+        const scale = maxDim / mid;
         const newH = Math.round(height / scale);
         const newW = Math.round(width / scale);
-        const padH = 256 - newH;
-        const padW = 256 - newW;
+        const padH = mid - newH;
+        const padW = mid - newW;
         const padH1 = Math.floor(padH / 2);
         const padW1 = Math.floor(padW / 2);
         const padY = padH1 * scale;
         const padX = padW1 * scale;
 
-        // Create 256x256 canvas for resize + pad
+        // Intermediate square canvas for resize + pad
         const canvas256 = document.createElement('canvas');
-        canvas256.width = 256;
-        canvas256.height = 256;
+        canvas256.width = mid;
+        canvas256.height = mid;
         const ctx256 = canvas256.getContext('2d');
         ctx256.fillStyle = 'black';
-        ctx256.fillRect(0, 0, 256, 256);
+        ctx256.fillRect(0, 0, mid, mid);
 
         // Draw resized image centered
         if (source instanceof ImageData) {
@@ -142,32 +164,29 @@ class BlazeEarInference {
             ctx256.drawImage(source, padW1, padH1, newW, newH);
         }
 
-        // Create 128x128 canvas for final resize
+        // Final canvas at the model's own input edge. At 256 this is a copy
+        // of the intermediate, which is what resize_pad does in Python too.
         const canvas128 = document.createElement('canvas');
-        canvas128.width = 128;
-        canvas128.height = 128;
+        canvas128.width = side;
+        canvas128.height = side;
         const ctx128 = canvas128.getContext('2d');
-        ctx128.drawImage(canvas256, 0, 0, 128, 128);
+        ctx128.drawImage(canvas256, 0, 0, side, side);
 
         // Get pixel data and convert to CHW float32 tensor
-        const imgData = ctx128.getContext ? 
-            ctx128.getImageData(0, 0, 128, 128) :
-            canvas128.getContext('2d').getImageData(0, 0, 128, 128);
-        
+        const imgData = ctx128.getImageData(0, 0, side, side);
+
         const pixels = imgData.data;
-        const tensorData = new Float32Array(3 * 128 * 128);
+        const plane = side * side;
+        const tensorData = new Float32Array(3 * plane);
 
         // Convert RGBA to RGB CHW format (keep in [0, 255] range for the model)
-        for (let y = 0; y < 128; y++) {
-            for (let x = 0; x < 128; x++) {
-                const srcIdx = (y * 128 + x) * 4;
-                const r = pixels[srcIdx];
-                const g = pixels[srcIdx + 1];
-                const b = pixels[srcIdx + 2];
-
-                tensorData[0 * 128 * 128 + y * 128 + x] = r;
-                tensorData[1 * 128 * 128 + y * 128 + x] = g;
-                tensorData[2 * 128 * 128 + y * 128 + x] = b;
+        for (let y = 0; y < side; y++) {
+            for (let x = 0; x < side; x++) {
+                const srcIdx = (y * side + x) * 4;
+                const dstIdx = y * side + x;
+                tensorData[dstIdx] = pixels[srcIdx];
+                tensorData[plane + dstIdx] = pixels[srcIdx + 1];
+                tensorData[2 * plane + dstIdx] = pixels[srcIdx + 2];
             }
         }
 
@@ -235,7 +254,8 @@ class BlazeEarInference {
         const { tensorData, scale, padY, padX, originalWidth, originalHeight } = this.preprocess(source);
 
         // Create input tensor
-        const imageTensor = new ort.Tensor('float32', tensorData, [1, 3, 128, 128]);
+        const imageTensor = new ort.Tensor('float32', tensorData,
+            [1, 3, this.inputSize, this.inputSize]);
 
         const results = await this.session.run({
             'image': imageTensor,
@@ -244,7 +264,7 @@ class BlazeEarInference {
             'pad_x': new ort.Tensor('float32', [padX], [])
         });
 
-        // The graph returns all 896 decoded boxes; thresholding and NMS happen
+        // The graph returns every decoded box; thresholding and NMS happen
         // here, because TopK and NMS emit int64 and ONNX Runtime Web rejects it.
         return this._processWebModelOutput(
             results.boxes.data,
@@ -259,7 +279,14 @@ class BlazeEarInference {
      * @private
      */
     _processWebModelOutput(boxesData, scoresData, originalWidth, originalHeight) {
-        const numAnchors = 896;
+        // Taken from the output, never assumed. This was hardcoded to 896, the
+        // anchor count at a 128 px input. At 256 the graph emits 3584, so the
+        // loop read only the first 896 -- the top fourteen rows of the grid --
+        // and silently returned low-confidence boxes from anchors that do not
+        // cover the subject. Nothing threw: the tensor is simply longer than
+        // the loop. Every Python test passed; only running the real graph
+        // showed it.
+        const numAnchors = scoresData.length;
         const candidates = [];
 
         // Filter by confidence threshold
@@ -424,6 +451,27 @@ class BlazeEarInference {
 
 
 /**
+ * Test-time augmentation views, as (expand, flip) pairs.
+ *
+ * One ear is detected through several nuisance-perturbed crops and the
+ * agreeing boxes are fused. The ear never moved, so the spread between those
+ * detections is the model's own noise, and fusing cancels part of it.
+ *
+ * MUST stay in step with VIEWS in utils/tta.py; the two lists are pinned
+ * against each other by utils/tests/tests/test_tta.py::TestViewsMatchJs.
+ * The default view is first, so views=1 is exactly the pipeline without TTA.
+ */
+const TTA_VIEWS = [
+    [1.50, false],
+    [1.50, true],
+    [1.35, false],
+    [1.65, false],
+];
+
+const FUSION_IOU_THRESHOLD = 0.5;
+
+
+/**
  * The two-stage pipeline: MediaPipe BlazeFace on the full frame, then the ear
  * model on a square crop around each detected face.
  *
@@ -447,16 +495,24 @@ class BlazeEarInference {
 class BlazeEarTwoStage {
     constructor(options = {}) {
         this.expand = options.expand ?? 1.5;
+        // How many of TTA_VIEWS to run. 1 is the single-crop pipeline; 4 was
+        // measured at +0.047 mAP@0.5 for 4x the ear-model passes.
+        this.views = Math.max(1, Math.min(options.views ?? 4, TTA_VIEWS.length));
         this.faceThreshold = options.faceThreshold ?? 0.2;
         this.maxFaces = options.maxFaces ?? 8;
         this.iouThreshold = options.iouThreshold ?? 0.3;
+        // The two graphs have different input edges, so each stage carries
+        // its own: MediaPipe's face weights are 128 px, the ear model is 256.
         this.face = new BlazeEarInference({
             confidenceThreshold: this.faceThreshold,
             iouThreshold: this.iouThreshold,
+            inputSize: FACE_INPUT_SIZE,
         });
         this.ear = new BlazeEarInference({
-            confidenceThreshold: options.confidenceThreshold ?? 0.70,
+            confidenceThreshold: options.confidenceThreshold
+                ?? (this.views > 1 ? TTA_SCORE_THRESHOLD : SCORE_THRESHOLD),
             iouThreshold: this.iouThreshold,
+            inputSize: EAR_INPUT_SIZE,
         });
         this.isLoaded = false;
     }
@@ -485,13 +541,13 @@ class BlazeEarTwoStage {
      * utils/tests/tests/test_face_crops.py::TestCropWindowIsPinned; both
      * implementations were checked against all of them.
      */
-    _cropWindow(face, frameWidth, frameHeight) {
+    _cropWindow(face, frameWidth, frameHeight, expand = this.expand) {
         const faceW = face.xmax - face.xmin;
         const faceH = face.ymax - face.ymin;
         // Clamp the side first so the window stays square wherever the frame
         // allows it, then shift the centre to keep it inside.
         const side = Math.min(
-            this.expand * Math.max(faceW, faceH), frameWidth, frameHeight);
+            expand * Math.max(faceW, faceH), frameWidth, frameHeight);
         const cx = (face.xmin + face.xmax) / 2;
         const cy = (face.ymin + face.ymax) / 2;
         const x0 = Math.round(Math.min(Math.max(cx - side / 2, 0), frameWidth - side));
@@ -518,29 +574,91 @@ class BlazeEarTwoStage {
         const ctx = canvas.getContext('2d');
         const collected = [];
 
-        for (const face of faces.slice(0, this.maxFaces)) {
-            const { x0, y0, side } = this._cropWindow(face, width, height);
-            if (side < 2) continue;
-            canvas.width = side;
-            canvas.height = side;
-            ctx.clearRect(0, 0, side, side);
-            ctx.drawImage(source, x0, y0, side, side, 0, 0, side, side);
+        for (const [viewExpand, flip] of TTA_VIEWS.slice(0, this.views)) {
+            for (const face of faces.slice(0, this.maxFaces)) {
+                const { x0, y0, side } = this._cropWindow(
+                    face, width, height, viewExpand);
+                if (side < 2) continue;
+                canvas.width = side;
+                canvas.height = side;
+                ctx.clearRect(0, 0, side, side);
+                if (flip) {
+                    // Mirror about the crop's own centre line.
+                    ctx.save();
+                    ctx.translate(side, 0);
+                    ctx.scale(-1, 1);
+                    ctx.drawImage(source, x0, y0, side, side, 0, 0, side, side);
+                    ctx.restore();
+                } else {
+                    ctx.drawImage(source, x0, y0, side, side, 0, 0, side, side);
+                }
 
-            for (const ear of await this.ear.detect(canvas)) {
-                // Crop coordinates back into the original frame.
-                collected.push({
-                    ...ear,
-                    xmin: ear.xmin + x0, xmax: ear.xmax + x0,
-                    ymin: ear.ymin + y0, ymax: ear.ymax + y0,
-                });
+                for (const ear of await this.ear.detect(canvas)) {
+                    // Undo the mirror, then crop coordinates back into the frame.
+                    const xmin = flip ? side - ear.xmax : ear.xmin;
+                    const xmax = flip ? side - ear.xmin : ear.xmax;
+                    collected.push({
+                        ...ear,
+                        xmin: xmin + x0, xmax: xmax + x0,
+                        ymin: ear.ymin + y0, ymax: ear.ymax + y0,
+                    });
+                }
             }
         }
 
-        // Overlapping face crops can each report the same ear.
-        const merged = this.ear._nms(
-            collected.sort((a, b) => b.confidence - a.confidence),
-            this.iouThreshold);
+        // Overlapping face crops -- and, with TTA, overlapping views -- can each
+        // report the same ear.
+        const merged = this._mergeViews(collected);
         return Object.assign(merged, { faceCount: faces.length });
+    }
+
+    /**
+     * Fuse detections of the same ear into one box.
+     *
+     * Clusters greedily from the highest-scoring detection down; a cluster
+     * becomes the score-weighted mean of its members and takes their HIGHEST
+     * score. Fusion clusters at a looser overlap than the pipeline's NMS, so
+     * the fused set goes through NMS afterwards too -- without that, more
+     * views just means more boxes (measured: 7 / 12 / 17 detections for
+     * 1 / 2 / 4 views on a two-face image). This duplicates merge_views() in utils/tta.py with rule='max',
+     * and the two must agree or the browser reports different boxes from
+     * everything that was measured. Taking sum/viewCount instead was tried and
+     * is worse -- see the note in utils/tta.py.
+     */
+    _mergeViews(detections, iouThreshold = FUSION_IOU_THRESHOLD) {
+        const sorted = detections.slice().sort((a, b) => b.confidence - a.confidence);
+        const used = new Array(sorted.length).fill(false);
+        const fused = [];
+        for (let i = 0; i < sorted.length; i++) {
+            if (used[i]) continue;
+            const members = [];
+            for (let j = i; j < sorted.length; j++) {
+                if (!used[j] && this.ear._computeIoU(sorted[i], sorted[j]) >= iouThreshold) {
+                    used[j] = true;
+                    members.push(sorted[j]);
+                }
+            }
+            let wsum = 0, ymin = 0, xmin = 0, ymax = 0, xmax = 0, best = 0;
+            for (const m of members) {
+                const w = m.confidence;
+                wsum += w;
+                ymin += m.ymin * w; xmin += m.xmin * w;
+                ymax += m.ymax * w; xmax += m.xmax * w;
+                if (m.confidence > best) best = m.confidence;
+            }
+            const box = {
+                ymin: ymin / wsum, xmin: xmin / wsum,
+                ymax: ymax / wsum, xmax: xmax / wsum,
+            };
+            fused.push({
+                ...box,
+                x: box.xmin, y: box.ymin,
+                width: box.xmax - box.xmin, height: box.ymax - box.ymin,
+                confidence: best,
+            });
+        }
+        return this.ear._nms(
+            fused.sort((a, b) => b.confidence - a.confidence), this.iouThreshold);
     }
 
     drawDetections(ctx, detections, options = {}) {

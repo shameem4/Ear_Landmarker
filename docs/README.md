@@ -36,7 +36,7 @@ The demo loads two ONNX models:
 | Model | Input | Output | Purpose |
 |-------|-------|--------|---------|
 | `BlazeFace_web.onnx` | (1, 3, 128, 128) + scale/pad | boxes (N, 4) + scores (N,) | Face detection (stage 1) |
-| `BlazeEar_web.onnx` | (1, 3, 128, 128) + scale/pad | boxes (N, 4) + scores (N,) | Ear detection on the face crop (stage 2) |
+| `BlazeEar_web.onnx` | (1, 3, 256, 256) + scale/pad | boxes (N, 4) + scores (N,) | Ear detection on the face crop (stage 2) |
 | `EarLandmarker_web.onnx` | (1, 3, 192, 192) | landmarks (1, 55, 2) + confidence (1, 55) | Landmark prediction |
 
 Pipeline: BlazeEar detection -> NMS -> box smoothing -> ROI crop -> EarLandmarker
