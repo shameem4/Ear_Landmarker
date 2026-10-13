@@ -2457,18 +2457,31 @@ descending_helix 1.68%, helix 0.09%.
 
 The middle of the chain is the helix proper, which has sky or background
 behind it and is essentially never wrong -- 1 row in 5,000 at point 12. The
-two ENDS are where the ear meets hair and the side of the head, where there
-is no crisp anatomical stop, and that is where the contour runs on. This is
-a SCHEME problem as much as an annotation problem: points 0 and 19 have no
-well-defined place to terminate, so there is nothing for an annotator or a
-seeding model to agree with.
+two ENDS are where the ear meets hair and the side of the head, and that is
+where the contour runs on.
+
+**This was first written up as a SCHEME problem -- that points 0 and 19 have
+no well-defined place to terminate -- and that is WRONG.** Rendering twelve
+random CLEAN rows cropped to the ear settles it: point 0 sits at the
+top-front where the helix meets the temple and point 19 at the bottom-front
+where the lobe meets the cheek, in the same place every time, with the chain
+an open rim stopping at the ear/face junction on both ends. The convention
+exists and 94.6% of the corpus follows it.
+
+What fails is EXECUTION, not definition. Those two spots are where the ear
+meets skin and hair at low contrast, so they are the hardest points in the
+chain to localise -- and the easiest to let drift outward. That is better
+news than a scheme defect, because it means the fix is to snap the drifting
+endpoints back to a convention the corpus already demonstrates, rather than
+to invent one and re-annotate against it.
 
 At the extreme tail the whole contour goes, not just the ends -- the worst
 six rows have a correctly-shaped ear outline sitting well outside the ear.
 But those are the tail; the typical flagged row is the ends drifting.
 
-Fixable as a CLASS rather than row by row: define where the contour
-terminates, then re-derive, rather than re-annotating 532 rows by hand.
+Fixable as a CLASS rather than row by row: learn the endpoint convention
+from the clean majority and re-derive the drifters against it, rather than
+re-annotating 532 rows by hand.
 
 **This defect is invisible to the agreement metric.** On 200 agreement-worst
 rows against 200 agreement-best, the misrouted-point rate was the same --
