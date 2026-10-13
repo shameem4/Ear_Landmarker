@@ -3487,3 +3487,65 @@ runs through the occluder, SAM stops at it.
 standing directive is render first and let statistics support. Both wrong
 turns here came from trusting a metric whose resolution was never checked
 against a picture.
+
+## Scoping SAM 3 to the ears it is entitled to judge: a ~1% instrument
+
+SAM cannot audit this corpus because it delineates visible ear while the
+annotation runs through hair. That is a statement about WHICH ROWS it can
+be asked about, not about the instrument. On rows with no occluder its
+deficit is a pure rind -- 0.0% deep intrusion, 91% coverage, measured --
+so there its boundary IS the rim.
+
+`qa_gate.py` selects those rows from IMAGE and INSTRUMENT properties only,
+never from the GT, since gating on GT irregularity and then judging the GT
+would be circular:
+
+| gate | rows kept |
+|---|---|
+| has a SAM mask | 9,843 |
+| covered >= 0.85 (occlusion-free) | 6,617 |
+| bloat in [0.7, 1.6] | 9,249 |
+| ear >= 48px | 9,843 |
+| in focus (top 90% of scale-free Laplacian variance) | 8,858 |
+| **all of them: "proper ears"** | **6,107 (58% of corpus)** |
+
+The occlusion gate is calibrated against the fresh intrusion measurement
+on 348 rows: `covered` correlates with deep intrusion at **r = -0.852**,
+and `covered >= 0.85` excludes **100%** of rows whose intrusion exceeds 5%
+of the ear. So the whole corpus can be gated from the existing run at no
+GPU cost.
+
+**On proper ears SAM becomes a ~1% instrument:**
+
+| GT distance to the SAM rim, outer chain | median | p90 | p99 |
+|---|---|---|---|
+| proper ears | **0.93%** | 1.81% | 3.07% |
+| everything else | 1.89% | 4.81% | 8.41% |
+
+A p99 of 3.07% is five times sharper than Gemini's 5-6% floor and in the
+landmarker's league. That is the first instrument this session with the
+resolution to actually audit an annotation.
+
+**The tail is small.** Of 6,107 proper ears, 68 exceed 3% median, **10
+exceed 4%, and none exceed 6%**. An independent second opinion -- GT
+irregularity (worst turning angle, spacing coefficient of variation),
+which shares no input with SAM -- flags 6 of those 10 against 1 expected
+by chance, a **6.1x enrichment**.
+
+**Rendered, 5 or 6 of the 10 are genuine**: the annotation is too big and
+runs off the ear into hair (720, 3179, 3198, 6266, and 1315 borderline).
+One, row 9698, is not an ear at all -- it appears to be a rock or shell on
+gravel carrying an ear-shaped trace, a corpus data defect rather than an
+annotation one. Two are SAM failures with a sound annotation (824, 10384,
+both fragmented masks in the concha). The rest are dark or blurred.
+
+So precision at this threshold is 50-60%, and the bad-GT rate **on proper
+ears** is about 0.1%. The defects share a direction -- the contour is too
+big -- which matches the independent earlier finding.
+
+**What this does and does not cover.** It audits 58% of the corpus at ~1%
+resolution and says that slice is very clean. It says nothing about the
+other 42%, which is excluded precisely because no segmenter can judge it;
+that part still needs the landmarker's residual, or a human. The honest
+summary is that the corpus is cleaner than any earlier estimate wherever
+we can actually measure it.
