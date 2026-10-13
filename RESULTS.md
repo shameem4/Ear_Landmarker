@@ -3598,3 +3598,59 @@ portraits" rejected by the detector earlier were relief sculptures. A
 statue has correct ear geometry and wrong material statistics, so it is a
 data-validity question distinct from annotation correctness, and nothing
 in the current screen detects it.
+
+## Correcting the GT from the silhouette: deform the curve, normal component only
+
+Correction was ruled out all session under "flaggers, not correctors", but
+that rule came from instruments with a ~5-6% noise floor -- coarser than
+the annotation being corrected. Inside the gate the silhouette resolves to
+0.93% median, so the rule no longer binds. It was never about the word
+"instrument"; it was about the floor.
+
+**What a silhouette can and cannot fix.** It is a CURVE, not a set of
+correspondences: it knows where the rim runs, not which of the 20 outer
+points belongs where along it. So the error splits into a NORMAL part
+(distance to the rim -- visible to it) and a TANGENTIAL part (spacing
+along the rim -- invisible to it, and 72% of squared error). Only the
+normal part is applied. Snapping each point to its nearest boundary pixel
+would silently overwrite the tangential component with whatever the
+projection picked, collapsing neighbours at high curvature and reordering
+them round the lobe.
+
+`qa_sam_correct.py` carries three guards, one per failure of the naive
+version:
+- correspondence forced MONOTONE in boundary arc length, so the corrected
+  chain cannot cross itself or double back;
+- normal offsets smoothed along the chain, since real contour error is
+  spatially smooth and an isolated spike is a projection artefact;
+- a tolerance, so an already-good row is left alone rather than jittered
+  onto the mask's pixel staircase.
+
+**Measured both ways that matter**, on gated rows:
+
+| tol | recover: 12% inflation, before -> after | made worse | no-harm: good rows touched |
+|---|---|---|---|
+| 2.0% | 5.12% -> **2.68%**, 100% improved | **0%** | **2%** |
+| 1.0% | 5.10% -> 2.52%, 100% improved | 0% | 23% |
+
+tol = 2.0% is the operating point: recovery is the same within noise and
+the no-harm property is what protects the 99.9% of rows that are already
+correct.
+
+**It recovers about half the error, not all of it.** 2.68% residual
+against a 0.93% corpus norm. The remainder is the tolerance, the mask's
+pixel staircase, and the tangential component it cannot see. So this is a
+repair for grossly misplaced contours, not a polish.
+
+**A real limit found by rendering, not by a statistic.** Where SAM's mask
+is fragmented (rows 824, 10384, 7288, and the statue 9698), the guards
+mostly hold the curve on the GT, but not always -- row 824's lobe follows
+the broken mask. The gate therefore needs the largest-component-share
+filter that the original three SAM gates had and `qa_gate.py` does not:
+`covered`, `bloat` and focus do not catch a mask that is the right size
+and in several pieces. That is the next change, and it needs a corpus
+re-run because `sam2_silhouette.json` does not record component counts.
+
+**Scope.** This corrects 20 of 55 points. The interior has only an
+aggregate instrument and the concha has none, so neither can be corrected
+this way.
