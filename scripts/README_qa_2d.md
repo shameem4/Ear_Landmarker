@@ -307,3 +307,21 @@ Its real value is a pointer: the dataset bundled in it
 which is a better licence than the CC BY set since it carries no attribution
 obligation. Combine the two for ~1,024 images if the local U-Net is ever
 retrained.
+
+## Prompting and VLM boxes (the lobe shortfall)
+
+`qa_sam3_prompt_sweep.py`  sweep SAM 3 text prompts, scored by the signed
+                           distance from each annotated point to the mask
+                           edge; watch point 19 minus point 12.
+`qa_ear_box_vlm.py`        whole-ear box from a VLM. `ollama` is local
+                           qwen2.5vl:7b; `gemini` UPLOADS THE CROPS.
+`qa_vlmbox_show.py`        render those boxes over the annotation.
+`qa_sam3_boxed.py`         re-score SAM 3 given a VLM box.
+`qa_sam3_boxed_show.py`    text vs box masks side by side.
+
+Settled, see RESULTS.md: no prompt and no box moves SAM 3's boundary, so
+the lobe shortfall cannot be prompted away. The Gemini box is the useful
+output -- median IoU 0.909 with the annotation's own bounding box, no mask
+involved -- and is the route to narrowing the 0.86%-5.40% bad-contour
+range. Each VLM must be asked in its own coordinate convention, and a
+format example must never contain a usable value.

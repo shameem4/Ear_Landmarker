@@ -2633,3 +2633,130 @@ one process instead of one image per process.
 (whose remote-code layout has no image_token and raises in the native
 processor), and the class is `Florence2ForConditionalGeneration`, not
 `AutoModelForCausalLM`.
+
+
+## Can the lobe shortfall be prompted away? No, and it is not SAM's fault
+
+The v5 audit ended by retracting the endpoint fix: SAM 3 under-segments the
+lobe, so "distance to the mask rim" cannot tell a drifting annotation from
+a short mask, and the bad-contour rate was left as a range, 0.86% confirmed
+by eye up to 5.40% by the gate. Four things were tried to close it. Only
+the last one worked, and not in the way expected.
+
+**1. Name the lobe in the prompt. No effect.** Over 156 rows, scoring the
+signed distance from each annotated point to the mask edge (% of ear
+height, positive = outside), and watching point 19 (lobe end) minus point
+12 (mid-helix, where the mask is already good):
+
+| prompt | n usable | pt0 | pt12 | pt19 | 19-12 |
+|---|---|---|---|---|---|
+| `ear` | 156 | 3.63 | 0.84 | 2.52 | **1.68** |
+| `ear including the earlobe` | 156 | 4.25 | 0.87 | 2.73 | 1.86 |
+| `whole ear with earlobe` | 156 | 3.53 | 0.77 | 2.35 | 1.58 |
+| `human outer ear and earlobe` | 156 | 3.92 | 0.83 | 2.48 | 1.65 |
+| `auricle` | **0** | | | | |
+| `pinna` | **0** | | | | |
+
+The spread brackets the control, so it is noise -- confirmed by re-running
+`ear` in a separate process, which reproduced 3.63/0.84/2.52/1.68 to the
+last digit. The anatomical terms are not in SAM 3's concept vocabulary at
+all: zero masks on every row.
+
+**2. Instruct it instead. Much worse.** SAM 3 matches a CONCEPT, so an
+imperative is embedded as a bag of nouns and it goes looking for them:
+
+| prompt | n usable | 19-12 |
+|---|---|---|
+| `extrapolate helix/lobe shape if occluded` | **0 / 156** | |
+| `ear, extrapolate helix and lobe shape if occluded` | 26 / 156 | 3.78 |
+| `helix and earlobe` | 2 / 156 | -- |
+| `complete ear outline including hidden helix and lobe` | 78 / 156 | 1.83 |
+
+Longer phrasings dilute the concept and lose most of the masks.
+
+**3. Give it a VLM box.** SAM 3 accepts boxes, so the missing prior was
+fed in from a VLM that had never seen the landmarks (`qa_ear_box_vlm.py`,
+66 rows, then `qa_sam3_boxed.py`):
+
+| arm | n | pt0 | pt12 | pt19 | 19-12 |
+|---|---|---|---|---|---|
+| text only | 66 | 3.43 | 0.89 | 2.40 | **1.51** |
+| box only | 65 | 3.57 | 0.86 | 2.55 | 1.68 |
+| text + box | 65 | 3.77 | 0.86 | 2.55 | 1.68 |
+
+The box is not ignored -- rendering the arms side by side shows the masks
+differ in their holes and along the rim -- it just does not move the
+boundary. **Where SAM 3 stops is a property of its notion of "ear", not of
+where it was told to look.** No prompt and no box will fix it.
+
+**4. The VLM box itself is the useful artefact.** Scored against the
+annotation's own bounding box, with no mask anywhere in the comparison:
+
+| source | median IoU | IoU>0.7 | annotation past the box bottom |
+|---|---|---|---|
+| Gemini 3.8 Flash | **0.909** | 92% | -0.2% median, 23% of rows |
+| qwen2.5vl:7b (local) | 0.680 | 41% | +7.4% median, 80% of rows |
+
+Gemini agrees with the annotated extent to within 0.3% of ear height on
+every edge, and its box contains the annotated lobe point in 59 of 66
+rows. Qwen boxes the CARTILAGE -- it cuts the lobe in 45 of 66 and runs
+7% short on the right as well, the same failure as SAM 3 from an
+independent model. So a lobe-aware prior does exist, and it is strong
+enough to serve as the mask-free extent check that the endpoint work
+needed. That is the route to narrowing 0.86%-5.40%, and it costs one API
+call per row -- which means UPLOADING THE CROPS, so it is the user's call,
+not a default.
+
+**Three traps worth keeping:**
+
+- *Never put a usable value in a format example.* The first box prompt
+  carried `{"x0":0.0,...,"x1":1.0}` as its format illustration and
+  qwen2.5vl echoed it on all 66 rows. Every box came back as the whole
+  frame, and the summary statistic (median width 1.000) was the only thing
+  that gave it away.
+- *Ask each VLM in its own documented convention.* qwen2.5vl answers in a
+  0-1000 frame even when asked for pixels of a 448px image. Handed qwen's
+  x-first `bbox_2d` key, Gemini answered y-first on some rows and x-first
+  on others; switching to its documented `box_2d` / `[ymin,xmin,ymax,xmax]`
+  made it consistent. No parser can undo a per-row axis flip.
+- *A box prompt arrives as float32 against a half-precision model* and
+  the box-prompt Linear refuses the mix, even though the image path is
+  cast for you.
+
+**SAM 3 only ever saw the ear crop.** Every number above and in v5 comes
+from `data/manual/images/*.jpg`, a tight square crop; the "originals" in
+`new_manual_data` are square crops too (127-498 px, zero non-square in 40
+sampled), and `data/raw` holds only a `sources.json`. There is no
+full-face view of this corpus anywhere on disk, so "would context help?"
+cannot be answered directly. What can be tested is the variation that does
+exist -- the ear fills 65% to 90% of the frame across the corpus -- and it
+predicts nothing:
+
+| crop | n | pt0 | pt12 | pt19 | 19-12 |
+|---|---|---|---|---|---|
+| loosest (most context) | 2461 | 3.24 | 0.65 | 1.98 | 1.33 |
+| loose | 2461 | 3.22 | 0.66 | 2.10 | 1.44 |
+| tight | 2461 | 3.23 | 0.66 | 2.00 | 1.34 |
+| tightest | 2461 | 3.29 | 0.67 | 2.12 | 1.46 |
+
+Spearman(tightness, pt19 excess) = **+0.015**. Crop RESOLUTION matters a
+little (-0.187: bigger crops, slightly tighter masks), which is a
+mask-precision effect, not a context one. This rules out mild context
+variation only; it does not rule out that a genuine full-face view would
+behave differently, and that cannot be tested without re-sourcing the
+images.
+
+**And the crops cannot be traced back.** There is no recorded
+correspondence between an ear crop and a source image, checked three ways:
+the manifest's `source` column is uniformly `manual` for all 10,535 rows
+and its `original_path` points only at the square crop; each
+`*_annotation.txt` is exactly 55 coordinate lines with no header or
+provenance; and `data/raw/sources.json` shows the upstream sets were
+themselves distributed as crops ("605 ear crops", "6312 ear crops",
+"pre-cropped 224x224"). Only AudioEar2D names a parent corpus -- "2000
+synthetic 299x299 ear crops from FFHQ" -- without recording which image or
+where in it, and the paths in that file are Windows OneDrive paths that do
+not exist on this machine. Recovering full-face views would mean
+re-sourcing FFHQ and image-matching 2,000 crops back to their parents,
+which covers 19% of the corpus and raises its own licence question. Treat
+"SAM 3 sees only a crop" as a fixed property of this corpus.
