@@ -2834,3 +2834,61 @@ length is wildly unstable on polygons (229, 1103 and 2325 tokens on three
 consecutive rows), so capping the thinking budget is the obvious lever --
 untested for quality, and worth one 66-row run before committing to a
 corpus-wide spend.
+
+
+## Capping the thinking budget, and the full-image test done properly
+
+**Thinking off is free, and halves the bill.** Gemini 3.x takes
+`ThinkingConfig(thinking_budget=0)`. On the same 66 rows:
+
+| run | boxes | out tok/row | median IoU | IoU>0.7 | lobe outside box |
+|---|---|---|---|---|---|
+| 3.8-flash, thinking on | 66/66 | 307 | 0.909 | 92% | 7/66 |
+| 3.8-flash, thinking OFF | 64/66 | 39 | **0.910** | 92% | 5/64 |
+| 3.1-flash-lite, thinking off | **15/66** | 30 | -- | -- | -- |
+
+Identical quality -- paired across the 64 shared rows, the largest box edge
+moves 1.00% of frame at the median, 2.67% at p90 -- for an eighth of the
+output tokens. **$21.55 becomes $10.97** for the corpus. Two rows stop
+returning a parseable box, so retry those with thinking on rather than
+dropping them. Flash-lite is NOT a cheaper option at any thinking setting:
+it failed on 51 of 66 rows. The floor is 3.8-flash with thinking off.
+
+**The full-image test, rerun with the project's own detector.** The first
+attempt failed on finding, so this one uses the shipped pipeline end to
+end -- BlazeEar two-stage, then EarLandmarker -- and simply does not score
+an ear it cannot find. Sources: 7 generated photorealistic profile
+portraits plus the photographs from Wikimedia's "Profile portraits"
+category, which turns out to be mostly RELIEF SCULPTURES, medals,
+silhouettes and engravings; the detector rejecting those is correct
+behaviour, not failure. All 7 generated faces were found at confidence
+>= 0.96, ears 130-257 px, and render cleanly in both framings.
+
+| arm | pt0 | pt12 | pt19 | 19-12 | lobe |
+|---|---|---|---|---|---|
+| full image | 0.39 | -1.87 | 1.17 | **2.47** | -0.92 |
+| ear crop | 0.39 | -1.32 | 1.37 | **2.50** | -0.53 |
+
+Paired, n=7: full-minus-crop on 19-12 is **+0.16, p=0.58** -- no effect.
+**Framing does not cure the lobe shortfall**, which closes the question
+left open when this corpus turned out to have no full-face view. The
+absolute lobe distance does improve slightly in the full image (-0.74,
+p=0.02), exactly the same uniform, non-lobe-specific character as grey
+padding.
+
+One observation that needs a caveat rather than a conclusion: on these
+clean, well-resolved faces the lobe points sit INSIDE the mask (-0.5 to
+-0.9) where the corpus crops put them outside (+1.10), consistent with
+Spearman(resolution, pt19 excess) = -0.187. That would suggest the
+shortfall is worst on small low-resolution crops. But the landmarks here
+are the landmarker's own output, and a model that under-reaches at the
+lobe produces negative distances whatever SAM does, so the ABSOLUTE level
+is not evidence. Only the full-vs-crop difference is, because the points
+cancel. Six of the seven faces are also generated, and a generated ear is
+not a photographed ear.
+
+**Detector confidence is not a usability filter.** In the first pass it
+fired at 0.92 on a printed political ribbon with two thumbnail portraits
+on it, and at 0.95 on a 66px stage-lit ear the landmarker then ballooned
+off. Both produced numbers (-44.94 and +28.54) that would have been
+reported as findings had the arms not been rendered.

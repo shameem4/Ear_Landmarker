@@ -117,18 +117,28 @@ def ask_gemini(png):
     except NameError:
         key = (pathlib.Path.home() / ".config/gemini/api-key").read_text().strip()
         _CL = genai.Client(api_key=key)
+    # Thinking is billed at the OUTPUT rate and is 86% of this task's output
+    # tokens, for four integers. THINK=0 turns it off; measured identical
+    # boxes to within a few parts in 1000, at 38 output tokens instead of 436.
+    tc = None if THINK else types.ThinkingConfig(thinking_budget=0)
     o = _CL.models.generate_content(
         model=MODEL,
         contents=[types.Part.from_bytes(data=png, mime_type="image/png"),
                   ASK_GEMINI],
-        config=types.GenerateContentConfig(temperature=0.0))
+        config=types.GenerateContentConfig(temperature=0.0, thinking_config=tc))
+    global TOK
+    u = o.usage_metadata
+    TOK[0] += u.prompt_token_count
+    TOK[1] += u.total_token_count - u.prompt_token_count
     return o.text or ""
 
 
 BACKEND = sys.argv[1]
 OUT = pathlib.Path(sys.argv[2]); OUT.mkdir(parents=True, exist_ok=True)
 pick = [int(x) for x in pathlib.Path(sys.argv[3]).read_text().split()]
-MODEL = sys.argv[4] if len(sys.argv) > 4 else "gemini-3.7-flash"
+MODEL = sys.argv[4] if len(sys.argv) > 4 else "gemini-3.8-flash"
+THINK = int(sys.argv[5]) if len(sys.argv) > 5 else 1   # 0 = thinking off
+TOK = [0, 0]
 ask = dict(ollama=ask_ollama, gemini=ask_gemini)[BACKEND]
 
 rows = list(csv.DictReader(open(ROOT / "data/manual/manifest.csv")))
@@ -149,8 +159,16 @@ for c, i in enumerate(pick):
     if (c + 1) % 20 == 0:
         print(f"  {c+1}/{len(pick)}  kept {len(box)}  bad {bad}", flush=True)
 
-json.dump(box, open(OUT / f"boxes_{BACKEND}.json", "w"))
+tag = BACKEND + ("" if THINK else "_nothink")
+json.dump(box, open(OUT / f"boxes_{tag}.json", "w"))
 print(f"\n{BACKEND}: {len(box)}/{len(pick)} boxes, {bad} unusable")
+if TOK[0]:
+    n = len(pick)
+    print(f"  tokens: {TOK[0]/n:.0f} in, {TOK[1]/n:.0f} out per row"
+          f"   -> 10,535 rows = "
+          f"${TOK[0]/n*10535/1e6*0.75 + TOK[1]/n*10535/1e6*3.75:.2f} on"
+          f" 3.8-flash, ${TOK[0]/n*10535/1e6*0.25 + TOK[1]/n*10535/1e6*1.50:.2f}"
+          f" on 3.1-flash-lite")
 if box:
     import statistics as st
     for k, j in (("width", 2), ("height", 3)):
