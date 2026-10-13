@@ -3143,3 +3143,65 @@ runs at corpus scale, but needs local appearance profiles learned from
 the 10,003 shapes -- a real implementation, not a parameter tweak -- to
 get from ~23% to anywhere near 6%. Worth doing only if offline
 corpus-scale fitting is wanted for its own sake.
+
+
+## Onboarding economics: screen with the model, escalate the tail
+
+The audit is a one-off; onboarding is a cost on every future ear, so the
+question is not "what is the best instrument" but "what is the cheapest
+instrument good enough to decide which rows need the expensive one".
+
+**Do not copy iBUG's AAM.** Their 2017 in-the-wild ear work is the right
+prior art -- it created this 55-point scheme and found AAM beat CLM and
+SDM -- but that was the state of the art for landmark LOCALISATION in
+2017. The shipped landmarker is a heatmap CNN at NME 0.0149 and already
+supersedes it; the modern successor to AAM is what this project ships.
+Recent work (ICCV 2025) refines heatmap decoding rather than replacing the
+family. Copying the AAM would be moving backwards.
+
+The literature that matters for this goal is label noise, not landmark
+localisation: confident learning, which scores every example against
+out-of-fold predictions. No off-the-shelf tool covers keypoints -- the
+machinery assumes integer class labels -- so it needs a residual-based
+adaptation, which is what follows.
+
+**The screen, measured.** Rank rows by the landmarker's disagreement with
+the annotation, escalate the worst to Gemini, judge against the measured
+bad set (excursion >15%, precision 0.87), weighting flagged and control
+rows back to corpus proportions:
+
+| escalate top | recall, model trained on the row | recall, row held out |
+|---|---|---|
+| 10% | 42% | 33% |
+| 20% | 72% | 62% |
+| **30%** | **92%** | 70% |
+| 50% | 98% | 76% |
+
+**The contaminated screen wins, which is not a bug.** A row the model
+failed to memorise DESPITE training on it is a row inconsistent with
+everything else, and that is what a label error is. On a held-out row,
+disagreement mixes "bad annotation" with "hard image" and the signal gets
+noisier. This is the training-dynamics branch of the noisy-label
+literature -- forgetting events, area-under-margin -- rather than the
+out-of-fold branch, and it says K-fold is NOT the upgrade it looks like.
+Caveat: the held-out curve is n=201 against n=856, so some of the gap is
+sample noise.
+
+**The recipe for a new batch**, which follows directly:
+
+1. add the batch to training and fine-tune;
+2. score each new row by its training residual;
+3. send the worst 30% to Gemini's shape fit;
+4. correct or drop what Gemini disputes.
+
+At the measured 92% recall that costs **$6.85 per 1,000 rows** instead of
+$22.83 to fit everything, and the 8% missed are the mildest cases. The
+screen is free, offline and improves every time the corpus is cleaned,
+since each round removes rows that were teaching the model the errors.
+
+**Keep the cost in proportion.** Gemini shape-fitting a row costs $0.023.
+If new ears are hand-annotated at anything like a realistic rate, the QA
+step is a few percent of the annotation cost and is not the thing to
+optimise. It only dominates when the batch is auto-annotated by the
+existing model, which is exactly the case where an independent check
+matters most.
