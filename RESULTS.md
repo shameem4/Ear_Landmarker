@@ -2414,27 +2414,61 @@ which -- ear-vs-surround depth separation is 3.45 sd where it works against
 tried). DA3-SMALL renders the ear as a smooth blob with no internal bowl, so
 depth does not see it either. It needs a shape prior, not another filter.
 
-## The bad annotations are real: 4.9%, and one failure mode
+## The bad annotations are real: 5.4%, and the contour is simply too big
 
-Measured against the SAM 3 silhouette, counting outer landmarks more than
-15% of ear height off the rim:
+Full corpus, all 10,535 rows against the SAM 3 silhouette; 9,843 (93.4%)
+returned a usable mask. Counting outer landmarks more than 15% of ear height
+off the rim:
 
-    rows with >=3 misrouted points   4.9%   (~412 of the 8,427 train rows)
-    spot-checked precision           8 of the top 8 genuine
+    rows with >=2 misrouted points   8.73%  (859 rows)
+    rows with >=3 misrouted points   5.40%  (532 rows)   <- the working figure
+    rows with >=5 misrouted points   1.57%  (155 rows)
+    per-point rate                   1.70%
 
-One failure mode dominates. The annotated contour runs past the ear into
-HAIR, at the top:
+Evenly spread across the splits, so no split is unusually dirty: train
+5.43%, val 5.19%, test 5.40%.
 
-| group | share of its points >15% off the rim |
-|---|---|
-| **ascending_helix** | **3.02%** |
-| ear_lobe | 2.04% |
-| descending_helix | 1.37% |
-| helix | 0.14% |
+**The annotated contour is systematically too large.** Comparing the
+landmark hull's area with the SAM mask's, the implied linear scale of the
+annotation against the actual ear is:
 
-The ascending helix is where the ear meets the hairline, and that is where
-the annotations run on; the helix proper, with background behind it, is
-nearly clean. This is fixable as a CLASS rather than row by row.
+    flagged rows   1.18x      clean rows   1.03x
+
+So a flagged annotation is not a different shape, it is the right shape
+about 18% too big -- it runs OUTWARD, off the ear.
+
+**And it runs outward at the ENDS of the chain.** The per-landmark rate
+across the 20 outer points is a clean U:
+
+    pt  0  4.83%  ascending_helix   ########################
+    pt  1  3.03%                    ###############
+    pt  3  3.15%                    ###############
+    pt  4  2.86%  descending_helix  ##############
+    pt  7  0.59%                    ##
+    pt 10  0.07%  helix
+    pt 12  0.02%  helix                 <- effectively perfect
+    pt 14  0.20%  ear_lobe
+    pt 17  2.00%                    ##########
+    pt 18  3.46%                    #################
+    pt 19  6.01%  ear_lobe          ##############################
+
+By group that reads as ascending_helix 3.43%, ear_lobe 2.17%,
+descending_helix 1.68%, helix 0.09%.
+
+The middle of the chain is the helix proper, which has sky or background
+behind it and is essentially never wrong -- 1 row in 5,000 at point 12. The
+two ENDS are where the ear meets hair and the side of the head, where there
+is no crisp anatomical stop, and that is where the contour runs on. This is
+a SCHEME problem as much as an annotation problem: points 0 and 19 have no
+well-defined place to terminate, so there is nothing for an annotator or a
+seeding model to agree with.
+
+At the extreme tail the whole contour goes, not just the ends -- the worst
+six rows have a correctly-shaped ear outline sitting well outside the ear.
+But those are the tail; the typical flagged row is the ends drifting.
+
+Fixable as a CLASS rather than row by row: define where the contour
+terminates, then re-derive, rather than re-annotating 532 rows by hand.
 
 **This defect is invisible to the agreement metric.** On 200 agreement-worst
 rows against 200 agreement-best, the misrouted-point rate was the same --
@@ -2455,9 +2489,10 @@ Same 40 rows, same gates:
 | Florence-2 | 60.0% | 2.30x | empty or degenerate |
 | jorge-jrzz YOLOv8 | 20.0% | 2.17x | masks cropped to the box, hard rectangular edges |
 
-At scale SAM 3 drops 7.3% of 1,500 rows against SAM 2.1's 32.9%, and its
-masks come out TIGHTER than the landmark hull on every row (bloat
-0.61-0.90), so a flag means what it should.
+Over the full 10,535 rows SAM 3 is dropped by the gates on only 6.6%,
+against SAM 2.1's 32.9% on a 1,500-row subset, and its masks come out
+TIGHTER than the landmark hull on essentially every row, so a flag means
+what it should.
 
 **Licences, since this corpus has to stay commercially clean.** SAM 2.1 is
 Apache 2.0 for code and weights. SAM 3 is Meta's custom SAM License with
@@ -2518,7 +2553,7 @@ landmark a few pixels out". Pick the tool to the size of the claim.
 | agreement > 1.0 (hard images) | 321 | 3.81% |
 | contour jaggedness, top 5% | 435 | 5.16% |
 | BOTH of the above | 39 | 0.46% |
-| **misrouted contour, SAM 3** | **~412** | **4.9%** |
+| **misrouted contour, SAM 3** | **428** | **5.43%** |
 
 The first three are the wrong criterion: agreement selects hard images whose
 labels are fine, and jaggedness cannot see a smooth ring on the wrong curve.
