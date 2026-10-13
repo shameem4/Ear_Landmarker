@@ -3758,3 +3758,45 @@ A threshold near 3.5% of ear height separates them. The rule:
 Prefer the similarity to the affine despite its slightly worse number
 (1.15 vs 1.08): four parameters cannot introduce shear into an ear, and
 the gap is inside the noise.
+
+### The recipe rendered, and the gate that is still missing
+
+Applied to the silhouette's worst 12 proper ears: correct 0-19 by normal
+projection, fit a similarity, propagate to 20-34 only if its residual is
+below 3.5% of ear height.
+
+**It behaves as designed on 9 of 12.** The outer contour pulls off the hair
+onto the rim and the inner helix follows proportionally (rows 720, 3179,
+3198, 1315, 3333, 6266, 7288, 3710). Row 1060 is the residual gate working
+as intended: at 4.4% it refused to propagate, fixing the contour while
+leaving a correct interior alone.
+
+**It is damaged on 3 of 12** -- 824, 9698 (the statue) and 10384 -- where
+SAM's mask boundary wanders over texture instead of the ear outline. The
+projection follows the wandering boundary, and because the residual still
+looked small the inner helix was dragged along too. On 10384 the corrected
+contour is WORSE than the original along the right side.
+
+**Two candidate gates for this, both proposed and both measured dead:**
+
+| gate | broken rows | 40 random proper ears | verdict |
+|---|---|---|---|
+| largest-component share | 0.999, 0.999, 1.000 | median 1.000, min 0.995 | **no separation** |
+| boundary raggedness P^2/4piA | 2.50, 1.59, 1.97 | median **1.93**, p90 2.27 | **no separation** |
+
+Component share fails because the stray pieces are specks and the share is
+dominated by the one large component -- the earlier claim that this filter
+was "the next change" is withdrawn, it would not have helped. Raggedness
+fails worse than that: random proper ears are RAGGEDER (1.93) than most of
+the flagged rows (1.24-1.72), because the flagged rows tend to be large
+high-contrast ears where SAM produces a smooth mask and the disagreement
+is a genuine annotation issue. The metric mostly measures ear size and
+resolution.
+
+**So the honest state: the correction is sound where the mask is sound,
+and there is no validated detector for when the mask is not.** Until there
+is, this runs with a human looking at the renders, not unsupervised. The
+next thing to TEST -- untested, stated as a hypothesis -- is whether the
+landmarker's own prediction can serve as the veto: a correction that moves
+the contour away from both the original annotation AND an independent
+model is more likely to be the mask's fault than the annotation's.
