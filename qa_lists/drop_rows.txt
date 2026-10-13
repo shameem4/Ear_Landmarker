@@ -1,0 +1,7 @@
+# Rows with no ear in the image. Each one visually confirmed -- the
+# BlazeEar confidence ranking (runs/earness) proposes candidates, a human
+# decides. See scripts/qa_make_clean_splits.py.
+#
+# Confirmed by eye, 2026-10-13:
+7397   # blurred shoulder and a red-striped shirt; the 55 points trace nothing
+10     # neck/shoulder and hair; no ear in frame

@@ -4013,3 +4013,58 @@ signature from the silhouette does not reappear here.
 
 Rows written to `runs/remark/disagree_review.txt` (>3%) and
 `runs/remark/disagree_hi.txt` (>held-out p99).
+
+## Rows that are not an ear, and how to remove them
+
+Row 7397 is a blurred shoulder and a red-striped shirt. There is no ear in
+it and the 55 points trace nothing. Nothing in the QA stack could say so:
+the silhouette assumes an ear and segments the nearest blob, the
+landmarker assumes an ear and places 55 points on whatever is there, and
+the gate and clash review both measure the SHAPE of an annotation, not
+whether its subject exists.
+
+**BlazeEar can, and it is independent.** It was trained on Open Images and
+Roboflow ear boxes, not on this corpus, so unlike the landmarker its
+opinion is not partly memorisation of the thing being audited. "Is there
+an ear here" is also a GLOBAL question, which is where a detector
+confidence is strong -- and is not the occlusion question, which is local
+and where it would be weak.
+
+Run single-stage on each crop pasted into a 2.2x edge-padded canvas, which
+puts the ear back at the face-crop scale the detector was trained on.
+Confidence tracks agreement monotonically, which is the sanity check:
+
+| confidence | n | median IoU(box, annotation bbox) |
+|---|---|---|
+| 0.0-0.3 | 9 | 0.039 |
+| 0.3-0.5 | 70 | 0.430 |
+| 0.5-0.7 | 224 | 0.593 |
+| 0.7-0.9 | 1,681 | 0.679 |
+| 0.9-1.0 | 8,551 | 0.772 |
+
+**Row 7397 ranks 15th lowest of 10,535** (confidence 0.324, IoU 0.031).
+The instrument finds it.
+
+**But low confidence is NOT a drop rule, and the render is why.** Of the
+24 lowest, only two have no ear in them (7397, and row 10, a neck and
+hair). The rest are hard and valid: an ear under red light, ears behind
+white hair, high-contrast black and white, a heavily degraded frame. My
+first read of those called several of them animal ears; zooming in showed
+every one is human. Dropping on a confidence threshold would delete
+exactly the rows the model needs, which is the same mistake already
+measured here -- filtering low agreement removed hard IMAGES, not bad
+LABELS.
+
+So the detector proposes and a human disposes. 108 rows (confidence < 0.5,
+or < 0.7 with IoU < 0.3) in `runs/earness/review_queue.txt`.
+
+**The removal mechanism** (`scripts/qa_make_clean_splits.py`): rewrite the
+split CSVs without the dropped rows. NOT deleting images and NOT editing
+landmarks.npy -- every QA artefact here indexes rows by position in the
+manifest, so removing a row would silently shift all of them, and the
+images are the only copy. The corpus stays complete, training never sees
+the row, reverting is pointing `--train-csv` back. The drop list lives at
+`qa_lists/drop_rows.txt`, tracked, one row per line with the reason.
+
+Currently 2 rows. The non-ear rate in this corpus is on the order of a
+handful, not hundreds.
