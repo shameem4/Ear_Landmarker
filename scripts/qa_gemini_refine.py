@@ -50,6 +50,82 @@ DESC = {
 }
 
 
+GT_PROMPT = """This photo shows one human ear.
+
+Below is an EXISTING trace of its four contours, as [y, x] normalised to
+0-1000. It is a trace OF THIS EAR, but it may be wrong: points may sit off
+the ear, a contour may cut a corner or wander onto hair, cheek or jaw.
+
+{pts}
+
+Correct the placement. Move each point onto the structure it is meant to
+mark, and leave it where it is if it is already right.
+
+Rules:
+- Return every point, in the same order and the same count per contour.
+- Make each contour SMOOTH: no kinks or zigzags between neighbours, and
+  keep the points roughly evenly spaced along it.
+- Where hair, an earring, a hand or deep shadow hides a contour,
+  EXTRAPOLATE where it would run and place the points there. Do not follow
+  the occluder.
+
+Reply with JSON only, coordinates normalised to 0-1000, y first:
+{{"outer_helix": [[y,x], ...], "inner_helix": [...],
+  "concha_border": [...], "superior_crus": [...]}}"""
+
+ONE_PROMPT = """The FIRST image is a photo of one human {side} ear."""[:0] + """The FIRST image is a photo of one human {side} ear.
+
+The SECOND image is a template: the average shape of a {side} ear's four
+contours, with the point indices labelled. It is a template of what a
+{side} ear looks like in general. It is NOT this ear.
+
+Fit it to the photo: translate, scale, rotate and deform each contour so
+it lies on the matching structure of THIS ear.
+
+Rules:
+- Return every point, in the same order and the same count per contour:
+  outer_helix 20, inner_helix 15, concha_border 15, superior_crus 5.
+- Point j must land on the structure the template labels j, so the
+  contours keep their correspondence.
+- Make each contour SMOOTH: no kinks or zigzags between neighbours, and
+  keep the points roughly evenly spaced along it.
+- Where hair, an earring, a hand or deep shadow hides a contour,
+  EXTRAPOLATE where it would run and place the points there. Do not follow
+  the occluder and do not bunch the points up at the edge of it.
+
+Reply with JSON only, coordinates normalised to 0-1000, y first:
+{{"outer_helix": [[y,x], ...], "inner_helix": [...],
+  "concha_border": [...], "superior_crus": [...]}}"""
+
+IMG_PROMPT = """The FIRST image is a photo of one human ear.
+
+The SECOND and THIRD images are templates: the average shape of an ear's
+four contours, drawn for a RIGHT ear and for a LEFT ear, with the point
+indices labelled. They are templates of what an ear looks like in general.
+They are NOT this ear.
+
+Pick whichever template matches the orientation of the ear in the photo,
+then fit it: translate, scale, rotate and deform each contour so it lies
+on the matching structure of THIS ear.
+
+Rules:
+- Return every point, in the same order and the same count per contour:
+  outer_helix 20, inner_helix 15, concha_border 15, superior_crus 5.
+- Point j must land on the structure the template labels j, so the
+  contours keep their correspondence.
+- Make each contour SMOOTH: no kinks or zigzags between neighbours, and
+  keep the points roughly evenly spaced along it.
+- Where hair, an earring, a hand or deep shadow hides a contour,
+  EXTRAPOLATE where it would run and place the points there. Do not follow
+  the occluder and do not bunch the points up at the edge of it.
+
+Reply with JSON only, coordinates normalised to 0-1000, y first, and say
+which template you used:
+{"side": "right" or "left",
+ "outer_helix": [[y,x], ...], "inner_helix": [...],
+ "concha_border": [...], "superior_crus": [...]}"""
+
+
 def build_prompt(tpl):
     lines = []
     for nm in STRIP_NAMES:
@@ -107,10 +183,32 @@ def main():
     ap.add_argument("--think", type=int, default=0)
     ap.add_argument("--model", default="gemini-3.8-flash")
     ap.add_argument("--template", default="runs/shape_template/template.json")
+    ap.add_argument("--seed",
+                    choices=["numbers", "images", "both", "one", "gt"],
+                    default="numbers")
+    # The gt seed is NOT an audit -- it shows the model the answer. It is an
+    # upper bound on achievable fit, and it is only interpretable next to
+    # --corrupt, which breaks the seed in the way the real failures break:
+    # the endpoint drift that started all this, plus a wander onto the cheek.
+    ap.add_argument("--corrupt", action="store_true")
     a = ap.parse_args()
     OUT = pathlib.Path(a.out); OUT.mkdir(parents=True, exist_ok=True)
     tpl = json.load(open(ROOT / a.template))
-    prompt = build_prompt(tpl)
+    tdir = (ROOT / a.template).parent
+    TILE = {s_: (tdir / f"template_{s_}.png").read_bytes()
+            for s_ in ("right", "left")}
+    if a.seed == "one":
+        prompt, tiles = None, None          # chosen per row below
+    elif a.seed == "numbers":
+        prompt, tiles = build_prompt(tpl), []
+    else:
+        tiles = [(tdir / f"template_{s_}.png").read_bytes()
+                 for s_ in ("right", "left")]
+        prompt = IMG_PROMPT if a.seed == "images" else (
+            build_prompt(tpl) + "\n\nThe two images after the photo draw that"
+            " same template, for a right ear and for a left ear, with the"
+            " point indices labelled. Use whichever matches, and add"
+            ' "side": "right" or "left" to your JSON.')
     pick = [int(x) for x in a.rows.split(",")]
     key = (pathlib.Path.home() / ".config/gemini/api-key").read_text().strip()
     cl = genai.Client(api_key=key)
@@ -118,7 +216,8 @@ def main():
     rows = list(csv.DictReader(open(ROOT / "data/manual/manifest.csv")))
     tc = None if a.think else types.ThinkingConfig(thinking_budget=0)
 
-    store, tin, tout, n = {}, 0, 0, 0
+    store, tin, tout, n, sides = {}, 0, 0, 0, []
+    SEEDS = {}
     print(f"{'row':>7}  " + "".join(f"{nm[:12]:>14}" for nm in STRIP_NAMES))
     for i in pick:
         im = Image.open(ROOT / "data/manual" / rows[i]["image_file"]).convert("RGB")
@@ -127,29 +226,72 @@ def main():
             im = im.resize((round(im.width * k), round(im.height * k)),
                            Image.LANCZOS)
         buf = io.BytesIO(); im.save(buf, "PNG")
+        g0 = L[i]
+        gx, gy = g0[:20, 0], g0[:20, 1]
+        area0 = 0.5 * np.sum(gx * np.roll(gy, -1) - np.roll(gx, -1) * gy)
+        this_side = "right" if area0 < 0 else "left"
+        if a.seed == "gt":
+            seed = g0[:55].copy()
+            if a.corrupt:
+                span0 = float(g0[:20, 1].max() - g0[:20, 1].min())
+                seed[16:20, 0] += 0.18 * span0 * (1 if i % 2 else -1)
+                seed[16:20, 1] += 0.12 * span0
+                seed[8:12, 0] += 0.10 * span0
+                seed[43:47, 0] += 0.10 * span0      # push the concha floor
+            blocks = []
+            for (lo, hi), nm in zip(STRIPS, STRIP_NAMES):
+                pts = [[round(float(y * 1000), 1), round(float(x * 1000), 1)]
+                       for x, y in seed[lo:hi]]
+                blocks.append(f'"{nm}" (points {lo}-{hi-1}):\n  '
+                              + json.dumps(pts))
+            use, body = [], GT_PROMPT.format(pts="\n".join(blocks))
+            SEEDS[str(i)] = seed.tolist()
+        elif a.seed == "one":
+            use, body = [TILE[this_side]], ONE_PROMPT.format(side=this_side)
+        else:
+            use, body = tiles, prompt
+        parts = [types.Part.from_bytes(data=buf.getvalue(),
+                                       mime_type="image/png")]
+        parts += [types.Part.from_bytes(data=t, mime_type="image/png")
+                  for t in use]
         o = cl.models.generate_content(
             model=a.model,
-            contents=[types.Part.from_bytes(data=buf.getvalue(),
-                                            mime_type="image/png"), prompt],
+            contents=parts + [body],
             config=types.GenerateContentConfig(temperature=0.0,
                                                thinking_config=tc))
         u = o.usage_metadata
         tin += u.prompt_token_count
         tout += u.total_token_count - u.prompt_token_count
         n += 1
-        got = parse(o.text or "")
+        txt = o.text or ""
+        got = parse(txt)
+        ms = re.search(r'"side"\s*:\s*"(right|left)"', txt)
+        said = ms.group(1) if ms else (this_side if a.seed in ("one", "gt")
+                                       else "?")
         if np.isnan(got).all():
             print(f"{i:>7}  no points"); continue
-        store[str(i)] = got.tolist()
         g = L[i]
+        gx, gy = g[:20, 0], g[:20, 1]
+        area = 0.5 * np.sum(gx * np.roll(gy, -1) - np.roll(gx, -1) * gy)
+        truth = "right" if area < 0 else "left"   # matches the template build
+        store[str(i)] = dict(points=got.tolist(), side=said, truth=truth)
+        sides.append((said, truth))
         span = float(g[:20, 1].max() - g[:20, 1].min())
-        cells = []
+        cells = [f"{said[:1]}/{truth[:1]}  "]
         for (lo, hi), nm in zip(STRIPS, STRIP_NAMES):
             d = np.linalg.norm(got[lo:hi] - g[lo:hi], axis=1) / span * 100
             cells.append("          n/a" if np.isnan(d).all()
                          else f"{np.nanmedian(d):>13.1f}")
         print(f"{i:>7}  " + "".join(cells))
-    json.dump(store, open(OUT / f"refine_think{a.think}.json", "w"))
+    tag = a.seed + ("_corrupt" if a.corrupt else "")
+    json.dump(store, open(OUT / f"refine_{tag}_think{a.think}.json", "w"))
+    if SEEDS:
+        json.dump(SEEDS, open(OUT / f"seeds_{tag}.json", "w"))
+    known = [(x, y) for x, y in sides if x != "?"]
+    if known:
+        agree = sum(x == y for x, y in known)
+        print(f"\nhandedness: model named a side on {len(known)}/{len(sides)},"
+              f" agreeing with the signed-area label on {agree}/{len(known)}")
     if n:
         print(f"\n{len(store)}/{n} ok   tokens {tin/n:.0f} in, {tout/n:.0f} out"
               f"   -> 10,535 rows = "

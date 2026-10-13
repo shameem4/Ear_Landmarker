@@ -2951,3 +2951,55 @@ rather than one, since the cheap box screen already localises well:
 Reserve the expensive fit for rows the cheap screen doubts. Context
 caching is the other lever untried: the template prefix is byte-identical
 across every row, and Google prices cached input at roughly a twentieth.
+
+
+## Which seed? Numbers beat pictures, and the GT seed is a flag not a fix
+
+Five ways of seeding the same fit, 5 clean and 5 flagged rows, median
+distance from the annotation as % of ear height on CLEAN rows (lower is a
+better fit), plus the flagged/clean ratio on the outer helix (above ~2
+means flagged rows stand out):
+
+| seed | outer | inner | concha | crus | flag/clean | corpus $ |
+|---|---|---|---|---|---|---|
+| template numbers, think 0 | 13.2 | 9.7 | 8.0 | 5.9 | 1.06 | 47.36 |
+| **template numbers, think 1** | **6.1** | **5.1** | **4.9** | 10.9 | **2.05** | 240.50 |
+| two template images, think 1 | 12.7 | 7.5 | 5.2 | 16.9 | 0.64 | 172.91 |
+| one template image, think 1 | 9.5 | 10.8 | 6.4 | 15.3 | 0.55 | 211.58 |
+| GT seed, think 1 | 0.3 | 0.0 | 0.0 | 0.0 | 7.59 | 406.69 |
+
+**Pictures lose to numbers.** Rendering the template as a labelled image
+was meant to save the model the work of building a 55-point shape in its
+head. It fits worse on every strip but the concha, and its flagged/clean
+ratio drops BELOW 1, meaning it is mildly anti-discriminative -- it fits
+flagged rows marginally better than clean ones, which is the wrong
+direction for a screen.
+
+**Sending only the correct template costs more, not less.** Handedness is
+free and exact from the signed area of the annotated outer chain, so the
+model need not decide it. That removes ~1,100 input tokens, and the model
+promptly spends more on thinking: $211.58 against $172.91 for sending
+both. Worth knowing before optimising prompt length on a thinking model.
+
+**Handedness was never the risk.** Given both templates the model picked
+correctly on 10/10, agreeing with the signed-area label every time.
+
+**The GT seed is an echo, except where it disagrees.** Shown the real
+annotation and asked to correct it, it returns clean rows essentially
+verbatim (0.0-0.8) and moves flagged rows (2.3-22.1), which is why its
+ratio is 7.59. That looks like a superb detector and mostly is not one:
+agreement is guaranteed by construction, so it cannot vouch for a
+contour, only object to one.
+
+The corruption control says how much to trust the objection. Points 8-11,
+16-19 and 43-46 were dragged by 10-22% of ear height, in the shape of the
+real failures, and the model recovered a median **0.54** of that on clean
+rows -- so it IS reading the image, not echoing, but it under-corrects by
+half, and on one row it made things worse (-0.45). Drift on the untouched
+points stayed at 1-3%, so it leaves correct points alone.
+
+So: GT-seeded DISPLACEMENT is a usable flagging signal, GT-seeded OUTPUT
+is not a correction, and neither is independent evidence about an
+annotation. The independent configuration remains the canonical-shape
+template as numbers, with thinking on. All of this is n=10 and wants a
+wider run before anything is decided on it.

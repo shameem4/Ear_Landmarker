@@ -73,3 +73,37 @@ import json
 json.dump(out, open(OUT / "template.json", "w"), indent=1)
 np.save(OUT / "template_xy.npy", T)
 print(f"\nwrote {OUT/'template.json'}")
+
+# ---------------------------------------------------------------------------
+# Also render the template as an IMAGE, in both handednesses.
+#
+# The numeric seed makes the model build a 55-point shape in its head before
+# it can fit anything, and makes it decide handedness from one line of prose
+# on every call. Two labelled pictures let it match and pick instead.
+# ---------------------------------------------------------------------------
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+COL = ["#d62728", "#1f77b4", "#2ca02c", "#9467bd"]
+for side in ("right", "left"):
+    P = T.copy()
+    if side == "left":
+        P[:, 0] = 1000.0 - P[:, 0]
+    fig, ax = plt.subplots(figsize=(4.2, 4.6))
+    for (lo, hi), nm, c in zip(STRIPS, STRIP_NAMES, COL):
+        q = P[lo:hi]
+        ax.plot(q[:, 0], q[:, 1], "-o", color=c, ms=5, lw=2.2,
+                label=f"{nm}  ({lo}-{hi-1})")
+        for j in range(lo, hi):
+            if j == lo or j == hi - 1 or (j - lo) % 5 == 4:
+                ax.annotate(str(j), P[j], fontsize=7, color=c,
+                            xytext=(4, 3), textcoords="offset points")
+    ax.set_title(f"{side.upper()} ear template", fontsize=13)
+    ax.legend(fontsize=8, loc="lower left")
+    ax.set_xlim(150, 900); ax.set_ylim(900, 100)
+    ax.set_aspect("equal"); ax.set_xticks([]); ax.set_yticks([])
+    fig.tight_layout()
+    fig.savefig(OUT / f"template_{side}.png", dpi=130)
+    plt.close(fig)
+    print(f"wrote {OUT/f'template_{side}.png'}")
