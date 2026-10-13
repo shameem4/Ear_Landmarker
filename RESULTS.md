@@ -3207,7 +3207,7 @@ existing model, which is exactly the case where an independent check
 matters most.
 
 
-## The appearance model works; initialisation was the problem; none of it beats the model we have
+## The appearance model works; the init was the problem; every independent instrument has a ~5-6% floor
 
 Adding Cootes profile models to the ASM -- a 1-D derivative profile per
 landmark along the shape normal, normalised by its absolute sum, scored by
@@ -3240,25 +3240,66 @@ instrument drags it down to the coarser instrument's level. (Those rows
 are mostly training rows, so 1% is flattered by memorisation; the held-out
 figure measured earlier is 1.7%, still three times better.)
 
-**This is the clarifying result for the whole QA programme.** Ranked by
-accuracy against the annotations:
+**CORRECTION to the first reading of this table.** The column is distance
+from the annotation, so for the landmarker it is NOT accuracy -- it is
+agreement with its own training target, and no part of it can be read as
+"the landmarker is more accurate than Gemini". Comparing the two numbers
+side by side was the circularity this whole QA effort exists to avoid. The
+honest statements are narrower:
 
-| instrument | typical error | independent of our data? |
+- **5.3-5.9%** is the ASM's own convergence width. Given a perfect start
+  it still settles ~5.8% away, so it cannot resolve anything finer than
+  that, whatever the annotation says.
+- **4.9-6.1%** is Gemini's spread on rows independently believed good. Its
+  noise floor, measured without reference to whether we are right.
+- **1.0-1.7%** says only that the landmarker memorised its training
+  target. It is not evidence about the annotation's correctness.
+- The ASM refinement moving 1.5 -> 6.8 therefore does not mean "it made a
+  good answer worse". It means the ASM pulls any starting point to its own
+  5.8% basin -- including one that happened to sit on the annotation.
+
+What follows is about the INSTRUMENTS, not about who is right:
+
+| instrument | noise floor | independent of our annotations? |
 |---|---|---|
-| shipped landmarker | 1.0-1.7% | no, trained on it |
 | Gemini shape fit | 4.9-6.1% | yes |
-| ASM from a perfect start | 5.3-5.9% | yes (prior built from our data) |
-| ASM from a mask init | 26.9-28.4% | yes |
+| ASM, perfect start | 5.3-5.9% | prior is built from them |
+| ASM, mask start | 26.9-28.4% | prior is built from them |
+| landmarker residual | n/a -- not an accuracy measure | no |
 
-Neither Gemini nor the ASM can CORRECT an annotation: both are three to
-five times less accurate than the model being audited, and refining with
-either would inject more error than it removes. What they can do is
-DISAGREE, and a disagreement of 15%+ of ear height is far outside both
-their noise floors, which is exactly how the 1.9% bad-contour rate was
-measured. This is the same conclusion the GT-seeded experiment reached
-from the other side, where Gemini recovered only 54% of a deliberate
-corruption: these are flagging instruments, not correcting ones.
+Both usable independent instruments have a ~5-6% floor. That is the number
+that matters, and it has two consequences:
 
-Keep that straight when designing the onboarding loop. The expensive
-independent check decides WHICH rows are wrong. It does not decide what
-the right answer is -- that still needs the landmarker, or a human.
+**They can flag, at 15%+.** A disagreement of 15% of ear height is three
+times their floor. That is why the $1.11 measurement holds, and note WHY
+it holds: it was never "is Gemini right". It was a control arm -- 532
+SAM-flagged rows against 532 random rows, 12.0% median excursion against
+1.1%. An 11x separation between two arms is valid whatever Gemini's
+absolute accuracy is, because the same noisy instrument measured both.
+That is the design to copy for any future check.
+
+**They cannot correct, and they cannot see fine error.** An error of 2-3%
+of ear height is inside their floor and invisible to them. Replacing an
+annotation with a 5-6%-noise estimate would inject more error than the
+~1.9% of rows that are actually bad. The GT-seeded experiment said the
+same from the other side: Gemini recovered only 54% of a deliberate
+corruption.
+
+**Where the landmarker legitimately sits.** Its residual is a RANKER, not
+a judge. It never decides whether a row is right; it orders rows so the
+independent check is spent on the worst. Its 92% recall was scored against
+the Gemini-confirmed bad set -- an external label -- which is why the
+measurement is sound and why the contaminated screen beat the held-out
+one. A row the model failed to memorise despite training on it is
+anomalous, and anomalous is what a label error looks like. That is a
+training-dynamics signal, not an accuracy claim.
+
+So the loop has three distinct roles and no circularity:
+cheap circular RANKER (landmarker residual) -> independent ADJUDICATOR
+with a control arm and a 15% threshold (Gemini) -> human for the right
+answer, on the ~1.9% that fail. Nothing in it uses the landmarker to grade
+its own training data.
+
+What is still NOT established, and would need a different instrument: the
+rate of errors between 2% and 15% of ear height. Every method tried this
+session is blind there.
