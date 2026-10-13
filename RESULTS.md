@@ -3003,3 +3003,67 @@ is not a correction, and neither is independent evidence about an
 annotation. The independent configuration remains the canonical-shape
 template as numbers, with thinking on. All of this is n=10 and wants a
 wider run before anything is decided on it.
+
+
+## The measurement: the corpus bad-contour rate is ~1.9%, not 5.40%
+
+Five commits of instrument-building left the actual question where
+`35a8595` put it: somewhere between 0.86% confirmed by eye and 5.40%
+flagged by a screen whose own lobe defect could not be separated from
+annotation error. The measurement that closes it cost **$1.11** and had
+been affordable since the Gemini box was shown to agree with annotated
+extent at IoU 0.909.
+
+**Design.** Gemini boxes (3.8-flash, thinking off) over all 532 flagged
+rows AND 532 controls drawn at random from the 9,311 rows SAM 3 screened
+and did not flag. 529 and 528 boxes returned. The control arm is the
+point: it measures how often a correct annotation pokes outside a Gemini
+box anyway, which is the false-positive rate this whole exercise lacked.
+
+Scoring the furthest any outer-chain point lies outside the box, as % of
+ear height:
+
+| | median | p75 | p90 | p95 | p99 |
+|---|---|---|---|---|---|
+| control | 1.1 | 3.1 | 7.4 | 10.7 | 15.6 |
+| flagged | 12.0 | 16.1 | 19.3 | 21.5 | 25.7 |
+
+**The threshold was set by eye, not by taste.** Rendering bands showed
+8-12% is mostly box error (the annotation follows the ear and the box is
+tight), 15%+ is genuinely bad, 12-15% is mixed. Fifteen rows sampled from
+the decisive 15-18% band read as 13 bad, 1 earring-occlusion ambiguity
+and 1 false positive: **precision 0.87**.
+
+| | |
+|---|---|
+| extent errors, excursion >15% | 170/529 = 32.1% of flagged |
+| x eyeball precision 0.87 | 27.9% genuine |
+| shape errors excursion misses | 40/529 = 7.6% |
+| union | 35.4% of flagged |
+| control false positives | 9/528 = 1.7% |
+
+**Corpus rate ~1.9%, range 1.5-3.5%.** SAM 3's 5.40% **over-counts by
+2.8x**: two thirds of what it flagged is mask artefact. The true rate is
+also about double the 0.86% confirmed by eye, because that pass counted
+only wholesale-wrong contours and missed annotations that merely run past
+the ear onto hair.
+
+Note the two criteria overlap less than expected: of the 84 eyeballed
+wholesale-bad rows, only 54% exceed 15% excursion, and of the 170 rows
+beyond 15% only 45 were in the eyeballed set. Extent error and shape error
+are different faults, and neither instrument sees both.
+
+**A second, independent instrument agrees on the scale.** The shipped
+landmarker (`qa_model_vs_annotation.py`) disagrees with flagged
+annotations 1.7x more than with controls on rows it never trained on
+(median 2.9 vs 1.7% of ear height, p90 6.0 vs 3.3; 104 flagged and 97
+control held-out rows). At a 10% threshold the excess over control is 18.4
+points, putting **0.99%** of the corpus in dispute.
+
+That is a LOWER bound by construction. A model trained on 10,535 rows
+containing these errors regresses toward reproducing them: it never
+disagreed with any annotation by more than 20% of ear height, and at 30%
+not one row in either arm. Its own error floor (control held-out p90 =
+3.3%) is the noise. Memorisation inflates agreement only mildly, though --
+train 1.3 vs held-out 1.7 on controls -- so the held-out slice is honest
+as far as it goes.
