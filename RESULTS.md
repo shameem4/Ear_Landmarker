@@ -3205,3 +3205,60 @@ step is a few percent of the annotation cost and is not the thing to
 optimise. It only dominates when the batch is auto-annotated by the
 existing model, which is exactly the case where an independent check
 matters most.
+
+
+## The appearance model works; initialisation was the problem; none of it beats the model we have
+
+Adding Cootes profile models to the ASM -- a 1-D derivative profile per
+landmark along the shape normal, normalised by its absolute sum, scored by
+Mahalanobis distance to a mean and inverse covariance learned from 2,500
+clean rows (`qa_build_appearance.py`) -- did NOT move the result: 28.4% on
+the outer chain against 26.9% shape-only. Profile separability is only
+1.41 (median ratio of another landmark's Mahalanobis to its own) and 0.82
+at point 7, so the profiles are weakly discriminative.
+
+**But the diagnostic that followed changes the reading entirely.** Started
+AT the annotation and allowed to converge, the full ASM drifts only
+5.3-5.9% per strip -- which is Gemini's accuracy (4.9-6.1%). The shape
+model and the appearance model are therefore good enough; the whole 28%
+was initialisation. A mask centroid, scale and principal axis simply do
+not land close enough, and no rotation sweep fixes that because the pose
+search is over a surface with many near-equal minima.
+
+So the ASM was initialised from the shipped landmarker instead:
+
+| strip | landmarker alone | + ASM refine | Gemini shape fit |
+|---|---|---|---|
+| outer_helix | **1.5** | 6.8 | 6.1 |
+| inner_helix | **1.1** | 6.2 | 5.1 |
+| concha_border | **0.9** | 5.9 | 4.9 |
+| superior_crus | **1.0** | 5.5 | 10.9 |
+
+**The refinement makes it worse**, because the ASM's ceiling is ~5.8% and
+the landmarker is already at ~1%. Refining a good answer with a coarser
+instrument drags it down to the coarser instrument's level. (Those rows
+are mostly training rows, so 1% is flattered by memorisation; the held-out
+figure measured earlier is 1.7%, still three times better.)
+
+**This is the clarifying result for the whole QA programme.** Ranked by
+accuracy against the annotations:
+
+| instrument | typical error | independent of our data? |
+|---|---|---|
+| shipped landmarker | 1.0-1.7% | no, trained on it |
+| Gemini shape fit | 4.9-6.1% | yes |
+| ASM from a perfect start | 5.3-5.9% | yes (prior built from our data) |
+| ASM from a mask init | 26.9-28.4% | yes |
+
+Neither Gemini nor the ASM can CORRECT an annotation: both are three to
+five times less accurate than the model being audited, and refining with
+either would inject more error than it removes. What they can do is
+DISAGREE, and a disagreement of 15%+ of ear height is far outside both
+their noise floors, which is exactly how the 1.9% bad-contour rate was
+measured. This is the same conclusion the GT-seeded experiment reached
+from the other side, where Gemini recovered only 54% of a deliberate
+corruption: these are flagging instruments, not correcting ones.
+
+Keep that straight when designing the onboarding loop. The expensive
+independent check decides WHICH rows are wrong. It does not decide what
+the right answer is -- that still needs the landmarker, or a human.

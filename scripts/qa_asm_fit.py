@@ -41,6 +41,11 @@ from ear3d.scheme import STRIPS, STRIP_NAMES
 
 OUT = pathlib.Path(sys.argv[1]); OUT.mkdir(parents=True, exist_ok=True)
 pick = [int(x) for x in pathlib.Path(sys.argv[2]).read_text().split()]
+import importlib.util as _ilu
+_sp = _ilu.spec_from_file_location("_ap", ROOT / "scripts/qa_build_appearance.py")
+_ap = _ilu.module_from_spec(_sp); _sp.loader.exec_module(_ap)
+PROF = np.load(ROOT / "runs/pdm/profiles.npz")
+PM, PIC, PK, PSTEP = PROF["mean"], PROF["icov"], int(PROF["k"]), float(PROF["step"])
 P = np.load(ROOT / "runs/pdm/pdm.npz")
 MEAN, MODES, VAR = P["mean"], P["modes"], P["var"]
 K = 20
@@ -84,36 +89,52 @@ def _rot(a):
     return np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
 
 
-def _iterate(cur, B, ridge, eh, w, h, iters=12):
+def _search(grey, cur, eh, m=8):
+    """Move each point to the offset whose profile best matches its model.
+
+    This is the appearance half the first version lacked. Instead of pulling
+    the outer chain to the nearest mask-boundary pixel and the interior to
+    the strongest ridge -- neither of which can say whether a point is on
+    the RIGHT structure -- each candidate offset is scored by Mahalanobis
+    distance to that landmark's learned profile. Returns the targets and the
+    total residual, which is also what scores a pose.
+    """
+    nrm = _ap.chain_normals(cur)
+    step = PSTEP * eh
+    tgt = cur.copy()
+    cost = np.zeros(55)
+    for j in range(55):
+        best, bd = cur[j], np.inf
+        for o in range(-m, m + 1):
+            q = cur[j] + nrm[j] * (o * step)
+            g = _ap.profile(grey, q, nrm[j], step, PK)
+            d = g - PM[j]
+            md = float(d @ PIC[j] @ d)
+            if md < bd:
+                bd, best = md, q
+        tgt[j] = best
+        cost[j] = bd
+    return tgt, float(np.median(cost))
+
+
+def _iterate(grey, cur, eh, iters=10):
     b = np.zeros(K)
+    last = np.inf
     for _ in range(iters):
-        tgt = cur.copy()
-        d = np.linalg.norm(cur[:20, None, :] - B[None, :, :], axis=2)
-        tgt[:20] = B[np.argmin(d, axis=1)]
-        for (lo, hi) in STRIPS[1:]:
-            nrm = normals(cur, lo, hi)
-            best = cur[lo:hi].copy()
-            bestv = np.full(hi - lo, -1.0)
-            for t in np.linspace(-0.08, 0.08, 17) * eh:
-                q = cur[lo:hi] + nrm * t
-                qi = np.clip(np.round(q).astype(int), [0, 0], [w - 1, h - 1])
-                v = ridge[qi[:, 1], qi[:, 0]]
-                m = v > bestv
-                best[m] = q[m]; bestv[m] = v[m]
-            tgt[lo:hi] = best
+        tgt, cost = _search(grey, cur, eh)
         sc, R, t0 = similarity(MEAN + np.einsum("k,kij->ij", b, MODES[:K]), tgt)
         inv = (R.T @ (tgt - t0).T).T / max(sc, 1e-9)
         b = np.clip(np.einsum("kij,ij->k", MODES[:K], inv - MEAN),
                     -3 * SD, 3 * SD)
         new = sc * (R @ (MEAN + np.einsum("k,kij->ij", b, MODES[:K])).T).T + t0
         done = np.linalg.norm(new - cur) / max(eh, 1) < 1e-3
-        cur = new
+        cur, last = new, cost
         if done:
             break
-    return cur
+    return cur, last
 
 
-def fit_one(im, mk, ridge, eh):
+def fit_one(grey, mk, eh):
     """Fit from four initialisations and keep the best by DATA TERM.
 
     The first version of this had two bugs that made the method look eight
@@ -149,22 +170,16 @@ def fit_one(im, mk, ridge, eh):
         if mirror:
             M0[:, 0] = -M0[:, 0]
         a0 = _axis(M0)
-        # A roundish mask has an unreliable principal axis, and every
-        # catastrophic fit in the first render was a POSE failure, not a
-        # shape-model failure. So sweep rotations instead of trusting it.
         for extra in np.linspace(0, 2 * np.pi, 12, endpoint=False):
             R0 = _rot(a_mask - a0 + extra)
             cur = scale * (R0 @ M0.T).T + c
-            out = _iterate(cur, B, ridge, eh, w, h)
-            # data-term score: outer points should sit on the mask boundary,
-            # interior points on a ridge. No annotation anywhere in here.
-            dd = np.linalg.norm(out[:20, None, :] - B[None, :, :], axis=2)
-            s_out = np.median(dd.min(axis=1)) / eh
-            qi = np.clip(np.round(out[20:]).astype(int), [0, 0], [w - 1, h - 1])
-            s_in = 1.0 - float(np.median(ridge[qi[:, 1], qi[:, 0]]))
-            score = s_out + 0.3 * s_in
-            if score < best_score:
-                best_score, best_out = score, out
+            out, cost = _iterate(grey, cur, eh)
+            # the pose is chosen by the SAME learned profile cost that drives
+            # the search, which is the thing the shape-only version could not
+            # do: a contour collapsed onto the mask boundary scored well
+            # whichever way round it was.
+            if cost < best_score:
+                best_score, best_out = cost, out
     return best_out
 
 
@@ -209,10 +224,8 @@ for c_, i in enumerate(pick):
     mk = lab == (1 + np.argmax(sz))
 
     grey = np.asarray(im.convert("L"), float) / 255.0
-    ridge = sato(grey, sigmas=range(1, 4), black_ridges=True)
-    ridge /= max(ridge.max(), 1e-9)
 
-    out = fit_one(im, mk, ridge, eh)
+    out = fit_one(grey, mk, eh)
     if out is None:
         continue
     gt = g * np.array([w, h])

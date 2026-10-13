@@ -30,7 +30,7 @@ BLAZEEAR_DIR = Path(os.environ.get("BLAZEEAR_DIR", Path(__file__).resolve().pare
 PROJECT = Path(__file__).resolve().parent
 
 LANDMARKER_INPUT_SIZE = 192
-DETECTOR_INPUT_SIZE = 128
+DETECTOR_INPUT_SIZE = 256   # must match the checkpoint; see DETECTOR_WEIGHTS
 ROI_EXPAND = 1.3  # expand detected bbox by 30% for context
 NMS_IOU_THRESH = 0.3  # suppress duplicate detections on same ear
 NMS_IOMIN_THRESH = 0.35  # also suppress when overlap covers this much of the SMALLER box
@@ -40,7 +40,19 @@ DETECTOR_CONFIDENCE = 0.70
 # CROPS, not full frames. runs/checkpoints/ still holds the pre-v2 single-stage
 # model; it loads through a different backbone and different anchors, so the
 # path decides both. Override with --detector-weights.
-DETECTOR_WEIGHTS = "runs/checkpoints_crop/BlazeEar_best.pth"
+#
+# BlazeEar now ships a 256 px model and its DEFAULT_INPUT_SIZE moved to 256. A
+# checkpoint does NOT record the size it was trained for -- the 128 px and
+# 256 px files have byte-identical state dict shapes -- so loading one at the
+# wrong size does not raise, it degrades: the 128 px model scores 0.7426
+# mAP@0.5 at 128 and 0.4577 at 256.
+#
+# We were never in that state: runs/checkpoints_crop/BlazeEar_best.pth is
+# byte-identical to model_weights/BlazeEar_best_256px.pth (md5 50f740f7...),
+# because the crop model was retrained in place at 256. The path is now the
+# explicitly sized one and input_size is passed rather than inherited, so a
+# future retrain at another size cannot pair them silently.
+DETECTOR_WEIGHTS = "model_weights/BlazeEar_best_256px.pth"
 
 # Adaptive ROI refinement.
 #
@@ -122,7 +134,8 @@ class EarDetector:
     def __init__(self, weights_path: str | Path, device: str = "cpu",
                  confidence: float | None = None, two_stage: bool = True,
                  face_weights: str | Path | None = None,
-                 legacy_anchors: bool | None = None) -> None:
+                 legacy_anchors: bool | None = None,
+                 input_size: int = DETECTOR_INPUT_SIZE) -> None:
         sys.path.insert(0, str(BLAZEEAR_DIR))
         import make_face_crops                                  # type: ignore
         from evaluate_two_stage import load_ear_model          # type: ignore
@@ -146,12 +159,15 @@ class EarDetector:
         # decoding it through the fitted ear priors yields wrong-scale boxes
         # rather than an error, so infer it from the path unless told.
         if legacy_anchors is None:
-            legacy_anchors = "checkpoints_crop" not in str(weights_path) and \
-                             "checkpoints_v2" not in str(weights_path)
+            p = str(weights_path)
+            legacy_anchors = ("checkpoints_crop" not in p
+                              and "checkpoints_v2" not in p
+                              and "model_weights/BlazeEar_best_" not in p)
         self.model = load_ear_model(
             str(weights_path),
             DETECTOR_CONFIDENCE if confidence is None else confidence,
-            str(self.device), legacy_anchors=legacy_anchors)
+            str(self.device), legacy_anchors=legacy_anchors,
+            input_size=input_size)
 
         self.two_stage = two_stage
         self.face = load_face_detector(
