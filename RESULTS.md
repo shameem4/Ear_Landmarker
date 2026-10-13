@@ -3549,3 +3549,52 @@ other 42%, which is excluded precisely because no segmenter can judge it;
 that part still needs the landmarker's residual, or a human. The honest
 summary is that the corpus is cleaner than any earlier estimate wherever
 we can actually measure it.
+
+### Assessing GT correctness on the gated ears: what each region admits
+
+With 6,107 proper ears selected, the question becomes which of the 55
+points can actually be checked. Each strip is judged by the instrument
+that can see it, and the three sources share no inputs: SAM's silhouette,
+sato ridge agreement (`qa_agreement.py`, pure-CV channels, no GPU), and
+GT-intrinsic irregularity (kink and spacing CV, which uses no image).
+
+| region | instrument | verdict |
+|---|---|---|
+| outer chain 0-19 | SAM silhouette | **usable, ~1% resolution** |
+| interior 20-34, 50-54 | sato ridge ratio | aggregate only |
+| concha border 35-49 | **nothing** | **15 of 55 points unchecked** |
+
+**The outer chain is solved.** Median 0.93% of ear height, p99 3.07%.
+Thresholds: 68 rows above 3% (1.11%), 10 above 4% (0.16%), 64 rows with
+any point past 15% (1.05%). Rendered, 5-6 of the 10 strictest are genuine,
+so precision is 50-60% and the real defect rate is roughly 0.1%.
+
+**The interior is NOT usable per row.** Group medians are 0.18-0.56,
+comfortably below the 0.70 "sits on structure" line, which confirms the
+annotations are good on average. But the fraction above 1.0 is 12-20% per
+group, far too high to be a defect rate. The tool's own docstring says why:
+above 1.0 means a bad annotation OR a channel that failed on that image,
+and at 15% it is dominated by channel failure. It is an aggregate
+instrument, not a detector.
+
+**A combiner that was the wrong shape.** Requiring 2 of 3 signals to agree
+gave 29 rows at 2.4x chance, but inspection showed only ~25-30% precision
+-- worse than the silhouette alone at a strict threshold. The design error
+is that the three signals cover DIFFERENT LANDMARKS: the silhouette sees
+points 0-19, the ridge score sees the interior. They cannot corroborate
+each other and would co-fire only through a row-level common cause. Voting
+across instruments that look at different things is not independence, it
+is a category error.
+
+**The honest position.** On proper ears the outer chain can be audited at
+~1% and is ~0.1% bad. The interior can be checked only in aggregate. The
+concha cannot be checked at all, which leaves 15 of 55 points with no
+instrument -- a standing gap, not an oversight.
+
+**Row 9698 is a statue**, not a rock as first reported: enlarged, it is
+speckled granite with a carved helix and chiselled hair. Sculpture is a
+recurring contaminant in this corpus -- a batch of Wikimedia "profile
+portraits" rejected by the detector earlier were relief sculptures. A
+statue has correct ear geometry and wrong material statistics, so it is a
+data-validity question distinct from annotation correctness, and nothing
+in the current screen detects it.

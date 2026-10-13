@@ -167,12 +167,19 @@ def main():
     p.add_argument("--jobs", type=int, default=8)
     p.add_argument("--q", type=float, default=85.0)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--rows", default=None,
+                   help="file of row indices to score instead of a random "
+                        "sample -- used to score the gated proper-ear subset")
     p.add_argument("--keep-padding", action="store_true",
                    help="do not mask letterbox padding (for reproducing the old, contaminated numbers)")
     a = p.parse_args()
     rows = list(csv.DictReader(open(ROOT / "data/manual/manifest.csv")))
-    pick = [int(i) for i in np.random.default_rng(a.seed)
-            .choice(len(rows), size=min(a.n, len(rows)), replace=False)]
+    if a.rows:
+        pick = [int(x) for x in
+                pathlib.Path(a.rows).read_text().replace(",", " ").split()]
+    else:
+        pick = [int(i) for i in np.random.default_rng(a.seed)
+                .choice(len(rows), size=min(a.n, len(rows)), replace=False)]
     best = BEST if a.depth_dir else BEST_CV
     if not a.depth_dir:
         print("pure-CV run: base+clahe only, no depth channel")
