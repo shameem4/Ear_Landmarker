@@ -3347,3 +3347,64 @@ Two things deliberately NOT changed: the demo's 0.70 confidence threshold
 detection-quality change that wants measuring, not a refresh), and the
 Python path, which already reads the 256 px checkpoint through
 `DETECTOR_WEIGHTS` and needs no copy step.
+
+
+## The Gemini BOX is not a valid annotation check -- withdrawing the 1.9% rate
+
+Rendering the disputed rows killed the drop experiment before it finished
+training. On rows where an annotated landmark sits >15% of ear height
+outside Gemini's whole-ear box, the annotation and the landmarker's own
+prediction **agree with each other and both trace the ear**; the box's top
+edge slices through the upper helix where it meets hair.
+
+Three measurements, in the order that forced the conclusion:
+
+| | IoU(box, annotation) | IoU(box, model) |
+|---|---|---|
+| control rows (healthy yardstick) | **0.926** | -- |
+| disputed, train | 0.676 | 0.698 |
+| disputed, held-out | 0.675 | 0.734 |
+
+The box agrees with NEITHER. If the annotation were simply wrong, the
+model -- which never saw the held-out labels -- should have matched the
+box at ~0.93. It reaches 0.734.
+
+| model vs ANNOTATION, outer chain | n | median | p90 |
+|---|---|---|---|
+| control, held-out | 97 | 1.72% | 3.72% |
+| disputed, held-out | 36 | **3.09%** | 5.25% |
+
+That is the decisive number. On rows the box calls 17% wrong, an
+independent model agrees with the annotation to 3.09%, barely worse than
+on control rows. **The box is the outlier, not the annotation.**
+
+Direction confirms a constant bias rather than a disputed-row artefact:
+the worst excursion is at the TOP in 37% of disputed rows and 42% of
+control rows, at median landmark index 5-6 (upper helix) in both. Gemini
+under-covers the top of the ear everywhere; on hair-adjacent ears it does
+so badly, and those are exactly the ears SAM 3's mask also falls short on.
+Two instruments failing on the same images is not corroboration.
+
+**What this withdraws:**
+
+- the 15%-excursion dispute criterion, and the 133-row drop set built from
+  it (all three training arms were stopped mid-run)
+- **the ~1.9% bad-contour rate.** The $1.11 measurement's control-arm
+  DESIGN was sound and its separation is real -- 12.0% vs 1.1% median
+  excursion -- but what separates is "rows where both SAM and Gemini
+  under-cover the ear", which tracks hair occlusion, not label error. The
+  measurement was right; the name on it was wrong.
+- the 92% escalation recall, which was scored against that same
+  box-confirmed bad set
+
+**What stands:** the ~5-6% noise floors, flaggers-not-correctors, and the
+box as a *detection* aid (control IoU 0.926 is genuinely good). What we no
+longer have is a trustworthy bad-label set.
+
+**The caveat that keeps this honest.** The model corroborating the
+annotation rules out "this individual row was mislabelled". It does NOT
+rule out "the corpus convention places the superior helix slightly too
+high", because the model learned that convention from the corpus and would
+reproduce it on held-out rows. Distinguishing those needs an instrument
+outside the corpus, and the only one with sub-5% resolution so far is a
+human looking at the image.
