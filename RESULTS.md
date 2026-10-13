@@ -3950,3 +3950,66 @@ only vetoes moves that REDUCE clearance -- and it fell 459 -> 338. That is
 121 rows improved on a dimension the constraint cannot reach.
 
 `data/manual/landmarks_sil_corrected.npy` is rebuilt from v2.
+
+## Re-marking the whole corpus with the landmarker, and where to put the line
+
+All 10,535 rows re-marked with the shipped checkpoint
+(`manual_occ_s42/EarLandmarker_292_nme=0.0149.ckpt`), disagreement scored
+as median distance from prediction to annotation over the outer chain,
+% of ear height.
+
+**This is a RANKER, not a judge.** The model trained on these rows, so its
+residual is partly memorisation and cannot adjudicate them -- that
+circularity already invalidated one analysis here. It is used the way the
+noisy-label literature uses it: a row the model failed to memorise DESPITE
+training on it is inconsistent with everything else in the corpus.
+
+| strip | median | p90 | p99 |
+|---|---|---|---|
+| outer helix | 1.44 | 3.00 | 5.25 |
+| inner helix | 1.18 | 2.36 | 4.57 |
+| concha border | 0.96 | 1.87 | 3.63 |
+| superior crus | 1.09 | 2.49 | 5.03 |
+
+| split | n | median | p90 | p99 |
+|---|---|---|---|---|
+| train | 8,427 | 1.39 | 2.78 | 4.70 |
+| val | 1,054 | 1.73 | 3.72 | 7.00 |
+| test | 1,054 | 1.68 | 3.77 | 6.56 |
+
+### The threshold
+
+Not a round number pulled from the air. **The held-out distribution is the
+reference**: a row the model fits WORSE than rows it has never seen is
+anomalous whatever the reason, and on a training row it is doubly so,
+because the model had every advantage and still could not reproduce it.
+
+| line | value | rows over | % of corpus | of which train |
+|---|---|---|---|---|
+| held-out p95 | 4.69% | 191 | 1.8% | 85 |
+| held-out p99 | 6.91% | 32 | 0.3% | 10 |
+| held-out p99.5 | 8.35% | 14 | 0.1% | 3 |
+
+**Recommended: 4.7% to review (191 rows), 6.9% to act on (32 rows).**
+
+Corroborated by an instrument that shares nothing with the landmarker:
+against the silhouette residual on the 6,107 gated rows, Spearman 0.433,
+and flagging enriches silhouette-suspect rows 4.7x at 2% rising to 33x at
+8%. Two instruments with no common evidence agreeing to that degree is
+what makes the ranking trustworthy even though neither is a judge.
+
+**Absolute precision against the silhouette is low (5-13%) and that is
+expected, not damning**: the silhouette sees only the normal component of
+the outer rim, the landmarker sees all 55 points in both components, so
+they are detecting different defects. The agreement is in the RANKING, not
+the sets.
+
+**A size signature was looked for and is NOT there.** The worst rows look
+visibly wrong, and several have a visibly truncated contour, but
+annotation area over landmarker area is 0.96 on the worst 32 against 1.00
+on controls, and 59% vs 48% smaller -- no separation. The defects are
+placement and shape, and they vary. The earlier "contour too big"
+signature from the silhouette does not reappear here.
+
+Rows written to `runs/remark/disagree_review.txt` (>3%) and
+`runs/remark/disagree_hi.txt` (>held-out p99).
