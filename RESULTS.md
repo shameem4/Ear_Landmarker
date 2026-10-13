@@ -2479,9 +2479,42 @@ At the extreme tail the whole contour goes, not just the ends -- the worst
 six rows have a correctly-shaped ear outline sitting well outside the ear.
 But those are the tail; the typical flagged row is the ends drifting.
 
-Fixable as a CLASS rather than row by row: learn the endpoint convention
-from the clean majority and re-derive the drifters against it, rather than
-re-annotating 532 rows by hand.
+### The endpoint fix was built, and it is withdrawn
+
+The plan was to learn the endpoint convention from the clean majority and
+re-derive the drifters against it. It does not work, and the reason
+invalidates most of the 5.40% above.
+
+Rendering the SAM masks against the flagged rows shows SAM systematically
+UNDER-SEGMENTS the ear, worst at the two ends: on a large share of rows it
+drops the LOBE wholesale, cutting across the ear above it. A correctly
+placed point 19 then reads as far outside the rim. Signed distances confirm
+this is systematic, not random -- 65-92% of ALL twenty points sit outside
+the mask, median +0.66% of ear height mid-chain, rising to +3.24% at point 0
+and +2.04% at point 19.
+
+So "distance to the rim" cannot separate an annotation that drifted outward
+from a mask that stopped short: they are the same measurement. And the
+magnitudes fit the mask explanation -- the offending points are a median
+17.9-19.4% outside (p90 24-28%), which a dropped lobe produces on its own,
+and only 3 rows in 9,843 exceed 40%. There is no population of grossly
+misplaced endpoints.
+
+Applied to the ends-only rows, the fix did visible HARM: it dragged correct
+lobe points up onto the truncated mask and kinked the chain. A continuity
+term barely changed it (0.212 -> 0.208 of ear length), which is what showed
+the problem was the target rather than the objective.
+
+**Revised reading.** Of the 532 flagged rows, 151 are ends-only, 296 mixed
+and 85 wholesale. Only the WHOLESALE set -- 85 rows, 0.86% of the corpus --
+is confirmed bad by eye, with the whole ring sitting off the ear. The
+endpoint-flagged remainder is dominated by mask shortfall and cannot be
+adjudicated by this method at all. Treat 0.86% as the defensible
+bad-annotation figure and 5.40% as an upper bound that includes mask error.
+
+To do better, the silhouette has to agree with the annotation convention
+about whether the lobe is part of the ear. That is a segmenter problem, not
+an annotation one.
 
 **This defect is invisible to the agreement metric.** On 200 agreement-worst
 rows against 200 agreement-best, the misrouted-point rate was the same --
