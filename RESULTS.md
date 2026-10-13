@@ -3800,3 +3800,40 @@ next thing to TEST -- untested, stated as a hypothesis -- is whether the
 landmarker's own prediction can serve as the veto: a correction that moves
 the contour away from both the original annotation AND an independent
 model is more likely to be the mask's fault than the annotation's.
+
+### Withdrawing the "damaged on 3 of 12" claim
+
+Only row 824 is visibly broken. 9698 and 10384 were called damaged on
+inspection and that call does not survive measurement: using the
+landmarker -- the one instrument not involved in making the correction --
+to measure how far the correction moved the contour from an independent
+prediction,
+
+| row | GT -> model | corrected -> model | change |
+|---|---|---|---|
+| 10384 (called damaged) | 1.90 | 3.71 | +1.81 |
+| 1315 (called working) | 2.93 | 5.14 | +2.21 |
+| 1060 (called working) | 1.66 | 4.60 | +2.94 |
+| 9698 (called damaged) | 4.49 | 4.13 | **-0.36** |
+
+There is no separation between the rows called damaged and those called
+working, and 9698 is the ONLY row that moved toward the model. The
+classification was not supported and is withdrawn; the damage rate on
+these 12 is 1, not 3.
+
+**The arbitration itself is inconclusive, and it is worth being explicit
+about why.** The correction moves away from the model on 10 of 12 rows,
+median +1.37%. That is what BOTH hypotheses predict: the landmarker was
+trained on these annotations, so if the contours really are too big it
+learned that convention, and a genuine correction necessarily moves away
+from it. This is the same circularity that invalidated the Gemini box
+analysis -- a model cannot referee a correction to its own training
+target.
+
+**So the correction is validated only against SYNTHETIC corruption**,
+where the truth is known and it recovered 100% of rows with none harmed.
+On real rows there is currently no referee at all: the silhouette made the
+correction, the landmarker shares the convention, and Gemini and the ASM
+sit at a 5-6% floor, coarser than the effect being judged. Establishing
+whether these corrections are right needs an instrument outside the
+corpus -- the 3D wrap, or a human.
