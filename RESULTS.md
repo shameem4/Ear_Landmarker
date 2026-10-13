@@ -2892,3 +2892,62 @@ fired at 0.92 on a printed political ribbon with two thumbnail portraits
 on it, and at 0.95 on a 66px stage-lit ear the landmarker then ballooned
 off. Both produced numbers (-44.94 and +28.54) that would have been
 reported as findings had the arms not been rendered.
+
+
+## Seeding the SHAPE, not the landmarks -- and catching the concha
+
+Seeding a VLM with a row's own annotation would destroy the only property
+worth having, since a model that anchors on what it is shown blesses a bad
+contour. Seeding with the canonical SHAPE avoids that: the model is handed
+the median outline of each contour over the 10,003 clean rows, mirrored to
+one handedness (the corpus is a 55/45 left-right mix and the outer chain's
+signed area separates them exactly), and asked to fit it to the photo. The
+output never sees this ear's annotation, so it stays independent -- while
+template point j still corresponds to landmark j, which the blind polygon
+could not offer. Per-point spread of the template is 0.050 of ear height,
+so the shape is well defined. `qa_build_shape_template.py`,
+`qa_gemini_refine.py`.
+
+It fits all four strips at once, so the **concha border comes along for
+free** -- the structure no classical channel could reach (best of five,
+1.03 in v5). Median distance from the annotation, % of ear height, 5 clean
+and 5 flagged rows:
+
+| | outer_helix | inner_helix | concha_border | superior_crus |
+|---|---|---|---|---|
+| thinking OFF, clean | 13.2 | 9.7 | 8.0 | 5.9 |
+| thinking OFF, flagged | 14.1 | 17.9 | 9.2 | 11.4 |
+| **thinking ON, clean** | **6.1** | **5.1** | **4.9** | 10.9 |
+| **thinking ON, flagged** | 12.6 | 7.8 | 9.2 | 15.4 |
+
+**Thinking off does NOT generalise from boxes to this task.** It was
+measured free for a box -- identical IoU at an eighth of the tokens -- and
+that result does not transfer: here it roughly doubles the fit error and
+destroys the separation between clean and flagged rows entirely (13.2 vs
+14.1). With thinking on, clean rows fit to ~5-6% and flagged rows sit at
+~12%, a 2x separation that the renders confirm: on rows 161, 368 and 385
+the annotation sprawls off the ear while the fit stays on it.
+
+Two cautions. Fit precision is ~5% of ear height on clean rows, which is a
+screen, not a replacement for an annotation. And the obvious statistic
+misleads: median distance-from-annotation mixes fit error with annotation
+error, so it showed NO separation at thinking-off while the renders showed
+the fit plainly on the ear and the annotation plainly off it. Tail
+statistics separate a little better (max 17.2 clean vs 26.0 flagged) but
+overlap -- one clean row scores worse than one flagged row.
+
+**Cost, and the design that follows.** The template costs ~1150 input
+tokens per call, and thinking on costs 5620 output tokens: **$240.50**
+corpus-wide, versus $47.36 with thinking off. That argues for two tiers
+rather than one, since the cheap box screen already localises well:
+
+| | |
+|---|---|
+| box screen, thinking off, all 10,535 rows | $10.97 |
+| template fit, thinking on, escalated rows only | $0.023/row |
+| **total at the measured 5.4% flag rate** | **$23.94** |
+| total if 10% are escalated | $35.01 |
+
+Reserve the expensive fit for rows the cheap screen doubts. Context
+caching is the other lever untried: the template prefix is byte-identical
+across every row, and Google prices cached input at roughly a twentieth.
