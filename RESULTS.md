@@ -2760,3 +2760,77 @@ not exist on this machine. Recovering full-face views would mean
 re-sourcing FFHQ and image-matching 2,000 crops back to their parents,
 which covers 19% of the corpus and raises its own licence question. Treat
 "SAM 3 sees only a crop" as a fixed property of this corpus.
+
+
+## Costing the Gemini check, and what shape it can actually return
+
+**Padding does not cure the cutoff either.** If the lobe were being lost
+because the ear runs into the crop border, padding would fix it. Over the
+same 156 rows, paired against the unpadded run:
+
+| padding | n | pt0 | pt12 | pt19 | 19-12 | lobe |
+|---|---|---|---|---|---|---|
+| none | 156 | 3.63 | 0.84 | 2.52 | **1.68** | 1.10 |
+| grey 25% | 156 | 3.58 | 0.73 | 2.48 | 1.74 | 0.91 |
+| replicate 25% | 155 | 3.21 | 0.72 | 2.35 | 1.63 | 0.90 |
+| reflect 25% | 155 | 3.94 | 0.77 | 2.59 | 1.82 | 1.12 |
+| grey 50% | 156 | 3.52 | 0.67 | 2.23 | **1.56** | **0.79** |
+| reflect 50% | 153 | 3.57 | 0.79 | 2.63 | 1.83 | 1.02 |
+
+Grey padding gives a real but UNIFORM improvement -- at 50% the lobe
+column moves -0.34 (Wilcoxon p=2.5e-22) -- while the lobe-SPECIFIC effect
+is only -0.13, about 8% of the 1.68 gap. Reflect padding does nothing at
+all (+0.01, p=0.39): mirroring invents ear texture that is not there,
+while grey separates cleanly, which is also the fill `square_roi_crop`
+already uses. Worth keeping grey padding for any future mask work; it is
+not a fix for the lobe.
+
+**The full-face test could not be run honestly.** Eight public-domain
+Wikimedia faces were boxed by Gemini, cropped as `inference.py` crops,
+landmarked by the shipped model, and segmented by SAM 3 twice -- full
+image and crop -- scored against the same points. The design is sound (the
+landmarks are model output, but both arms share them, so landmark bias
+cancels and any difference belongs to the mask). The execution is not:
+rendering shows two of seven crops contain NO EAR, and on the one clean
+row the landmarker runs its chain off across the cheek instead of down the
+lobe. The resulting "19-12 = 50" is a landmarker failure on out-of-domain
+archive photographs, not a SAM measurement. Reported for the record;
+nothing should be concluded from it. A real version needs in-domain
+full-face photos, which this corpus cannot supply.
+
+**A box is not a shape, and the conversions mostly fail.** Four routes:
+feeding the box back to SAM 3 inherits the very shortfall the box was
+meant to escape (measured: no change); cropping and landmarking is
+circular, since the landmarker is what is being audited; classical CV
+inside the box runs into the concha, which resists every ridge filter
+tried in v5. The fourth works. Gemini will emit a **polygon** outline
+directly, 8/8 rows, 24-28 points each, and rendering shows it tracks the
+rim well -- and in rows 155, 161, 428 and 506 it tracks it visibly BETTER
+than the annotation does, which is consistent with those being flagged
+rows. It still stops above the lobe where an EARRING covers it (113, 318,
+506), which is defensible: the lobe is genuinely not visible there.
+
+Do NOT ask Gemini for `mask`. It answers, but with an undocumented RLE
+that is not COCO compressed RLE -- a correct pycocotools-compatible
+decoder returns negative run lengths, because the leading `A` sign-extends
+to -15 -- and only 4 of 8 rows returned a mask at all. Polygons are
+unambiguous, need no decoder, and worked on every row.
+
+**Cost over all 10,535 rows**, measured rather than estimated (1192-1208
+input tokens per row; output INCLUDES thinking tokens, which Google bills
+at the output rate and which dominate):
+
+| task | model | input | output | total |
+|---|---|---|---|---|
+| box | 3.8-flash | 12.56M | 3.23M | **$21.55** |
+| box | 3.1-flash-lite | 12.56M | 3.23M | $7.99 |
+| polygon | 3.8-flash | 12.73M | 12.84M | **$57.70** |
+| polygon | 3.1-flash-lite | 12.73M | 12.84M | $22.44 |
+
+At $0.75/$3.75 per 1M (3.8-flash) and $0.25/$1.50 (3.1-flash-lite), the
+introductory rate through 2026-12-31; **everything doubles on
+2027-01-01**. Thinking is 86% of the box run's output tokens and its
+length is wildly unstable on polygons (229, 1103 and 2325 tokens on three
+consecutive rows), so capping the thinking budget is the obvious lever --
+untested for quality, and worth one 66-row run before committing to a
+corpus-wide spend.
