@@ -3408,3 +3408,31 @@ high", because the model learned that convention from the corpus and would
 reproduce it on held-out rows. Distinguishing those needs an instrument
 outside the corpus, and the only one with sub-5% resolution so far is a
 human looking at the image.
+
+### SAM 3 on the same rows: better than the box, and wrong in the same direction
+
+SAM 3's mask is a far better instrument than Gemini's box -- on several
+disputed rows it traces the rim to within the annotation's own line. But
+it falls short in the same place:
+
+| | SAM 3 coverage of the annotated ear |
+|---|---|
+| control rows | 90% |
+| disputed rows | 67% |
+
+On the disputed rows the annotation AND the model both extend above the
+mask, into hair. Both segmenters stop at the hairline; the 55-point
+convention continues the helix through the occlusion, and the landmarker
+reproduces that on held-out rows.
+
+**So the two instruments are not failing -- they are measuring a different
+quantity.** A segmenter delineates visible ear. The annotation describes
+ear anatomy including the occluded part. Where boundaries are clean the
+two coincide (90% coverage, box IoU 0.926) and every QA signal looks
+healthy; where hair crosses the rim they diverge by construction, and no
+prompt, box, padding, threshold or CV post-process can close it. The lobe
+cutoff chased earlier in this session was the same effect at the other end
+of the same chain.
+
+The practical rule: use segmentation for detection and gross framing,
+never as the arbiter of a rim landmark.
