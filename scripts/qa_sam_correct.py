@@ -93,10 +93,45 @@ def correct(gt20, mk, eh, tol=TOL):
     return out, off_pct
 
 
+def tps_warp(src, dst, pts, lam=1e-3):
+    """Thin-plate spline taking src->dst, evaluated at pts.
+
+    Used to PROPAGATE an outer-chain correction inward instead of
+    predicting the interior. Prediction was measured and rejected: a PDM
+    conditioned on points 0-19 reconstructs 20-54 to 3.22%, no better than
+    a similarity-fitted mean shape (3.14%) and three times worse than the
+    annotation itself, so the outer chain carries no interior shape
+    information. Propagation keeps the interior annotation and only moves
+    it the way its neighbourhood moved, which discards nothing.
+
+    lam regularises, so a noisy outer correction does not produce a wild
+    interior displacement.
+    """
+    def U(r2):
+        return np.where(r2 > 1e-12, r2 * np.log(np.maximum(r2, 1e-12)), 0.0)
+    n = len(src)
+    d2 = ((src[:, None, :] - src[None, :, :]) ** 2).sum(-1)
+    K = U(d2) + lam * np.eye(n)
+    P = np.c_[np.ones(n), src]
+    A = np.zeros((n + 3, n + 3))
+    A[:n, :n] = K; A[:n, n:] = P; A[n:, :n] = P.T
+    out = np.zeros((len(pts), 2))
+    for c in range(2):
+        rhs = np.r_[dst[:, c], np.zeros(3)]
+        try:
+            w = np.linalg.solve(A, rhs)
+        except np.linalg.LinAlgError:
+            return pts.copy()
+        d2p = ((pts[:, None, :] - src[None, :, :]) ** 2).sum(-1)
+        out[:, c] = U(d2p) @ w[:n] + np.c_[np.ones(len(pts)), pts] @ w[n:]
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
-    ap.add_argument("--mode", choices=["noharm", "recover"], default="noharm")
+    ap.add_argument("--mode", choices=["noharm", "recover", "inner"],
+                    default="noharm")
     ap.add_argument("--n", type=int, default=120)
     ap.add_argument("--tol", type=float, default=TOL)
     a = ap.parse_args()
@@ -121,12 +156,17 @@ def main():
             continue
         eh = float(g[:20, 1].max() - g[:20, 1].min())
         truth = g[:20].copy()
+        truth55 = g.copy()
         start = truth.copy()
-        if a.mode == "recover":
+        start55 = truth55.copy()
+        if a.mode in ("recover", "inner"):
             # the failure this is meant to undo: the contour inflated off
             # the ear, which is the direction every real defect took
             ctr = truth.mean(0)
             start = ctr + (truth - ctr) * 1.12
+            # the whole annotation inflates together, which is how the real
+            # defects look: the interior drifts with the contour
+            start55 = ctr + (truth55 - ctr) * 1.12
         yy, xx = np.mgrid[0:h, 0:w]
         inann = MPath(g[:20]).contains_points(
             np.c_[xx.ravel(), yy.ravel()]).reshape(h, w)
@@ -154,6 +194,20 @@ def main():
         mk = lab == (1 + np.argmax(ndimage.sum(mk, lab, range(1, nn + 1))))
         fixed, off = correct(start, mk, eh, a.tol)
         if fixed is None:
+            continue
+        if a.mode == "inner":
+            # score the INTERIOR only: 20-54, carried by the warp the outer
+            # correction defines. The interior is never replaced.
+            warped = tps_warp(start, fixed, start55[20:])
+            b = np.median(np.linalg.norm(start55[20:] - truth55[20:],
+                                         axis=1)) / eh * 100
+            af = np.median(np.linalg.norm(warped - truth55[20:],
+                                          axis=1)) / eh * 100
+            before.append(b); after.append(af)
+            moved.append(np.median(np.linalg.norm(
+                warped - start55[20:], axis=1)) / eh * 100)
+            if (c + 1) % 40 == 0:
+                print(f"  {c+1}/{len(pick)}", flush=True)
             continue
         b = np.median(np.linalg.norm(start - truth, axis=1)) / eh * 100
         af = np.median(np.linalg.norm(fixed - truth, axis=1)) / eh * 100

@@ -3654,3 +3654,51 @@ re-run because `sam2_silhouette.json` does not record component counts.
 **Scope.** This corrects 20 of 55 points. The interior has only an
 aggregate instrument and the concha has none, so neither can be corrected
 this way.
+
+## Can the interior be fixed from the outer chain? Predict no, propagate partly
+
+Two different operations hide behind the question, and they get different
+answers.
+
+**PREDICT -- reconstruct 20-54 from 0-19 through the PDM. No.**
+
+| reconstruction of points 20-54 | median | p90 |
+|---|---|---|
+| conditional PDM fit, 12 modes, solved from 0-19 | 3.22% | 5.54 |
+| mean shape, similarity-fitted to 0-19 | **3.14%** | 5.89 |
+
+Conditioning on the outer chain's SHAPE is no better than fitting the mean
+shape's pose and scale -- very slightly worse. The outer chain therefore
+carries essentially no information about the interior beyond where and how
+big the ear is. Per strip the conditional fit gives inner_helix 2.60%,
+superior_crus 2.94%, concha_border 4.36%, against an annotation that sits
+0.93% from the SAM rim and a landmarker 1.0-1.7% from the annotation. So a
+predicted interior would be about three times worse than the annotation it
+replaced. These figures are IN-SAMPLE -- the PDM was built on these rows --
+so they are an upper bound, which only strengthens the negative.
+
+That is also a useful fact in its own right: the interior annotation is NOT
+redundant with the outer contour. It carries independent information, which
+is why it has to be annotated and cannot be synthesised.
+
+**PROPAGATE -- carry the interior along with an outer correction, via a
+thin-plate spline driven by the outer chain's own displacement. Partly.**
+
+| | before -> after | better | worse |
+|---|---|---|---|
+| outer chain, corrected directly | 5.12% -> 2.68% | 100% | **0%** |
+| interior, propagated by TPS | 2.69% -> **1.89%** | 70% | **26%** |
+
+A 30% reduction, and it never discards the interior annotation -- it only
+moves it the way its neighbourhood moved. But it harms a quarter of rows,
+where the direct outer correction harmed none. The asymmetry is
+structural: the outer correction is driven by evidence AT the points being
+moved, while the interior is moved by extrapolation from a boundary whose
+own correction carries noise.
+
+**So the rule is not symmetric with the outer chain.** Apply the
+silhouette correction to 0-19 wherever the gate passes, because it is free
+of downside. Propagate inward only where the outer correction was large
+enough to matter -- on a row whose contour barely moved, the warp is near
+identity and the 26% is all that is left. Propagation corpus-wide is not
+justified on these numbers.
