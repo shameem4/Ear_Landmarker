@@ -14,9 +14,12 @@ the browser demo.
 
 Putting those landmarks into 3D -- depth, pose, the Wrap template pipeline
 and the shape model -- moved to
-[Ear_3D_Lifter](https://github.com/shameem4/Ear_3D_Lifter). Findings from
-that work up to the split stay in `RESULTS.md` here as well, because the two
-lines of work shared a history and the 2D sections cross-reference them.
+[Ear_3D_Lifter](https://github.com/shameem4/Ear_3D_Lifter), and so did its
+results -- `RESULTS_inherited.md` there holds that chapter whole, with
+`RESEARCH_BRIEF.md` as its digest. `RESULTS.md` here keeps only the 2D work.
+Two findings from the 3D effort stayed, because their subject is the 2D model:
+the perspective-augmentation fidelity measurement, and the SAM 2.1 annotation
+check.
 
 ## Pipeline
 
