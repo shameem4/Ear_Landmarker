@@ -40,7 +40,7 @@ from scipy import ndimage
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from ear3d.scheme import STRIPS, STRIP_NAMES
+from scheme import STRIPS, STRIP_NAMES
 
 OUT = pathlib.Path(sys.argv[1]); OUT.mkdir(parents=True, exist_ok=True)
 COV_MIN, BLOAT_LO, BLOAT_HI, EH_MIN = 0.85, 0.7, 1.6, 48.0

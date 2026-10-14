@@ -28,12 +28,7 @@ from PIL import Image
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from inference import LandmarkPredictor
-# ear3d/__init__ pulls in open3d, which the borrowed env lacks; the strips are
-# a constant, so load the module directly rather than through the package.
-import importlib.util as _ilu
-_s = _ilu.spec_from_file_location("_scheme", ROOT / "ear3d/scheme.py")
-_m = _ilu.module_from_spec(_s); _s.loader.exec_module(_m)
-STRIPS, STRIP_NAMES = _m.STRIPS, _m.STRIP_NAMES
+from scheme import STRIPS, STRIP_NAMES
 
 SHIPPED = ROOT / "runs/checkpoints/manual_occ_s42/EarLandmarker_292_nme=0.0149.ckpt"
 OUT = pathlib.Path(sys.argv[1]); OUT.mkdir(parents=True, exist_ok=True)

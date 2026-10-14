@@ -47,7 +47,7 @@ from matplotlib.path import Path as MPath
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
-from ear3d.scheme import GROUPS, GROUP_NAMES          # noqa: E402
+from scheme import GROUPS, GROUP_NAMES          # noqa: E402
 from train_ear_segmenter import UNetR18, IMAGENET_MEAN, IMAGENET_STD  # noqa: E402
 
 OUT = pathlib.Path(sys.argv[1])

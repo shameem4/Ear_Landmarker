@@ -31,7 +31,7 @@ import numpy as np
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from ear3d.scheme import STRIPS, STRIP_NAMES
+from scheme import STRIPS, STRIP_NAMES
 
 P = np.load(ROOT / "runs/pdm/pdm.npz")
 MEAN, MODES, VAR = P["mean"], P["modes"], P["var"]

@@ -36,7 +36,7 @@ from transformers import Sam3Model, Sam3Processor
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
-from ear3d.scheme import GROUPS, GROUP_NAMES          # noqa: E402
+from scheme import GROUPS, GROUP_NAMES          # noqa: E402
 
 OUT = pathlib.Path(sys.argv[1])
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 300

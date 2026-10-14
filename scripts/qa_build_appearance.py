@@ -33,7 +33,7 @@ from scipy import ndimage
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from ear3d.scheme import STRIPS
+from scheme import STRIPS
 
 # argv is parsed in main(), not at import: the ASM fitter imports this module
 # for chain_normals() and profile(), and must not inherit its command line.

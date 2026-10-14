@@ -30,13 +30,8 @@ import numpy as np
 from PIL import Image
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-# scheme.py directly, not via the package: ear3d/__init__ imports open3d,
-# which the google-genai interpreter does not have.
-import importlib.util as _ilu
-_spec = _ilu.spec_from_file_location("_scheme", ROOT / "ear3d/scheme.py")
-_scheme = _ilu.module_from_spec(_spec)
-_spec.loader.exec_module(_scheme)
-STRIPS, STRIP_NAMES = _scheme.STRIPS, _scheme.STRIP_NAMES
+sys.path.insert(0, str(ROOT))
+from scheme import STRIPS, STRIP_NAMES
 
 UPSCALE = 448
 DESC = {

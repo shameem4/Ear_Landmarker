@@ -32,7 +32,7 @@ import numpy as np
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from ear3d.scheme import STRIPS                                 # noqa: E402
+from scheme import STRIPS                                 # noqa: E402
 
 
 def best_ckpt(run):

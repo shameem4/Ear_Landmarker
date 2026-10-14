@@ -50,7 +50,7 @@ import numpy as np
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
-from ear3d.scheme import GROUPS, GROUP_NAMES          # noqa: E402
+from scheme import GROUPS, GROUP_NAMES          # noqa: E402
 
 G = {n: list(range(lo, hi)) for n, (lo, hi) in zip(GROUP_NAMES, GROUPS)}
 OUTER = (G["ascending_helix"] + G["descending_helix"]

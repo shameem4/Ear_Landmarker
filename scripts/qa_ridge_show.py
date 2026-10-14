@@ -32,7 +32,7 @@ from skimage.filters import sato                     # noqa: E402
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
-from ear3d.scheme import GROUPS, GROUP_NAMES          # noqa: E402
+from scheme import GROUPS, GROUP_NAMES          # noqa: E402
 from qa_common import padding_mask                    # noqa: E402
 
 g = {n: list(range(lo, hi)) for n, (lo, hi) in zip(GROUP_NAMES, GROUPS)}

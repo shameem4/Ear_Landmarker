@@ -26,7 +26,7 @@ import numpy as np
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from ear3d.scheme import STRIP_NAMES, STRIPS
+from scheme import STRIP_NAMES, STRIPS
 
 OUT = pathlib.Path(sys.argv[1]); OUT.mkdir(parents=True, exist_ok=True)
 BAD = ROOT / "runs/sam3_full/bad_rows.txt"

@@ -6,6 +6,18 @@ Real-time 55-point ear landmark regression using a BlazeBlock backbone (FaceMesh
 
 **Test NME 0.029** (861 held-out samples) at 340K parameters. See [RESULTS.md](RESULTS.md) for the full v2 experiment log, including the seed-noise floor that several candidate improvements failed to clear.
 
+## Scope
+
+This repository detects the 55-point ear scheme in **2D**: the landmarker,
+the BlazeEar detector in front of it, the training corpus and its QA, and
+the browser demo.
+
+Putting those landmarks into 3D -- depth, pose, the Wrap template pipeline
+and the shape model -- moved to
+[Ear_3D_Lifter](https://github.com/shameem4/Ear_3D_Lifter). Findings from
+that work up to the split stay in `RESULTS.md` here as well, because the two
+lines of work shared a history and the 2D sections cross-reference them.
+
 ## Pipeline
 
 ```

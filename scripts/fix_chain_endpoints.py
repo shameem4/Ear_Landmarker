@@ -90,7 +90,7 @@ from transformers import Sam3Model, Sam3Processor
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
-from ear3d.scheme import GROUPS, GROUP_NAMES          # noqa: E402
+from scheme import GROUPS, GROUP_NAMES          # noqa: E402
 
 # measured over 1,500 clean rows, in the mask frame, as a fraction of the
 # ear's long-axis extent -- see qa_endpoint_convention.py

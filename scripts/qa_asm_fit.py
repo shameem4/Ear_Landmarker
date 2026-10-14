@@ -37,7 +37,7 @@ from transformers import Sam3Model, Sam3Processor
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from ear3d.scheme import STRIPS, STRIP_NAMES
+from scheme import STRIPS, STRIP_NAMES
 
 OUT = pathlib.Path(sys.argv[1]); OUT.mkdir(parents=True, exist_ok=True)
 pick = [int(x) for x in pathlib.Path(sys.argv[2]).read_text().split()]

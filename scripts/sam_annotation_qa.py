@@ -44,7 +44,7 @@ import numpy as np
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from ear3d.scheme import STRIPS, group_of              # noqa: E402
+from scheme import STRIPS, group_of              # noqa: E402
 
 
 def main():
