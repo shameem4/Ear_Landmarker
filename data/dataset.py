@@ -168,6 +168,14 @@ class EarLandmarkDataset(Dataset):
     ) -> Tuple[Image.Image, torch.Tensor, Optional[torch.Tensor]]:
         """Geometric augmentations that require joint image+landmark transform.
 
+        NOTE ON SCOPE. This repository is 2D only; `z` is the one deliberate
+        exception, and it is not used by any training run here. The 3D repo
+        (Ear_3D_Lifter) subclasses this class for its depth dataset, so the
+        augmentation has exactly ONE definition. Forking it would be worse
+        than the scope impurity: a wrong-scale z is a plausible depth and no
+        loss can detect it, so two copies would drift silently. Do not delete
+        `z` without giving that repo a working route to this augmentation.
+
         `z`, when given, is a depth per landmark in the same units as x and y.
         Only the crop scale touches it: a flip, a translation and an in-plane
         rotation all leave depth alone. The perspective warp is the exception

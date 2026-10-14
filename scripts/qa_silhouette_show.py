@@ -13,10 +13,12 @@ from transformers import Sam2Model, Sam2Processor
 sys.path.insert(0, "scripts"); sys.path.insert(0, ".")
 from scheme import GROUPS, GROUP_NAMES
 R = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/Ear_Landmarker")
-W = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/wrap_work")
+# The silhouette JSON used to be written into the 3D repo's scratch area;
+# it belongs with the 2D QA runs. Pass a directory to override.
+W = R / "runs" / "qa"
 g = {n: list(range(lo, hi)) for n, (lo, hi) in zip(GROUP_NAMES, GROUPS)}
 OUTER = g["ascending_helix"]+g["descending_helix"]+g["helix"]+g["ear_lobe"]
-res = json.load(open(W/"tools/sam2_silhouette.json" if len(sys.argv)<2 else pathlib.Path(sys.argv[1])/"sam2_silhouette.json"))
+res = json.load(open(W/"sam2_silhouette.json" if len(sys.argv)<2 else pathlib.Path(sys.argv[1])/"sam2_silhouette.json"))
 res.sort(key=lambda r: r["outer_abs"])
 show = res[:6] + res[-6:]
 dev = "cuda"; mid = "facebook/sam2.1-hiera-base-plus"
@@ -49,5 +51,5 @@ for ax, r in zip(axes.ravel(), show):
 axes[0, 0].set_ylabel("best"); axes[1, 0].set_ylabel("worst")
 fig.suptitle("SAM 2.1 mask (cyan) vs outer landmarks (red) -- top: best 6, "
              "bottom: worst 6", fontsize=12)
-fig.tight_layout(rect=(0, 0, 1, .94)); fig.savefig(W/"tools/sam2_cases.png")
-print("wrote", W/"tools/sam2_cases.png")
+fig.tight_layout(rect=(0, 0, 1, .94)); fig.savefig(W/"sam2_cases.png")
+print("wrote", W/"sam2_cases.png")
