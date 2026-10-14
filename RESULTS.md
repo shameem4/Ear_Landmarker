@@ -4093,3 +4093,57 @@ these. If a model trained on `train_clean.csv` loses to one trained on
 look. Reverting is one flag: `--train-csv train.csv`.
 
 24 kept rows are in `qa_lists/review_keep.txt`.
+
+## Where the cleaning programme stands after reading the literature
+
+Accepted without re-measuring, 2026-10-13: **zero-mean annotation noise does
+not need cleaning.** An L2-trained network converges to the conditional mean
+of its targets, so symmetric jitter is absorbed. Xiang et al. show models
+trained with injected Gaussian noise at every level converging to the same
+NME, and their 300-VW model trained on NOISY data beating the corrected one
+(5.55/4.54/9.87 against 5.62/4.63/9.97); they report noise injection working
+as regularisation.
+
+So the taxonomy that matters is not right/wrong but:
+
+| noise | treatment |
+|---|---|
+| random jitter | ignore; it regularises |
+| systematic bias (convention, semantic ambiguity) | co-estimate, do not delete |
+| gross outliers | change the LOSS, not the dataset |
+
+**The clean-vs-full A/B was proposed and deliberately not run.** The user
+accepted the literature's prediction rather than spend GPU hours confirming
+it. `train_clean.csv` (8,355 rows) stands as built and unused; it is not
+evidence of anything and should not be cited as if a run had happened.
+
+**Two of the three answers are already in this codebase**, which was not
+noticed until the literature named them. `model/losses.py` uses Wing loss
+(log near zero, linear in the tail) -- the robust-loss answer to outliers.
+It also already splits the residual into normal and tangential components
+with a `tangential_weight`, which is the right response to ambiguity ALONG a
+contour and matches the measured fact that tangential error is 72% of the
+squared error. Its default is 1.0, so that mechanism is switched off. The
+loss also already accepts a per-point `visible` mask, which `data/dataset.py`
+supplies as a (55,) tensor.
+
+**What the literature has that this does not:**
+
+- **Latent ground truth.** Semantic Alignment (CVPR 2019) names this exact
+  failure -- contour landmarks have no precise definition, so annotators are
+  inconsistent and the inconsistency IS the published GT -- and treats the
+  consistent GT as a latent variable, alternating between training the
+  detector and re-searching the GT. No external referee required.
+- **Consistency from outside the image.** Supervision-by-Registration (CVPR
+  2018) adds a registration loss over unlabelled video through a
+  differentiable Lucas-Kanade. There is no video here, but the 589-ear wrap
+  corpus is the same category of signal. The referee this file said did not
+  exist was being looked for in the wrong form: a training CONSTRAINT, not a
+  judge of individual rows.
+- **Per-keypoint training dynamics.** REMIND and the NeoPose paper (both
+  2026) cluster per-keypoint LOSS TRAJECTORIES over epochs rather than
+  scoring a final residual, and zero the visibility flag on noisy keypoints
+  instead of discarding the image. This supersedes the training-residual
+  screen recorded earlier in this file. Both papers state the weakness
+  independently: hard-but-correct keypoints have the same dynamics as noisy
+  ones -- the failure mode already seen here.
