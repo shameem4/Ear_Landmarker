@@ -4147,3 +4147,32 @@ supplies as a (55,) tensor.
   screen recorded earlier in this file. Both papers state the weakness
   independently: hard-but-correct keypoints have the same dynamics as noisy
   ones -- the failure mode already seen here.
+
+### Plumbing for the loss-trajectory screen
+
+Two changes, both inert until asked for:
+
+`data/dataset.py` now returns `idx`, the MANIFEST row rather than the position
+in the split, so a measurement taken during training can be attributed back to
+the annotation it came from.
+
+`model/lightning_module.py` takes `point_trajectory_dir` (`--point-trajectory-dir`
+on train.py, off by default) and writes one npz per epoch holding, for every
+training row, the per-point error. ~1.4 MB per epoch, ~0.4 GB over a 300-epoch
+run, no measurable training cost.
+
+**Normal and tangential components are stored APART**, which is the one place
+this improves on the published method. REMIND and the NeoPose paper cluster a
+single per-keypoint loss; here the residual is already decomposed, and the two
+halves mean different things -- tangential is position ALONG the contour, where
+annotators disagree by convention, and normal is distance FROM it, where they
+are simply wrong. A single number mixes ambiguity with error, and the two want
+opposite treatments.
+
+Both papers independently report the method's weakness: hard-but-correct
+keypoints have the same training dynamics as wrong ones. The occlusion map from
+`qa_sam3_intrusion.py` gives a per-point reason a point is hard, so the two
+signals can be crossed -- trajectory says noisy AND occlusion says hidden is
+hard-not-wrong; trajectory says noisy and nothing is covering it is an
+inconsistent label. That is the one thing this corpus can do that the papers
+cannot, and it is a use for the QA instruments that survives the redirection.

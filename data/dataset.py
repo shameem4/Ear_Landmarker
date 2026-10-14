@@ -155,6 +155,11 @@ class EarLandmarkDataset(Dataset):
             "image": tensor_img,
             "landmarks": landmarks.view(-1),
             "visible": visible,
+            # The manifest row, not the position in this split. Carried through
+            # so a per-point measurement taken during training can be attributed
+            # back to the annotation it came from -- which is what the
+            # loss-trajectory screen needs and what a final residual cannot give.
+            "idx": torch.tensor(global_idx, dtype=torch.long),
         }
 
     def _geo_augment(

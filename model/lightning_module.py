@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pathlib
+
 from typing import Any, Dict, Optional
 
 import torch
@@ -51,6 +53,7 @@ class EarLandmarkerModule(pl.LightningModule):
         backbone: str = "default",
         width_mult: float = 1.0,
         tau: float = 1.0,
+        point_trajectory_dir: str | None = None,
         tangential_weight: float = 1.0,
         spacing_weight: float = 0.0,
     ) -> None:
@@ -77,6 +80,12 @@ class EarLandmarkerModule(pl.LightningModule):
             raise ValueError(
                 f"unknown arch {arch!r}, expected 'gap', 'heatmap', "
                 f"'facemesh' or 'facemesh_heatmap'")
+        # Off unless a directory is given: no behaviour change, and a run that
+        # does not ask for the measurement does not pay for it.
+        self._traj_dir = (pathlib.Path(point_trajectory_dir)
+                          if point_trajectory_dir else None)
+        self._traj: list = []
+
         # tangential_weight < 1 discounts residual along the GT contour, where most
         # of the label noise lives. 1.0 reproduces plain isotropic Wing loss.
         if tangential_weight >= 1.0 and spacing_weight <= 0.0:
@@ -134,13 +143,53 @@ class EarLandmarkerModule(pl.LightningModule):
                 nme_t = (d_tan * visible).sum() / den
 
         return {"loss": loss, "nme": nme, "nme_normal": nme_n,
-                "nme_tangential": nme_t, "per_point_err": per_point_err}
+                "nme_tangential": nme_t, "per_point_err": per_point_err,
+                "d_normal": d_nrm, "d_tangential": d_tan}
 
     def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         result = self._shared_step(batch)
         self.log("train/loss", result["loss"], prog_bar=True)
         self.log("train/nme", result["nme"], prog_bar=True)
+        if self._traj_dir is not None and "idx" in batch:
+            self._traj.append((
+                batch["idx"].detach().cpu().numpy().astype("int32"),
+                result["d_normal"].detach().cpu().numpy().astype("float16"),
+                result["d_tangential"].detach().cpu().numpy().astype("float16"),
+                (batch["visible"] if "visible" in batch
+                 else torch.ones_like(result["d_normal"]))
+                .detach().cpu().numpy().astype("int8"),
+            ))
         return result["loss"]
+
+    def on_train_epoch_end(self) -> None:
+        """Write this epoch's per-point error for every training row.
+
+        The screen this feeds is a LOSS TRAJECTORY, not a final residual: a
+        correctly annotated point falls steadily and bottoms out late, while an
+        inconsistent one barely improves and wanders, and the two are only
+        distinguishable across epochs. Recorded per point rather than per image,
+        because an image is rarely wrong as a whole.
+
+        Normal and tangential components are kept APART. Tangential error is
+        position along the contour, which is where annotators disagree by
+        convention; normal error is distance from the contour, which is where
+        they are simply wrong. Collapsing them into one number -- as a plain
+        per-keypoint loss would -- mixes ambiguity with error, and the two want
+        opposite treatments.
+
+        float16 and int8: this is a measurement of a measurement, and a full run
+        writes one file per epoch.
+        """
+        if self._traj_dir is None or not self._traj:
+            return
+        import numpy as np
+        d = self._traj_dir
+        d.mkdir(parents=True, exist_ok=True)
+        cat = lambda k: np.concatenate([t[k] for t in self._traj])
+        np.savez_compressed(d / f"epoch_{self.current_epoch:04d}.npz",
+                            idx=cat(0), d_normal=cat(1),
+                            d_tangential=cat(2), visible=cat(3))
+        self._traj = []
 
     def validation_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> None:
         result = self._shared_step(batch)

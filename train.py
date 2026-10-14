@@ -97,6 +97,12 @@ def main() -> None:
                              "default) is off; 1.0 balances synthetic against real. "
                              "Synthetic NEVER enters val or test, so the held-out "
                              "metrics stay purely real and a regression is visible.")
+    parser.add_argument("--point-trajectory-dir", type=str, default=None,
+                        help="Write per-point normal/tangential error for every "
+                             "training row, once per epoch, into this directory. "
+                             "Off by default. Feeds the loss-trajectory label "
+                             "screen; costs one small npz per epoch and no "
+                             "training time.")
     parser.add_argument("--run-name", type=str, default="EarLandmarker",
                         help="Names the checkpoint/log subdirectory, so concurrent "
                              "experiments do not overwrite each other")
@@ -203,6 +209,7 @@ def main() -> None:
         tau=args.tau,
         tangential_weight=args.tangential_weight,
         spacing_weight=args.spacing_weight,
+        point_trajectory_dir=args.point_trajectory_dir,
     )
 
     if args.compile:
