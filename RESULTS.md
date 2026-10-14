@@ -4225,3 +4225,50 @@ and the hand-dropped rows were dropped for being hard images, so difficulty
 alone predicts their 2x error. This is the literature's own stated failure
 mode, reproduced. The per-point screen is validated as "the model finds this
 hard", which is not the same claim.
+
+## Corpus cleanup: closed, 2026-10-13
+
+Abandoned deliberately, not for lack of a next step. The reason is the one
+from the redirection above: **L2 training absorbs zero-mean annotation
+noise**, so a corpus with symmetric label jitter trains to the same NME as a
+corrected one (Xiang et al., arXiv 2007.15269 -- noisy-trained models beat
+corrected ones on 300-VW). Only BIAS needs fixing, and the one bias this
+corpus has -- contour-landmark ambiguity, which the tangential/normal split
+measures at a ratio of 1.60 on unaugmented val -- is a property of the
+annotation convention, not of individual rows. It cannot be cleaned out row by
+row; it is addressed in the objective, where `tangential_weight` already sits.
+
+So the cleanup effort was buying accuracy it could not deliver, against a
+measured cost of removing hard-but-correct images.
+
+**What was kept, because it is already in the splits and defensible on its own
+terms:** the 84 dropped rows (non-ears and unusable images, human-reviewed,
+not a statistical filter). Splits stand at train 8,355 / val 1,049 / test
+1,047.
+
+**What exists but is NOT used by any training run**, and should not be adopted
+without re-opening this decision: `data/manual/landmarks_sil_corrected.npy`.
+It was built as a separate file precisely so it could be abandoned without
+contaminating anything, and it is being abandoned. 39% of its corrections land
+on points 14-19 where the SAM boundary is conceptual, which was the unresolved
+objection at the time.
+
+**Threads closed unfinished**, each with its reason:
+
+- *The lobe decision* (veto corrections on 14-19 or keep them). Moot: the
+  corrected file is shelved.
+- *The 4,428 non-gated rows* (per-point gating, 692 no-mask retries). This
+  would have extended a correction that is no longer wanted.
+- *The trajectory x occlusion cross* (separate "hard image" from "wrong
+  label"). This was the one genuinely novel thing the QA instruments enabled,
+  and it is the honest casualty of the decision. It dies because its only
+  consumer was the cleanup; the unresolved core above was never resolved and
+  now will not be.
+
+**What survives and stays in the repo as instruments, not as a pipeline:** the
+per-point loss trajectories (`--point-trajectory-dir`, validated at 0.937
+split-half reliability over 25 epochs), the SAM 3 occlusion map, the
+landmarker re-marking rank, and BlazEar earness. They are useful for screening
+NEW data at onboarding -- the measured economics are 92% recall at
+$6.85/1000 -- which is the live goal. They are not useful for re-litigating
+the 10,535 rows already here.
