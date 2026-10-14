@@ -4176,3 +4176,52 @@ signals can be crossed -- trajectory says noisy AND occlusion says hidden is
 hard-not-wrong; trajectory says noisy and nothing is covering it is an
 inconsistent label. That is the one thing this corpus can do that the papers
 cannot, and it is a use for the QA instruments that survives the redirection.
+
+### Cynic audit of the trajectory reading -- one claim withdrawn
+
+**WITHDRAWN: "shape carries nothing beyond the endpoint."** The test was
+underpowered and the null was uninformative. Per-point shape features were
+computed from SINGLE-epoch values, and a single epoch is mostly noise:
+epoch-to-epoch sd is 0.71 of the mean, adjacent epochs rank-correlate 0.409,
+and split-half reliability of a one-epoch per-point estimate is **0.417**. Any
+shape feature built on that was measuring augmentation.
+
+Redone on 21-epoch smoothed curves, drift becomes a real quantity --
+split-half reliability **0.556**, against 0.959 for the level -- but it still
+does not separate the groups (hand-dropped -0.038, control +0.008, wrong
+direction and tiny). The honest claim is weaker than the one withdrawn:
+**shape is measurable here and uninformative about these labels**, not absent.
+
+**WITHDRAWN: "the screen needs ~10 epochs, not 214."** Backwards. The
+trajectory's value is not that the ranking settles early; it is VARIANCE
+REDUCTION over a noisy per-point measurement:
+
+| epochs averaged | split-half reliability of the per-point estimate |
+|---|---|
+| 1 | 0.417 |
+| 5 | 0.770 |
+| 10 | 0.862 |
+| 25 | 0.937 |
+| 50 | 0.966 |
+
+So more epochs is better and 25-50 is where it flattens. This is a different
+reason to log trajectories than REMIND and the NeoPose paper give, and it
+holds even though their stated reason (shape) does not reproduce here.
+
+**SURVIVES: tangential error exceeds normal, and it is not an augmentation
+artefact.** On the UNAUGMENTED val split the ratio is **1.60**, higher than the
+1.45 seen on augmented training batches. Normal falls 88.7% from epoch 0,
+tangential 81%: the model drives the off-contour component down further and
+hits a floor on the along-contour one.
+
+**SURVIVES: the group separation is not a scale confound.** Dropped rows and
+controls have near-identical ear size in the crop (0.815 vs 0.782 of crop
+height), and the error ratio is 2.00 in raw crop units against 1.96 per ear
+height.
+
+**THE UNRESOLVED CORE.** Level separates the groups strongly and reliably, but
+nothing here shows level measures LABEL ERROR rather than IMAGE DIFFICULTY --
+and the hand-dropped rows were dropped for being hard images, so difficulty
+alone predicts their 2x error. This is the literature's own stated failure
+mode, reproduced. The per-point screen is validated as "the model finds this
+hard", which is not the same claim.
