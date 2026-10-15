@@ -209,6 +209,38 @@ precision at 0.5 to 0.985 at 0.75, recall 0.448 to 0.294), so a fixed-threshold
 comparison understates them. At matched precision the gap is smaller. It does
 not close.
 
+### T2 is dead: the 45.8% compute saving was counting boxes, not people
+
+The claim was that merging overlapping face boxes at label time would yield one
+box per head and cut stage-2 calls by 45.8%, since the detector averages 1.84
+faces per frame. **It assumed those extra boxes are duplicates. Measured, 75% of
+them are distinct heads.** Flagged by trainable_blazeface, who found *zero*
+duplicates on their own corpus and correctly guessed mine would differ in detail
+but not in direction.
+
+1500 frames, 1.78 boxes/frame, 706 multi-detection frames, 1,969 pairs:
+
+| | pairs | share |
+|---|---|---|
+| above the 0.30 NMS IoU threshold -- genuine IoU duplicates | **0** | **0.0%** |
+| essentially disjoint, IoMin < 0.1 -- distinct heads | 1478 | **75.1%** |
+| nested, IoMin >= 0.35 -- one box inside another | 313 | 15.9% |
+
+Pairwise IoU maxes out at exactly 0.300, the suppression threshold -- so
+`_weighted_non_max_suppression` is already doing this job and there is nothing
+left to merge by IoU. Merging the disjoint 75% would discard real faces and the
+ears attached to them, which is a recall loss booked as a compute win.
+
+**And the nested 16% were already tested, by me, with the opposite result.** The
+face-stage IoMin experiment suppressed exactly those pairs: it cut stage-2 calls
+by 10.6% and cost **-0.50 pp of recall, 10 ears lost and 0 gained, p=0.002**. So
+the realistic ceiling for this idea is not 45.8% but 10.6%, and that 10.6% is
+already measured as costing recall significantly.
+
+I had both halves of this on the page -- the IoMin result and the 45.8% claim --
+and never put them together. The 45.8% came from dividing frames by boxes, which
+is a statement about counting, not about redundancy.
+
 ### The face-box test ran. T4 is closed.
 
 **Fine-tuning stage 1 does not beat stock MediaPipe even in this corpus's
@@ -312,7 +344,7 @@ minimum-face-size filter on the training GT, unstarted.
 | # | fix | status | notes |
 |---|---|---|---|
 | ~~T1~~ | ~~retrain to match MediaPipe~~ | **failed, twice** | see below |
-| **T2** | Merge overlapping face boxes at **label** time | not started | a label-definition change, no model work. Yields one box per head -> **-45.8% of stage-2 calls**. Testable on this repo's harness before any training |
+| ~~T2~~ | ~~Merge overlapping face boxes at label time~~ | **dead -- the duplicates do not exist** | see below |
 | **T3** | ~~Same-size crop shifted laterally~~ | **dead -- no direction predictor, see below** | the expand sweep tested *concentric* scaling, which pays resolution everywhere. A shift pays nothing. On the 31 escaping ears, a shift <=0.1 crop-sides recovers **32.3%** and <=0.5 recovers **58.1%**, all geometrically possible. **Open problem: predicting the direction** |
 
 ### T3's gate: answered, and the answer is no
