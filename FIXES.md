@@ -66,7 +66,47 @@ its own starting point, and a null result would be uninterpretable.
 |---|---|---|---|
 | **T1** | v2 retrain to match MediaPipe | **running** | v2 code at 21363eb, data held fixed so it isolates the code fixes. Bar: 43.7% recall at ~95% precision on 8,081 val images |
 | **T2** | Merge overlapping face boxes at **label** time | not started | a label-definition change, no model work. Yields one box per head -> **-45.8% of stage-2 calls**. Testable on this repo's harness before any training |
-| **T3** | Same-size crop **shifted** laterally | not started | the expand sweep tested *concentric* scaling, which pays resolution everywhere. A shift pays nothing. On the 31 escaping ears, a shift <=0.1 crop-sides recovers **32.3%** and <=0.5 recovers **58.1%**, all geometrically possible. **Open problem: predicting the direction** |
+| **T3** | ~~Same-size crop shifted laterally~~ | **dead -- no direction predictor, see below** | the expand sweep tested *concentric* scaling, which pays resolution everywhere. A shift pays nothing. On the 31 escaping ears, a shift <=0.1 crop-sides recovers **32.3%** and <=0.5 recovers **58.1%**, all geometrically possible. **Open problem: predicting the direction** |
+
+### T3's gate: answered, and the answer is no
+
+The lateral shift needs a direction. Tested on 3000 images / 3525 ears, using
+the shipped `process()` path for boxes and crops so the escaping-ear
+determination matches every other measurement here, and a runtime-patched
+keypoint path only to read the keypoints:
+
+| predictor | escaping ears (n=290) | delivered ears (n=3235) |
+|---|---|---|
+| eye-midpoint minus nose | **57.6%** | 76.4% |
+| far tragion | **57.6%** | 78.6% |
+| eye-midpoint minus crop centre | 41.7% | 24.0% |
+| always shift right | 30.3% | 51.4% |
+| **majority class** | **69.7%** | 51.4% |
+
+**The keypoints carry real direction information -- and it is absent exactly
+where it is needed.** On delivered ears, eye-nose geometry calls the side 76.4%
+of the time against a 51.4% baseline (p=3e-188). On escaping ears it falls to
+57.6% [51.7, 63.3], barely above chance (p=0.011) and **significantly worse than
+simply always shifting the same way** (69.7%, p=1.3e-05).
+
+So a keypoint-derived direction rule is beaten by a constant on the only ears it
+would be applied to. And the constant is not a rule either: 69.7% is this
+corpus's handedness skew, not geometry, so it would not survive a mixed corpus.
+
+**This is the third time the same structure has appeared.** The tragion as a
+position predictor, the tragion-centred crop, and now eye-nose direction: in
+each case the signal is strong where the crop already works and absent where it
+fails. That is not three coincidences, it is one property of the problem --
+whatever makes an ear escape a face-centred crop (a turned or partly out-of-
+frame head) is the same thing that degrades every face-derived cue. Face
+keypoints cannot rescue a face-box crop, because they fail together with it.
+
+**Consequences.** T3 has no direction predictor and is not actionable as a
+post-hoc rule. L3, the keypoint plumbing, loses its only justification and
+should not be built. The face-stage 8.70 pp is back to having no proposed
+mechanism, and the remaining candidate is the one that does not depend on
+face-derived cues at all: **re-targeting stage 1 so the box is correct in the
+first place (T4), which is gated on T1**.
 
 **Quote T3's numbers with their shift budget attached.** The 58.1% is 18 of 31
 ears on one 279-image split, and the required offsets are a smooth continuum
@@ -94,7 +134,7 @@ measuring alongside recall, and it is a query against a harness that already exi
 |---|---|---|
 | L1 | Detection is 68-76% of pipeline wall clock | the real latency target; no mechanism proposed |
 | L2 | Decide whether `detector_frame_tta` should default on | currently off. Every measurement either project has is on a corpus that is single-presentation or scored on crops. Ear_3D_Lifter can build a mixed-presentation corpus that would settle it |
-| L3 | Recover the face keypoints | **4 lines in BlazeEar, 0 here** -- see below. Only worth doing if T3 finds a direction predictor |
+| L3 | ~~Recover the face keypoints~~ | **not worth building** -- its only justification was T3, which is now dead. Mechanism kept below because the 4-line scope and the parity-test gap are useful if it ever returns |
 
 ### L3 in detail: propagating keypoints through NMS
 
