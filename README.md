@@ -908,17 +908,36 @@ alone, so coords 4:16 are dropped in one function and nothing downstream can
 see them. (The ear model's keypoints really are untrained, since the ear
 corpus has no keypoint labels; the face model's are MediaPipe's, unchanged.)
 
-That matters because **40% of missed ears are face-stage misses** -- no crop
-ever delivered them -- and widening the crop is measured dead at every setting,
-so placement is the only remaining lever for that share. BlazeEar measured the
-nearer predicted tragion against 350 human ears: 52.0% land within 0.5x the
-ear's own size of its centre, 63.7% within 1.0x, with a bad third beyond 2x
-(one tragion is occluded on a profile face). That is not a localiser, but it is
-a usable prior for where to place a *second* window -- a union with the
-face-box crop, or a tragion-centred crop gated on both tragions being
-confidently placed. Unbuilt and unmeasured on the ears that actually escape,
-which are by definition the awkward ones; and a second crop costs a full
-stage-2 pass, 16.7 ms of a 91 ms browser frame.
+It looked like a lever, because **40% of missed ears are face-stage misses**
+-- no crop ever delivered them -- and widening the crop is measured dead at
+every setting, which leaves placement as the only remaining candidate. A
+tragion-centred second window was the one concrete proposal either project had.
+
+**It is dead, and it fails precisely where it would have to work.** Measured on
+the ears that actually escape every crop window, against the general population:
+
+| group | n | p25 | median | <=0.5x | <=1.0x | <=2.0x |
+|---|---|---|---|---|---|---|
+| reachable | 315 | 0.19 | 0.31 | 68.3% | 86.3% | 94.3% |
+| **escaping** | **31** | **3.14** | **6.61** | **0.0%** | **9.7%** | **19.4%** |
+
+Distance from the nearer predicted tragion to the ear's centre, as a multiple of
+that ear's own size. Not one of the 31 escaping ears has a tragion within half
+an ear-size; the median is 6.61x away. The two distributions barely overlap.
+
+The reason is that the failure modes are **correlated, not independent**. An ear
+escapes a concentric crop when the head is turned or placed such that
+`FACE_CROP_EXPAND` x the face box does not reach it -- and that is exactly the
+geometry in which MediaPipe's tragion for that side is occluded or
+extrapolated. The prior is strong where the crop already works and absent where
+it fails, so there is no union, confidence gate or fallback that recovers the
+ears needing recovery.
+
+What it points at instead: a frontal-face square is the wrong primitive for a
+laterally-placed organ on a head that may be turned, and no post-hoc placement
+rule reconstructs what the face box never localised. So the 8.7% remains the
+larger share of the recall ceiling with **no mechanism currently proposed** --
+a worse position than having a bad candidate, and the honest one.
 
 The `FACE_CROP_EXPAND` null survived every basis unchanged. On the correct one
 (1200 images, 1400 ears): 1.5 optimal at 79.86%, 1.2 at -7.93 pp (p=7e-19), 1.9
