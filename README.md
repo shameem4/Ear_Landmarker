@@ -588,8 +588,30 @@ main loop to buy a mechanism measured at zero here.
 Nothing about presentation argues against it: a merged second pass is symmetric
 and so falls in the class the mixed-handedness test says survives. The
 objections are cost and the absent mechanism, which is why this is recorded as
-a decision rather than an omission. Consumers whose ROI loop *does* fire should
-keep a frame-level wrapper of their own.
+a decision rather than an omission.
+
+**The decline was then tested, and the residual is the size the reasoning
+predicts.** Ear_3D_Lifter scored `detector_frame_tta` against their own
+two-full-passes wrapper on their gross-error gate, 112 ears x 25 views:
+
+| configuration | escape past 10 mm |
+|---|---|
+| their frame fusion (two full passes) | 2.719% |
+| our fusion alone | 3.303% |
+| **our fusion + `detector_frame_tta`** | **3.049%** |
+
+The flag recovers **0.254 pp of the 0.584 pp gap, 43%**, p=1.3e-03, better on 66
+of 112 ears. What remains is **+0.331 pp at p=0.058** -- real in direction, too
+small to establish on 112 ears. That is exactly what the decline's reasoning
+predicts: the flag takes the detector route and leaves the ROI route on the
+table, and it would have been awkward for the account had the flag recovered
+everything or nothing.
+
+So the line this paragraph used to end on -- that consumers whose ROI loop fires
+should keep their own frame-level wrapper -- turns out not to apply to the
+consumer it was written for. The ROI route is real on their renders; it is just
+not worth two full pipeline passes for 0.331 pp. They are retiring their wrapper
+in favour of the flag.
 
 **WebGPU was the obvious next lever and it is also rejected, on correctness
 before speed.** Tested by loading `ort.webgpu.min.js` in an isolated iframe and
