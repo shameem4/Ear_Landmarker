@@ -53,18 +53,26 @@ problem is the negative side.
 per-prior positive share. 1402 of 3790 ears sit in the mode, so a run that
 improved the tail by starving the mode would show there before it showed in recall.
 
-**A trap sitting directly in B1's path.** `_tensors_to_detections` does three
-things `BlazeEarInference` does not -- sorts each box's corners so an inverted
-prediction is repaired, drops boxes under 1e-5 in width or height, and drops
-non-finite scores -- so the two paths can hand NMS **different candidate sets on
-identical weights**. On the shipped model this is latent: zero inverted and zero
-degenerate across 1,075,200 candidates from 300 real crops, emitted detections
-matching to 0.0 over 150 images. On random weights it is live: 2,191 of 3,584
-candidates come out corner-inverted. A trained regressor does not predict
-negative width; a *partly* trained one may. So **the two paths are not safe to
-compare on a model that is still training**, which is precisely when someone
-would reach for that comparison. Found by BlazeEar while widening the parity
-test.
+**A trap that sat in B1's path, now fixed.** `_tensors_to_detections` and
+`BlazeEarInference` could hand NMS different candidate sets on identical
+weights, which mattered because **a partly trained regressor can predict
+negative width where a trained one does not** -- so the two paths were unsafe
+to compare on a model that is still training, precisely when someone would.
+Latent on the shipped model (zero inverted and zero degenerate across 1,075,200
+candidates from 300 real crops) and live on random weights (2,191 of 3,584
+corner-inverted).
+
+The cause was two masks, not three differences: boxes with no area, and
+non-finite scores. (An earlier note here, taken from BlazeEar's first
+description, also listed corner-sorting -- `BlazeEarInference` does sort
+corners, inside `decode_boxes`, just earlier than `process` does, and decode is
+bit-identical once both are sorted. They retracted that themselves.)
+`sort_corners` and `usable_box_mask` are now single definitions in `box_utils`
+used by both eager paths and the three export graphs, with the graphs zeroing
+the score rather than masking rows so their fixed shapes survive. Untrained
+weights now agree across seeds 0-4 where seed 0 diverged before, and the
+regression test deliberately runs at untrained weights, since that is the only
+place the defect was reachable. **Out of B1's path.**
 
 **And a scoping note on "under-scores small ears",** which is half right. Two
 different statistics, both measured, not in conflict: the *scoring discard rate*
