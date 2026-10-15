@@ -423,8 +423,35 @@ more here than it does in Python: measured end-to-end on a 266x346 frame,
 **97.0 ms against 77.9 ms, +24.5%**, where the same change on CUDA is +0.3%.
 The browser runs WASM and the landmarker is a much larger share of the total
 there. Pass `{ flipFusion: false }` to `EarLandmarkerPipeline` for the single
-arm if you would rather have the frame rate; a dynamic-batch export would
-recover most of the difference and has not been attempted.
+arm if you would rather have the frame rate.
+
+**A dynamic-batch export does not help, and an earlier version of this section
+wrongly said it would.** It was built and measured. The graph exports cleanly
+with a symbolic batch axis -- the wrapper's `.view(1, 55, 2)` has to become
+`.view(-1, 55, 2)` -- and it is numerically exact: batch-2 rows are bit-identical
+to separate batch-1 runs, and the graph matches the shipped one to 1.2e-07. It
+is simply not faster. Interleaved trials in the browser:
+
+| | mean | sd |
+|---|---|---|
+| two sequential batch-1 runs (shipped) | 23.51 ms | 0.38 |
+| one batch-2 run (dynamic graph) | 24.01 ms | 0.83 |
+
+Batching **loses** 2.1%. The reason is structural rather than incidental:
+`onnxruntime-web` needs WASM threads to exploit a batch, threads need
+`SharedArrayBuffer`, and that needs cross-origin isolation via COOP and COEP
+headers -- which GitHub Pages cannot send. The page reports
+`crossOriginIsolated: false` and no `SharedArrayBuffer`, so the kernels run
+sequentially and a batch of 2 is exactly twice the work plus a larger
+allocation. `ort.env.wasm.numThreads` reads 4, but that is the requested value,
+not the effective one.
+
+The real lever is the execution provider, not the batch shape. The demo loads
+`ort.min.js`, which carries only the WASM backend; `navigator.gpu` reports an
+adapter, so a WebGPU build (`ort.webgpu.min.js`) would run on the GPU, where
+batching *would* pay. That is untested here -- it means swapping the bundle,
+re-validating numerics on a different backend and keeping a WASM fallback -- so
+it is an opportunity, not a recommendation.
 
 ### Comparing the ROI refinement
 
