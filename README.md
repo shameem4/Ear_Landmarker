@@ -546,6 +546,33 @@ person to see a 0.85 pp ceiling will reach for the same signal.
 `detector_frame_tta` stays off by default on cost grounds -- a second detector
 pass at ~68% of pipeline wall clock -- not on presentation grounds.
 
+### Full frame-level TTA: declined, deliberately
+
+Running the *whole* pipeline twice -- detect, ROI refinement and landmarker, on
+the frame and on its mirror -- is what Ear_3D_Lifter does outside this pipeline.
+The only thing it adds over `detector_frame_tta` is letting the **ROI loop** see
+the mirror, which matters because `refine_roi` re-derives the crop from the
+model's own landmarks, so a better first pass compounds into a better crop.
+
+**Declined, and the measurement is why.** Refinement fires on **81% of their
+render views and 0% of photographs here** -- 1.000 landmarker calls per ear on
+every fixture and every full-pipeline run, because the crop lands inside the
+occupancy tolerance first time. The route the extra pass buys does not operate
+in this domain.
+
+It is also not a flag. `__call__` runs detection, then tracker box-smoothing,
+then the crop/ROI loop, then tracker landmark-smoothing. A second pass would
+double-update the tracker, since box smoothing sits *between* detection and
+cropping, so doing it correctly means restructuring both passes to run
+tracker-free and applying tracking once to the merged result -- surgery on the
+main loop to buy a mechanism measured at zero here.
+
+Nothing about presentation argues against it: a merged second pass is symmetric
+and so falls in the class the mixed-handedness test says survives. The
+objections are cost and the absent mechanism, which is why this is recorded as
+a decision rather than an omission. Consumers whose ROI loop *does* fire should
+keep a frame-level wrapper of their own.
+
 **WebGPU was the obvious next lever and it is also rejected, on correctness
 before speed.** Tested by loading `ort.webgpu.min.js` in an isolated iframe and
 scoring all three graphs against the WASM backend on the same inputs:
