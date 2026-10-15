@@ -209,6 +209,50 @@ precision at 0.5 to 0.985 at 0.75, recall 0.448 to 0.294), so a fixed-threshold
 comparison understates them. At matched precision the gap is smaller. It does
 not close.
 
+### The face-box test ran. T4 is closed.
+
+**Fine-tuning stage 1 does not beat stock MediaPipe even in this corpus's
+favourable regime.** Gate was "hold 0.966 at 32+ px at matched precision"; it is
+missed by a wide margin.
+
+Setup: YuNet face pseudo-labels (`cv2.FaceDetectorYN`, a different architecture
+from BlazeFace, so the labels are independent of the thing under test -- and
+RetinaFace was unusable, pinning `tensorflow==2.5.0` and a cv2 downgrade that
+would have broken the shared env). 13,482 images at conf 0.8, giving a label set
+far easier than trainable_blazeface's: **median 36.0 px at 128 input and 78.3%
+over 16 px**, against their 13.4 px and 46.7%. Train/val/heldout split by seeded
+draw **before** any filter existed; the min-16 px filter applied to train only
+(9,385 boxes / 7,442 images); 20 epochs from MediaPipe init. Scored on the
+**unfiltered** hold-out, 2,742 boxes over 1,734 images.
+
+| | threshold | precision | recall | 16-32 px | **32+ px** |
+|---|---|---|---|---|---|
+| stock | 0.60 | 0.938 | 0.654 | 0.619 | **0.954** |
+| stock | 0.50 | 0.899 | 0.671 | 0.676 | **0.963** |
+| fine-tuned | 0.50 | 0.816 | 0.581 | 0.475 | 0.882 |
+| fine-tuned | 0.80 | 0.873 | 0.133 | 0.071 | **0.218** |
+| fine-tuned | 0.30 | **0.310** | 0.642 | 0.495 | 0.986 |
+
+At **matched precision** the fine-tuned model is not close: stock reaches 0.963
+at 32+ px with precision 0.899, while the fine-tuned model's best precision is
+0.873, where its 32+ px recall is **0.218**. Its only win on 32+ px (0.986) buys
+precision of 0.310 -- 3,916 false positives against stock's 207. That is the
+same precision collapse trainable_blazeface diagnosed, reproduced on a corpus
+three times easier.
+
+**The caveat runs in the conclusion's favour, which is why it is worth stating.**
+Recall here means agreement with YuNet, and the fine-tuned model was *trained on
+YuNet labels* while stock has never seen them -- so the test is biased toward
+the fine-tuned model, and it still loses decisively. One seed, 20 epochs, no
+hyperparameter search, so a better-tuned run could differ; nothing about this
+suggests it would differ by the margin required.
+
+**So T4 is closed.** The face-stage 8.70 pp stands as a measured ceiling with no
+mechanism: concentric expansion is dead, lateral shift has no direction
+predictor, post-hoc rules on face output fail as a class, and stage-1
+re-targeting is now ruled out on its own precondition in the one regime that
+favoured it.
+
 ### If the face-box test runs, build these in from the start
 
 The cheap decisive gate for T4 is to fine-tune on a slice of *this* corpus with
