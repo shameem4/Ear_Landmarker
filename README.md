@@ -519,9 +519,29 @@ would not have.
 Two caveats worth carrying. "Mixed" there is presentation randomised per
 ear-view, while a real corpus has handedness correlated with the subject and
 with everything else about the photograph, so the independence is idealised.
-And the **oracle gap is large and unexplained**: a perfect per-point arm
-selection would reach 1.871% against fusion's 2.719%, another third again, and
-neither project has anything that gets at it.
+And the **oracle gap is large, real, and has no known route to it**:
+
+| | escape past 10 mm | |
+|---|---|---|
+| fusion | 2.719% | |
+| oracle per **view** | 2.118% | one decision per view |
+| oracle per **point** | 1.871% | 55 decisions per view |
+| **by detection confidence** | **3.192%** | the obvious selector |
+
+Two things come out of that. Most of the gap survives being decided **once per
+view** -- 0.601 pp of 0.848 pp -- so a practical rule would not need 55
+decisions, which is what the per-point oracle had implied. And **the obvious
+selector is worse than doing nothing**: picking the arm whose detection scored
+higher lands at 3.192%, worse than fusion, worse than always-mirror, and barely
+better than no TTA. It takes the mirrored arm on 75% of points, so it is
+measuring the detector's response to presentation rather than which arm placed
+the landmarks better. An older note in that project independently found
+confidence selecting the good arm 32.3% of the time, on different data and
+through different bugs, four months earlier.
+
+So the prize is recorded as real with no route to it, rather than as an
+opportunity -- because the attractive answer has now failed twice and the next
+person to see a 0.85 pp ceiling will reach for the same signal.
 
 `detector_frame_tta` stays off by default on cost grounds -- a second detector
 pass at ~68% of pipeline wall clock -- not on presentation grounds.
