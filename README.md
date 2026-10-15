@@ -747,6 +747,11 @@ covered the ear:
 | ear-stage miss -- a crop covered the ear, BlazeEar still missed it | 14.60% | **60%** | **no** |
 | face-stage miss -- no crop covered the ear | 9.75% | 40% | partly |
 
+**These two shares are on the retracted single-ear basis.** On the corrected
+human basis, measured within one 3500-image sample rather than across runs, the
+face-stage share is **8.70%** (361 of 4151 ears). The 60/40 split is roughly
+preserved and the conclusion below is unchanged.
+
 Faces per frame: mean 1.84, median 1, max 8, and only **1.1% of frames detect no
 face at all**. So the large majority of face-stage misses happen on frames where
 a face *was* found and the crop simply did not reach the ear -- which is crop
@@ -771,8 +776,20 @@ crop pays, and `trainable_blazeface` exists to fine-tune exactly these weights.
 
 Its ceiling is bounded and worth stating before anyone spends a week on it:
 - compute -- one crop per frame instead of 1.84 is **-45.8% of stage-2 calls**
-- recall -- at most **+9.75 pp**, and only if BlazeEar then finds ears it has
+- recall -- at most **+8.70 pp**, and only if BlazeEar then finds ears it has
   never had the chance to see
+
+That ceiling has been quoted at three different values and only one survives.
+9.75% is the retracted single-ear basis; 6.82% comes from dividing an
+ears-total and an ears-delivered figure that were drawn with *different seeds*,
+which is the same cross-run arithmetic error retracted elsewhere in this file;
+**8.70% is measured within a single 3500-image sample** and is the one to use.
+
+Not directly comparable to BlazeEar's own 11.3% unreachable on `common_heldout`
+(2.5% no-face plus 8.7% escaping, 355 ears): that counts an ear as reachable
+when its *centre* falls inside a crop window, where this requires 50% of its
+area, on a different split. Same phenomenon, two operationalisations. Anyone
+scoping stage-1 work should pick one and state it rather than averaging them.
 
 **The larger prize is stage 2.** 60% of misses are ears that a correct crop
 delivered and BlazeEar still missed; no amount of face-stage work touches them.
