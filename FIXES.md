@@ -104,7 +104,42 @@ They validated the port against Google's own `blaze_face_short_range.tflite`
 (recall 0.4936 vs 0.4954, per-bin identical), so none of it is a porting
 artefact.
 
-**That failure does not transfer to this corpus, and the gap is not close.**
+**The size filter fixed the diagnosed pathology and still did not clear the
+gate.** Filtering training boxes under 16 px (and dropping images where over
+half the faces would go, so real faces do not become background labels) left
+23,746 of 32,325 images at 1.48 boxes each. Scored on the UNFILTERED val split,
+2000-image sample, IoU>=0.5:
+
+| | precision | recall | 8-16 px | 16-32 px | 32+ px |
+|---|---|---|---|---|---|
+| MediaPipe stock | 0.939 | 0.464 | 0.081 | 0.857 | **0.973** |
+| v2 unfiltered | 0.199 | 0.487 | 0.264 | 0.841 | 0.920 |
+| v2 min-16 | 0.912 | 0.448 | 0.028 | **0.869** | **0.923** |
+
+The filter confirmed the mechanism -- precision recovers 0.199 -> 0.912, a 4.6x
+jump -- and 16-32 px beats stock for the first time, 0.869 against 0.857. But
+**32+ px lands at 0.923 against the 0.966-0.973 gate, a 5-point miss**, and
+aggregate recall is still below stock. **No checkpoint in that repository beats
+the frozen MediaPipe weights it initialises from.**
+
+One caveat in the fine-tuned models' favour, flagged by trainable_blazeface
+against their own interest: the fine-tuned checkpoints are calibrated
+differently and fall off much faster with threshold (min-16 goes 0.912
+precision at 0.5 to 0.985 at 0.75, recall 0.448 to 0.294), so a fixed-threshold
+comparison understates them. At matched precision the gap is smaller. It does
+not close.
+
+**What this does and does not establish for T4.** It establishes that the
+failure mechanism is understood and that removing unresolvable labels clears
+the pathology cleanly. It does **not** establish that fine-tuning this
+architecture *helps* anywhere -- only that it stops being catastrophic. So T4 is
+**not green-lit**, and the honest next step if anyone wants it answered is the
+cheap one: fine-tune on a slice of *this* corpus with ordinary face-box targets
+and see whether it holds 0.966 at 32+ px, before anyone builds ear-inclusive
+ground truth. That is a measurement on this side and nobody has asked for it.
+
+**The corpus difference that motivated T4 still holds, and the gap is not
+close.**
 Measured here on 2000 images, same units -- original pixels scaled to the 128
 letterboxed input:
 
@@ -134,7 +169,7 @@ minimum-face-size filter on the training GT, unstarted.
 
 | # | fix | status | notes |
 |---|---|---|---|
-| **T1** | v2 retrain to match MediaPipe | **running** | v2 code at 21363eb, data held fixed so it isolates the code fixes. Bar: 43.7% recall at ~95% precision on 8,081 val images |
+| ~~T1~~ | ~~retrain to match MediaPipe~~ | **failed, twice** | see below |
 | **T2** | Merge overlapping face boxes at **label** time | not started | a label-definition change, no model work. Yields one box per head -> **-45.8% of stage-2 calls**. Testable on this repo's harness before any training |
 | **T3** | ~~Same-size crop shifted laterally~~ | **dead -- no direction predictor, see below** | the expand sweep tested *concentric* scaling, which pays resolution everywhere. A shift pays nothing. On the 31 escaping ears, a shift <=0.1 crop-sides recovers **32.3%** and <=0.5 recovers **58.1%**, all geometrically possible. **Open problem: predicting the direction** |
 
