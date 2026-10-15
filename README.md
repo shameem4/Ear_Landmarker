@@ -882,10 +882,33 @@ recall against 70 ears above 96 px, so the recall is on the small side whatever
 the mechanism above the mode turns out to be.
 
 One confound worth naming for anyone reading the size axis: ear size relative to
-the *detector's* face box climbs monotonically across these bands, 0.14 to 0.75.
+the *detector's* face box climbs monotonically across these bands, 0.14 to 1.04.
 A large ear-in-crop arises when the face box is small relative to the ear, which
 is what a profile or strongly rotated head produces -- so the upper bands are
-not a clean size variable, they carry pose with them.
+not a clean size variable, they carry pose with them. Testing that directly is
+possible but was not done: the upper bands are n=130, 34 and 17, which can
+describe a confound but not settle it.
+
+**The face stage predicts ear tragions and the pipeline throws them away.**
+BlazeFace carries MediaPipe's 6 keypoints -- `num_coords = 16`, separate
+`regressor_8_kp` and `regressor_16_kp` heads, all four tensors populated from
+the pretrained weights -- in the order right eye, left eye, nose, mouth, right
+tragion, left tragion. `decode_boxes` reads `[..., 0:4]` and returns boxes
+alone, so coords 4:16 are dropped in one function and nothing downstream can
+see them. (The ear model's keypoints really are untrained, since the ear
+corpus has no keypoint labels; the face model's are MediaPipe's, unchanged.)
+
+That matters because **40% of missed ears are face-stage misses** -- no crop
+ever delivered them -- and widening the crop is measured dead at every setting,
+so placement is the only remaining lever for that share. BlazeEar measured the
+nearer predicted tragion against 350 human ears: 52.0% land within 0.5x the
+ear's own size of its centre, 63.7% within 1.0x, with a bad third beyond 2x
+(one tragion is occluded on a profile face). That is not a localiser, but it is
+a usable prior for where to place a *second* window -- a union with the
+face-box crop, or a tragion-centred crop gated on both tragions being
+confidently placed. Unbuilt and unmeasured on the ears that actually escape,
+which are by definition the awkward ones; and a second crop costs a full
+stage-2 pass, 16.7 ms of a 91 ms browser frame.
 
 The `FACE_CROP_EXPAND` null survived every basis unchanged. On the correct one
 (1200 images, 1400 ears): 1.5 optimal at 79.86%, 1.2 at -7.93 pp (p=7e-19), 1.9
