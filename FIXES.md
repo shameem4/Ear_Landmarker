@@ -67,6 +67,14 @@ its own starting point, and a null result would be uninterpretable.
 | **T1** | v2 retrain to match MediaPipe | **running** | v2 code at 21363eb, data held fixed so it isolates the code fixes. Bar: 43.7% recall at ~95% precision on 8,081 val images |
 | **T2** | Merge overlapping face boxes at **label** time | not started | a label-definition change, no model work. Yields one box per head -> **-45.8% of stage-2 calls**. Testable on this repo's harness before any training |
 | **T3** | Same-size crop **shifted** laterally | not started | the expand sweep tested *concentric* scaling, which pays resolution everywhere. A shift pays nothing. On the 31 escaping ears, a shift <=0.1 crop-sides recovers **32.3%** and <=0.5 recovers **58.1%**, all geometrically possible. **Open problem: predicting the direction** |
+
+**Quote T3's numbers with their shift budget attached.** The 58.1% is 18 of 31
+ears on one 279-image split, and the required offsets are a smooth continuum
+from 0.52 to 2.34 crop-sides (one outlier at 3.41) rather than two clean
+populations -- BlazeEar looked for a gap that would separate "near miss" from
+"wrong face" and there is none. So the recoverable share is purely a function of
+the shift budget allowed, and "58.1% of escaping ears are recoverable" without
+the `<=0.5 crop-sides` qualifier overstates it.
 | **T4** | Re-target stage 1 to an ear-inclusive box | blocked on T1 | ground truth is derivable from `master.csv` human ear boxes; the hard part is head-assignment at 1.84 faces/frame. Must come from this side |
 | **T5** | Add mirror-agreement to the v2 acceptance criteria | free | see below |
 
@@ -122,8 +130,29 @@ exactly the score-last layout above.
 **Nothing changes on this side either.** `inference.py:_as_boxes` already
 collapses a wider detection to `[box4, last column]`, and its docstring records
 that scoring by a keypoint has bitten this project before: *"made NMS sort by a
-keypoint and report nonsense scores"*. So the one real risk in this change is
+keypoint and report nonsense scores"*. So the one real risk in step 1-4 is
 step 2, and it is a risk the project has already paid for once.
+
+**But those 4 lines are the research cost, not the shipping cost.**
+`blazeear_inference.py` is a second, independent path that never mentions
+keypoints -- it builds a 4-column tensor from scratch at **four** decode sites
+(`:272` for the main class, `:662`, `:803`, `:919` for the TorchScript, ONNX and
+web wrappers). So:
+
+- **To answer the T3 direction question**, the 4 lines above are enough:
+  `make_face_crops` and `evaluate_two_stage` both go through `process()`.
+- **To ship anything keypoint-based**, all four of those sites need the same
+  change, consistently.
+
+**And the test that exists to catch exactly this will not.**
+`utils/tests/tests/test_inference_parity.py` asserts the paths agree, but it
+calls `decode_boxes_with_keypoints(..., num_keypoints=0)` and then slices
+`[..., :4]` before comparing -- box geometry only, not even the score. A
+keypoint change made in one path and not the other **passes it silently**. That
+is the repository's own documented failure mode: four paths carrying the same
+weights, disagreeing, with three defects reaching the browser because the Python
+suite could not see them. If this work ever starts, widening the parity test is
+the first commit, not the last.
 
 ---
 
