@@ -516,6 +516,24 @@ mirrored arm. A union is symmetric -- the same set whichever presentation you
 start from -- so it falls in the surviving class. A single-arm mirrored detector
 would not have.
 
+**That prediction was then tested directly, and it holds exactly rather than
+approximately.** Running the whole pipeline on a frame and on its mirror,
+un-mirroring the second and comparing the box the detector settled on, over
+6 ears x 5 yaws:
+
+| | median box diff | p90 | max |
+|---|---|---|---|
+| `detector_frame_tta=True` | **0.00 px** | 0.00 | **0.00** |
+| `detector_frame_tta=False` | 53.66 px | 121.69 | 134.88 |
+
+With the union on, the chosen box is **bit-identical** whichever presentation
+the pipeline is handed, on every view. With it off, the box moves by a median of
+**54 px and up to 135 px on the same frame and the same ear**, decided by
+nothing but which way the image was presented. On a 600 px frame that is not
+jitter, it is a different crop -- and it is a far more concrete statement of
+"differently wrong" than the recall figures above, because the ear is held
+fixed and only the presentation varies.
+
 Two caveats worth carrying. "Mixed" there is presentation randomised per
 ear-view, while a real corpus has handedness correlated with the subject and
 with everything else about the photograph, so the independence is idealised.
