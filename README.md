@@ -777,6 +777,44 @@ Its ceiling is bounded and worth stating before anyone spends a week on it:
 **The larger prize is stage 2.** 60% of misses are ears that a correct crop
 delivered and BlazeEar still missed; no amount of face-stage work touches them.
 
+### Stage 2 is a scoring problem, not a localisation one
+
+For every stage-2 miss, re-running that same crop with `min_score_thresh`
+floored to 0.01 and asking whether any box reaches IoU>=0.3 with ground truth:
+
+| | count | share |
+|---|---|---|
+| proposed, but below the 0.70 threshold | 202 | **90.2%** |
+| never proposed at any score | 22 | 9.8% |
+
+Scores of the recoverable ones: median **0.404**, p25 0.274, p75 0.570. The box
+regression is working and the classification head is under-scoring, and what it
+under-scores is small ears -- largest side inside the 256 px crop is a median
+**40.1 px for misses against 67.6 px for hits**.
+
+Sliding the threshold does not fix it, because precision pays for it:
+
+| threshold | recall | precision | FP/frame |
+|---|---|---|---|
+| 0.80 | 70.20% | 67.80% | 0.333 |
+| **0.70** | **75.60%** | **61.30%** | **0.477** |
+| 0.60 | 78.40% | 54.67% | 0.650 |
+| 0.50 | 80.47% | 46.28% | 0.934 |
+| 0.40 | 82.00% | 35.17% | 1.511 |
+| 0.30 | 83.33% | 21.39% | 3.062 |
+
+0.60 buys +2.80 pp of recall for -6.6 pp of precision and may be worth taking;
+below 0.40 precision collapses. The win is *moving* this curve, which is a
+stage-2 training change: 202 ears are already localised and scored around 0.40,
+so scoring them like the 68 px ones would be up to **+13.5 pp of pipeline
+recall at an unchanged threshold and unchanged compute**.
+
+**Caveat on that precision column.** All 13,482 labelled frames carry exactly
+one ear -- 100%, no exceptions -- so on a frontal face showing both ears, a
+correct second detection scores as a false positive. Precision is a **lower
+bound**, and how loose a bound depends on whether one-ear-per-image is a
+labelling convention or a property of the images.
+
 ## Where to revisit
 
 This configuration is considered done, not finished. What stopped it was not
