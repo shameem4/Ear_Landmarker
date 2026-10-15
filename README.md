@@ -478,24 +478,43 @@ Profiled per stage in the browser on a 266x346 frame, JS and canvas work is
 BlazeFace 10.7 ms once, BlazeEar **16.7 ms per detected face**, landmarker
 28.6 ms for both fusion arms.
 
-That middle term is the one real opportunity left. BlazeFace runs at a 0.2
-score threshold and up to 8 faces, and on these fixtures it returns 2-3 "faces"
-for a single-ear photo -- one of them typically a box that *contains* another.
-Every one of them costs a full BlazeEar pass. Suppressing overlapping face boxes
-before stage 2, the way the pipeline already suppresses overlapping *ear* boxes
-with an IoMin test, cuts 19-28% of frame time on all four fixtures with the ear
-count unchanged.
+That middle term looked like the one real opportunity, and it was measured
+properly rather than assumed. **It costs recall and is rejected.**
 
-It is **not** shipped, for two reasons. It is not behaviour-preserving -- final
-landmarks move by up to 1.02 px, because a different face crop wins and the ROI
-shifts. And `max_faces=8` / `threshold=0.2` are not arbitrary: they match
-BlazeEar's own `FACE_CROP_MAX_FACES` and `FACE_CROP_THRESHOLD` exactly, and
-`inference.py` deliberately defers face-crop geometry to BlazeEar rather than
-reimplementing it. The 78.6% two-stage recall figure was measured with this
-configuration on 500 annotated scenes, and suppressing a low-scoring face box
-that is the only one containing the ear would cost recall in exactly the case
-the second stage exists for. Four fixtures cannot see that. Validating it means
-re-running BlazeEar's recall benchmark, not testing here.
+BlazeFace is stock MediaPipe -- its front-facing 128 px weights at the original
+anchor geometry -- and its NMS, like MediaPipe's own, suppresses on plain IoU at
+0.30. That **structurally cannot** remove a nested box: one box inside another
+scores `IoU = areaSmall / areaLarge`, which tends to zero as the ratio grows.
+Measured on a profile frame, the three face boxes score IoU 0.159 and 0.225
+against the box containing them -- under the threshold, so all three survive and
+each costs a full BlazeEar pass. No setting of the existing knob fixes this:
+lowering the threshold far enough would start merging genuinely distinct faces.
+
+The repo already solved this exact failure for *ear* boxes with an
+intersection-over-minimum test (`NMS_IOMIN_THRESH = 0.35`), and the nested face
+boxes score IoMin 1.000, so the same rule removes them cleanly. Applying it to
+the face stage, scored against ground-truth ear boxes on **2000 real labelled
+frames** at the IoU>=0.3 the recall figure uses:
+
+| variant | recall@0.3 | stage-2 calls | ears lost / gained | p |
+|---|---|---|---|---|
+| shipped | **75.65%** | 3687 | | |
+| IoMin, keep highest score | 75.15% (-0.50 pp) | -10.6% | 10 / 0 | **0.002** |
+| IoMin, keep larger box | 74.30% (-1.35 pp) | -10.8% | 27 / 0 | **<0.001** |
+
+Both lose ears and gain none. Keeping the *larger* box -- which preserves
+coverage and looks like the safe choice -- is **worse**, because a bigger crop
+shrinks the ear inside it and that is precisely what the two-stage design exists
+to avoid. The redundancy is not waste: a face box that another box contains
+still frames the ear differently, and sometimes it is the only one that finds
+it. `inference.py` already says as much, that overlapping face crops each report
+the same ear and downstream NMS handles it; the cost of that correctness is the
+duplicate pass.
+
+So ~10.6% of stage-2 compute is available for ~0.5 pp of recall, significantly.
+That trade is not taken here, since recall is the scarcer resource in a
+two-stage detector whose documented ceiling is already an ear whose face was
+missed. It is recorded so the next person does not re-derive it.
 
 ### Comparing the ROI refinement
 
