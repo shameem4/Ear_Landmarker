@@ -936,10 +936,23 @@ contradiction to resolve.
 BlazeFace carries MediaPipe's 6 keypoints -- `num_coords = 16`, separate
 `regressor_8_kp` and `regressor_16_kp` heads, all four tensors populated from
 the pretrained weights -- in the order right eye, left eye, nose, mouth, right
-tragion, left tragion. `decode_boxes` reads `[..., 0:4]` and returns boxes
-alone, so coords 4:16 are dropped in one function and nothing downstream can
-see them. (The ear model's keypoints really are untrained, since the ear
-corpus has no keypoint labels; the face model's are MediaPipe's, unchanged.)
+tragion, left tragion.
+
+They are **decoded and then thrown away**, which is a one-line fix rather than
+missing plumbing: `blazedetector.py:339` calls `decode_boxes_with_keypoints`,
+and `blazedetector.py:262` slices the result to `[:, :5]` inside NMS filtering.
+The face model reports `num_keypoints = 6` and `num_coords = 16`, and
+`process()` still returns `(N, 5)`. (An earlier version of this section blamed
+`decode_boxes` reading `[..., 0:4]`; that is the *training/debug* decoder in
+`utils/box_utils`, not the inference path.)
+
+Two things not to misread. The ear model's keypoints really are untrained --
+the ear corpus has no keypoint labels -- while the face model's are MediaPipe's,
+unchanged. And in `trainable_blazeface` the keypoint regressors are **frozen**
+with no keypoint loss, so the tragion predictions are pure inherited MediaPipe
+and have never been fine-tuned on this data. "The tragion prior is weak on
+turned heads" is therefore a statement about MediaPipe's training distribution,
+not about what the architecture could learn.
 
 It looked like a lever, because **40% of missed ears are face-stage misses**
 -- no crop ever delivered them -- and widening the crop is measured dead at
