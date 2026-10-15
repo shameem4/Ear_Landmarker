@@ -51,7 +51,33 @@ problem is the negative side.
 
 **Guard on every run:** report the 64-80 px band, mean positives-per-ear, and the
 per-prior positive share. 1402 of 3790 ears sit in the mode, so a run that
-improved the tail by starving the mode would show there before it showed in recall.
+improved the tail by starving the mode would show there before it showed in
+recall. `measure_anchor_budget.py` prints the latter two, so the guard costs one
+script invocation per arm.
+
+**B1 is built and queued, not started.** `AUGMENT_SCALE_RANGE` is (0.35, 1.25)
+with the old range reachable from the environment. At the data level the change
+does what it should: the 0-32 px band goes from 5.99% of training boxes to
+13.34%, 32-48 from 10.89% to 17.09%, and the p10 ear from 40.0 px to 28.5. It
+runs as a **two-arm A/B** -- control is the old range under today's code --
+because the shipped checkpoint predates other changes, so a lone retrain
+compared against it would have several candidate causes and neither a win nor a
+null would be attributable.
+
+**The replication standard is pre-registered in the launcher**, which is the
+only time such a standard means anything: *one band improved by a couple of
+points with the mode flat, on a single draw and with no interval, is not a
+result; the read is "needs a second draw", and the next step is to re-run the
+pair rather than write it up.* That is the shape of trainable_blazeface's lone
+16-32 px bin at +1.2, which they downgraded themselves.
+
+**One caveat on how any B1 number can be pinned.** `train_blazeear.py` has no
+`--seed`, so the two arms control the *variable* but not the *draw* -- every run
+is an independent, unreproducible sample. That is adequate for replication (run
+the pair again and see whether the effect survives) and inadequate for exact
+reproduction, so a result that mattered could not be pinned as things stand.
+Adding `--seed` is recorded there as worth doing **if B1 pays** and not worth
+touching the trainer for speculatively.
 
 **A trap that sat in B1's path, now fixed.** `_tensors_to_detections` and
 `BlazeEarInference` could hand NMS different candidate sets on identical
