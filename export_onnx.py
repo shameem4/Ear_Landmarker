@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import numpy as np
 import torch
 import onnx
 
@@ -88,8 +89,90 @@ class EarLandmarkerWeb(torch.nn.Module):
         return self.model(image).view(1, 55, 2)
 
 
-def export(checkpoint_path: Path, output_path: Path) -> None:
-    """Export model to ONNX with simplification."""
+def _probe_inputs(n: int = 4) -> list[torch.Tensor]:
+    """Inputs that actually exercise the graph, in the [-1, 1] range it sees.
+
+    One is a real ear crop when the corpus is present. A check driven only by
+    noise can pass while verifying nothing interesting -- that is how BlazeEar's
+    ONNX post-process graph shipped with its confidence threshold missing: the
+    self-check probed with a random image, nothing scored above the gate, and it
+    reported success having compared two empty results.
+    """
+    gen = torch.Generator().manual_seed(0)
+    probes = [(torch.rand(1, 3, 192, 192, generator=gen) - 0.5) / 0.5
+              for _ in range(n - 1)]
+    crops = sorted((PROJECT / "data" / "manual" / "images").glob("*.jpg"))[:1]
+    if crops:
+        import cv2
+        img = cv2.cvtColor(cv2.imread(str(crops[0])), cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, (192, 192))
+        t = torch.from_numpy(img).float().permute(2, 0, 1)[None] / 255.0
+        probes.append((t - 0.5) / 0.5)
+    else:
+        probes.append(torch.zeros(1, 3, 192, 192))
+    return probes
+
+
+def verify_export(wrapper: torch.nn.Module, output_path: Path,
+                  output_names: list[str], tol: float = 1e-4) -> bool:
+    """Run the exported graph against the module and compare every output.
+
+    Returns False -- not True -- when the check cannot run. A verification step
+    that reports success because its dependency is missing is worse than no
+    verification, because it reads as evidence.
+    """
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        print("FAIL: onnxruntime is not installed, so the exported graph was "
+              "NOT checked against the model.\n"
+              "  Install it (pip install onnxruntime) or pass --no-check to "
+              "skip this deliberately.")
+        return False
+
+    sess = ort.InferenceSession(str(output_path), providers=["CPUExecutionProvider"])
+    got_names = [o.name for o in sess.get_outputs()]
+    if got_names != output_names:
+        print(f"FAIL: graph emits {got_names}, expected {output_names}")
+        return False
+
+    worst = {name: 0.0 for name in output_names}
+    per_probe = []
+    for x in _probe_inputs():
+        with torch.no_grad():
+            want = wrapper(x)
+        want = [want] if isinstance(want, torch.Tensor) else list(want)
+        got = sess.run(None, {"image": x.numpy()})
+        for name, w, g in zip(output_names, want, got):
+            w = w.numpy()
+            if not np.isfinite(g).all():
+                print(f"FAIL: graph output {name!r} contains non-finite values")
+                return False
+            worst[name] = max(worst[name], float(np.abs(w - g).max()))
+        per_probe.append(got[0].reshape(-1))
+
+    # Non-vacuity: if every probe produced the same output the comparison above
+    # would hold for a graph that ignores its input entirely.
+    spread = float(np.abs(np.stack(per_probe) - per_probe[0]).max())
+    if spread < tol:
+        print(f"FAIL: all {len(per_probe)} probes produced the same landmarks "
+              f"(spread {spread:.2e}); the graph is not responding to its input, "
+              f"so agreement proves nothing")
+        return False
+
+    bad = {k: v for k, v in worst.items() if v > tol}
+    for name, v in worst.items():
+        print(f"  {name}: max |onnx - torch| = {v:.2e}")
+    if bad:
+        print(f"FAIL: {bad} exceeds tolerance {tol:g}")
+        return False
+    print(f"Verified against PyTorch on {len(per_probe)} probes "
+          f"(output spread {spread:.3f}, so the graph does respond to input)")
+    return True
+
+
+def export(checkpoint_path: Path, output_path: Path, check: bool = True) -> None:
+    """Export model to ONNX, then verify the graph against the module."""
     model = load_model(checkpoint_path)
     wrapper = EarLandmarkerWeb(model)
     wrapper.eval()
@@ -144,9 +227,25 @@ def export(checkpoint_path: Path, output_path: Path) -> None:
     print(f"Input:  image (1, 3, 192, 192) float32, [-1, 1]")
     print(f"Output: {', '.join(output_names)}")
 
+    # Verify LAST, after simplification, so what is checked is what ships.
+    if not check:
+        print("Verification skipped (--no-check): the graph was NOT compared "
+              "against the model.")
+        return
+    if not verify_export(wrapper, output_path, output_names):
+        raise SystemExit(
+            f"Export verification FAILED for {output_path}. The file was "
+            f"written and should not be shipped until this is resolved.")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export EarLandmarker to ONNX")
+    parser.add_argument("--no-check", dest="check", action="store_false",
+                        default=True,
+                        help="Skip verifying the exported graph against the "
+                             "model. The check needs onnxruntime; skipping it "
+                             "deliberately is fine, a missing dependency "
+                             "silently passing is not")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Path to .ckpt file (default: best by NME)")
     parser.add_argument("--output", type=str,
@@ -160,7 +259,7 @@ def main() -> None:
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    export(ckpt, output)
+    export(ckpt, output, check=args.check)
 
 
 if __name__ == "__main__":
