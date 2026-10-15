@@ -19,6 +19,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Ea
 from pytorch_lightning.loggers import CSVLogger
 from torch.utils.data import DataLoader
 
+from checkpoint_utils import best_checkpoint
 from data.dataset import EarLandmarkDataset, AugmentationParams
 from model.lightning_module import EarLandmarkerModule
 
@@ -258,17 +259,13 @@ def main() -> None:
         if args.resume == "last":
             ckpt_path = ckpt_dir / "last.ckpt"
         elif args.resume == "best":
-            candidates = list(ckpt_dir.glob("EarLandmarker_*.ckpt"))
-            candidates += list(ckpt_dir.rglob("nme=*.ckpt"))
-            best_nme = 999.0
-            for c in candidates:
-                try:
-                    nme = float(c.stem.split("nme=")[1])
-                    if nme < best_nme:
-                        best_nme = nme
-                        ckpt_path = c
-                except (IndexError, ValueError):
-                    continue
+            # By the score inside the file, not the rounded nme= in the name.
+            # The name is rounded to four decimals and runs usually end with
+            # two or three checkpoints tied there, so the old name-based
+            # comparison kept the first in readdir order -- the EARLIEST tied
+            # epoch. Resuming fixed_conv_s42 would have rolled back from epoch
+            # 433 to 388, discarding 45 epochs. See checkpoint_utils.
+            ckpt_path = best_checkpoint(ckpt_dir)
         else:
             ckpt_path = Path(args.resume)
         if ckpt_path and ckpt_path.exists():

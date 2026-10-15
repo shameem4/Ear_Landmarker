@@ -348,11 +348,11 @@ python train.py --data-dir data/manual --arch heatmap --perspective-deg 65
 # Score checkpoints on the held-out test split
 python scripts/eval_test.py
 python scripts/eval_test.py v6_persp65
-python scripts/eval_test.py --data-dir data/manual manual_occ_s42
+python scripts/eval_test.py --data-dir data/manual fixed_conv_s42
 
 # Compare models on real frames with NO ground truth, which is the only
 # comparison the collectionB convention cannot distort
-python scripts/eval_gt_free.py --limit 500 v6_persp65 manual_occ_s42
+python scripts/eval_gt_free.py --limit 500 manual_occ_s42 fixed_conv_s42
 
 # Tests
 python -m pytest tests/ -q
@@ -406,8 +406,16 @@ To regenerate the ONNX model the page loads:
 
 ```bash
 python export_onnx.py
-python export_onnx.py --checkpoint runs/checkpoints/manual_occ_s42/EarLandmarker_292_nme=0.0149.ckpt
+python export_onnx.py --checkpoint runs/checkpoints/fixed_conv_s42/EarLandmarker_433_nme=0.0145.ckpt
 ```
+
+The browser demo runs the landmarker **single-arm**, without the flip fusion the
+Python pipeline now applies by default. The exported graph is fixed batch 1
+(`dynamic_axes=None` in `export_onnx.py`), so fusing in the browser means either
+a dynamic-batch export or two sequential sessions; neither has been measured in
+`onnxruntime-web`. The gap is the -1.83% `nme_normal` fusion buys, which is not
+visible by eye on a webcam feed, but it does mean the page is not a pixel-exact
+preview of the Python result.
 
 ### Comparing the ROI refinement
 
@@ -433,9 +441,11 @@ enough.
 
 | Metric | Value |
 |--------|-------|
-| **shipped web model** | `manual_occ_s42` (clean provenance) |
+| **shipped web model** | `fixed_conv_s42` (clean provenance, handedness bias fixed) |
 | contour placement on 455 real frames, no ground truth | **4.067** vs 3.889 for `v6_persp65` (higher is better) |
-| test NME on the old benchmark, shipped model | 0.0347 |
+| test NME on the old benchmark, shipped model | 0.0342 single-arm (0.0337 fused); 0.0346 for the previous `manual_occ_s42` |
+| handedness bias (R-L antisymmetry, paired, audioear2d) | **-1.01% (p=0.46)** vs -17.05% (p=2.7e-19) before the fix |
+| flip fusion, on by default | -1.83% nme_normal (p=0.009), +0.3% pipeline wall clock on CUDA |
 | test NME on the old benchmark, excluding collectionB | 0.0244 vs 0.0237 (`v6_persp65`) |
 | test NME, previous shipped model (`v6_persp65`) | 0.0292 (~5.6px at 192px) |
 | detector ear recall, IoU>=0.3 (BlazeEar v2 two-stage) | 78.6% |
@@ -461,6 +471,170 @@ number on a two-way split and is not comparable; see [RESULTS.md](RESULTS.md).
 
 FPS figures from v1 (579 GPU / 226 CPU) are not carried over -- the heatmap head
 adds a decoder and they have not been re-measured.
+
+## The handedness bias
+
+The model used to be measurably worse at left-presented ears than right. Finding
+that took a while, the first explanation was wrong, and the fix retired a
+conclusion this README had previously stated. The whole arc is worth recording,
+because most of the difficulty was in the measurement rather than the bug.
+
+### Why it stayed hidden
+
+Two independent traps, and an earlier analysis fell into both and concluded
+there was no bias at all.
+
+**A balanced corpus cancels it.** The obvious test -- score the corpus as-is,
+score it mirrored, compare -- is worthless on a handedness-balanced set. A bias
+of `+d` on right ears appears as `-d` on left ones, and the pooled difference
+goes to zero no matter how large `d` is. The test split is 146 right / 154 left,
+so the pooled number read `+0.57%`, not significant, while its two halves were
+`+9.3%` and `-7.7%` at `p < 1e-8`. **Always stratify by side.**
+
+The per-side figures above are the *paired* quantity, flipped-arm minus as-is
+arm: positive means mirroring the input makes that side worse, so the model
+already favoured it. Right ears read `+9.3%` and left ears `-7.7%`, which is the
+bias stated the other way round.
+
+**Plain NME dilutes it ~6x.** About 72% of squared error here is tangential,
+i.e. sliding along the contour, which is mostly annotation noise. A systematic
+displacement shows up in the normal direction, so `nme_normal` sees it and plain
+`nme` buries it. The effect was confined to the normal component; the tangential
+component had `p = 0.79`.
+
+**Pair within the row.** An unpaired test -- subgroup mean against the global
+mean -- returns `|t| < 0.7` on the very same data, because row-to-row difficulty
+swamps a few-percent shift. The statistic that works is per-row: the flipped
+arm's `nme_normal` minus the as-is arm's. One of these measurements was built
+unpaired first and had to be thrown away.
+
+Side labels are free, incidentally, but get the polarity from anatomy rather
+than from geometry. The canal (point 39) is anterior, so viewing a head from its
+right side the nose -- and the canal -- falls on the image right: `canal_x >
+rim_centroid_x` means a right ear. The signed area (shoelace) of the ordered
+outer-rim polyline agrees with that on 860 of 861 rows, but its sign convention
+is not self-evident and was adopted backwards here once, which silently swapped
+every R/L attribution while leaving all magnitudes and p-values untouched.
+Antisymmetry statistics will not catch that for you. The `_right` token in the
+filenames is **not** a label either -- it is constant across all 10,535 rows.
+
+### What it actually was
+
+A sub-pixel bug in the geometric augmentation, in `data/dataset.py`.
+
+Translation augmentation moved the **image** by cropping, which can only shift
+by a whole number of pixels, while it moved the **labels** by the exact
+fractional amount. `int()` floors, so the two disagreed by a mean of
+**-0.4692 px**, or -0.002444 in normalised units, measured directly over 200,000
+draws of the augmentation arithmetic. `_bbox_jitter` had the same defect by
+handing PIL a float crop box, which PIL truncates.
+
+On its own that is a harmless registration error. The horizontal flip is what
+turns it into a handedness effect: under a mirror, a constant x-offset is
+**anti-equivariant** -- it negates -- so the model learns `+d` for one
+presentation and `-d` for the other. In y there is no flip, so it stays an
+ordinary constant, which is why a constant `+0.0026` y-correction used to
+improve accuracy while the same correction in x did not.
+
+The telling measurement needs no labels at all. With `a` the prediction and `f`
+the un-mirrored prediction on the mirrored input, `(a - f) / 2` cancels the
+target entirely and so is a property of the model alone. It read **-0.0023, the
+same sign in all nine checkpoints** across three architectures, two
+initialisations and three seeds. At random initialisation it is ~100x smaller
+with mixed signs, so the asymmetry was learned, not architectural.
+
+### The explanation that was wrong
+
+The first diagnosis blamed a convention mismatch: labels normalised as `px/W`
+against a decoder grid of `(i+0.5)/w`, a half-pixel apart. It was committed, and
+then refuted by checking the annotations themselves -- `data/manual` coordinates
+are continuous sub-pixel values, mean fractional part 0.2503 with zero integers,
+so `px/W` is correct and `1-x` is the exact mirror. The `preprocessed` corpus is
+54.3% integers and those rows may sit half a pixel off, but that is their source
+annotation and a constant label offset cancels in every handedness statistic
+here. Wrong, and retracted.
+
+### Confirming the fix
+
+A matched A/B retrain -- same seed, same epochs, `LEGACY_SUBPIXEL_SHIFT` the
+only difference -- then a converged retrain on the full shipped recipe.
+
+| | legacy | fixed |
+|---|---|---|
+| R-L antisymmetry (paired, audioear2d) | **+17.05%** (p=2.7e-19) | **+1.01%** (p=0.46) |
+| right ears | +9.32% (p=5.5e-12) | -0.56% (p=0.60) |
+| left ears | -7.73% (p=7.3e-09) | -1.57% (p=0.078) |
+| `(a-f)/2` x-component | -0.001618 (t=-11.0) | -0.000431 (t=-2.49) |
+
+A second, independent channel moved as predicted and could have failed: the
+*equivariant* y-residual also collapsed, -0.00274 to -0.00039, and the constant
+y-correction stopped helping.
+
+Accuracy is a wash. `val_nme` 0.01452 against 0.01487 is one seed on
+`data/manual`, the cut that flatters the fix, and the cross-source split nearly
+reverses it. The bias removal is the reason to ship it, not accuracy.
+
+### What the fix cost: a retracted conclusion
+
+On the 60-epoch A/B pair, flip fusion's advantage collapsed by 70% once the bug
+was fixed, which supported a tidy story -- that test-time fusion had mostly been
+a workaround for the augmentation defect. That story is **wrong**, and the
+reason is instructive: both arms of that A/B ran with default augmentation
+(`perspective_deg=0`) while the shipped recipe uses 65, so neither arm was the
+model anyone would ship. On converged models with the real recipe:
+
+| | legacy | fixed | collapse |
+|---|---|---|---|
+| fusion vs none | -2.95% (p=3.8e-06) | **-1.83% (p=0.009)** | 38% |
+| fusion vs replacement | -2.67% (p=1.9e-05) | **-2.35% (p=1.7e-03)** | 12% |
+
+Fusion still pays, significantly, on a clean model. A sibling project consuming
+these landmarks in 3D reached the same conclusion from the opposite direction:
+on its gross-error gate, fusion's advantage over doing nothing *grew* after the
+fix.
+
+### Flip fusion, and why it is not a free lunch
+
+Fusion is now on by default: average the prediction with the un-mirrored
+prediction on the mirrored crop. It is batched into a single forward of batch 2,
+so the second arm costs +0.3% of pipeline wall clock on CUDA rather than a whole
+second pass. It is also *exactly* equivariant, which is a property worth having
+and is pinned by tests -- the decoder grid is `(i+0.5)/w`, so the un-mirror is
+exactly `1-x`, and training applies the flip as `1.0 - x` with **no index
+permutation**, so point `i` is the same anatomical point in both arms.
+
+The honest caveat is in the tail. The gain is in the mean and the body of the
+distribution: points over 0.05 improve by -0.57pp (p=1.4e-09). Rows whose worst
+point exceeds 0.20 went the **wrong** way, 3.48% to 4.30% -- nominally p=0.039,
+and not significant once corrected for the five thresholds tested. Weak on its
+own, but the sibling project measured the same sign independently on a >10mm
+gross-error gate over renders, and two weak signals in different domains
+agreeing on direction is worth more than either p-value. Notably, on the legacy
+checkpoint fusion helped at *every* threshold; the tail cost appears only once
+the bias is gone, which fits fusion no longer having a systematic offset to
+cancel. If your metric is the far tail, measure it and consider
+`--no-flip-fusion`.
+
+### Not a strict upgrade for everyone
+
+On a single-handed pipeline -- one that presents every ear in the same form --
+an anti-equivariant offset is not a handedness bias at all. It is a constant
+whose sign either suits that convention or does not. The sibling project's
+corpus is entirely left-form, and there the legacy model's offset was *helping*:
+its as-is arm is 0.275pp worse with the fixed checkpoint (p=3.2e-04), while its
+mirrored arm improves by about as much. That is what losing an accidental
+alignment looks like, and it would reverse on right-presented ears -- so it is a
+dependency rather than an asset. Still worth measuring before adopting.
+
+### Found along the way
+
+Checkpoint filenames carry `nme=` rounded to four decimals, and runs here
+usually end with two or three checkpoints tied at it. Three selectors ranked by
+that string, and both `min()` and a strict `<` keep the first element in readdir
+order -- which is epoch order. The result was a systematic preference for the
+**earliest** tied checkpoint: `train.py --resume best` would have rolled the
+converged run back 45 epochs. Fixed in `checkpoint_utils.py`, which ranks by the
+score stored inside the file.
 
 ## Where to revisit
 

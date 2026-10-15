@@ -30,6 +30,17 @@ NUM_LANDMARKS = 55
 # Must stay False for any real training run -- it corrupts every rotated label.
 LEGACY_ROTATION_SIGN = False
 
+# Attribution only. Set to True *solely* to reproduce the pre-2026-10-14
+# sub-pixel shift bug and measure what fixing it was worth. Must stay False for
+# any real run. The bug: the image was shifted by int(border + tx*S) - border
+# WHOLE pixels while the labels moved by exactly tx*S, and int() floors, so
+# image and labels disagreed by a mean -0.469 px in a fixed direction. The
+# horizontal flip then turned that constant offset into an ANTI-EQUIVARIANT one,
+# which is what made every model in this repository worse on left-presented
+# ears. _bbox_jitter had the same defect by a different route: a float crop box
+# handed to PIL, which truncates it, while the labels used the float.
+LEGACY_SUBPIXEL_SHIFT = False
+
 
 @dataclass
 class AugmentationParams:
@@ -208,12 +219,23 @@ class EarLandmarkDataset(Dataset):
             ty = random.uniform(-1, 1) * aug.translation
             border = int(self.image_size * aug.translation)
             image = ImageOps.expand(image, border=border, fill=(128, 128, 128))
-            left = int(border + tx * self.image_size)
-            top = int(border + ty * self.image_size)
-            image = image.crop((left, top, left + self.image_size, top + self.image_size))
             landmarks = landmarks.clone()
-            landmarks[:, 0] = landmarks[:, 0] - tx
-            landmarks[:, 1] = landmarks[:, 1] - ty
+            if LEGACY_SUBPIXEL_SHIFT:
+                left = int(border + tx * self.image_size)
+                top = int(border + ty * self.image_size)
+                landmarks[:, 0] = landmarks[:, 0] - tx
+                landmarks[:, 1] = landmarks[:, 1] - ty
+            else:
+                # Snap to whole pixels and move the labels by exactly the shift
+                # the image received. A crop can only move the image by an
+                # integer, so deriving the label shift from that integer is the
+                # only way the two cannot disagree.
+                dx_px = int(round(tx * self.image_size))
+                dy_px = int(round(ty * self.image_size))
+                left, top = border + dx_px, border + dy_px
+                landmarks[:, 0] = landmarks[:, 0] - dx_px / self.image_size
+                landmarks[:, 1] = landmarks[:, 1] - dy_px / self.image_size
+            image = image.crop((left, top, left + self.image_size, top + self.image_size))
 
         # Out-of-plane turn (perspective)
         if aug.perspective_deg > 0 and random.random() < aug.perspective_prob:
@@ -261,6 +283,12 @@ class EarLandmarkDataset(Dataset):
         y1 = max(0, cy - new_h / 2)
         x2 = min(w, cx + new_w / 2)
         y2 = min(h, cy + new_h / 2)
+        if not LEGACY_SUBPIXEL_SHIFT:
+            # PIL truncates a float crop box, so the labels have to be built
+            # from the integer box the image actually gets, not the float one.
+            x1, y1 = int(round(x1)), int(round(y1))
+            x2, y2 = int(round(x2)), int(round(y2))
+            x2, y2 = max(x2, x1 + 1), max(y2, y1 + 1)
 
         cropped = image.crop((x1, y1, x2, y2))
         cropped = cropped.resize((self.image_size, self.image_size), Image.BILINEAR)

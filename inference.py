@@ -22,6 +22,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from checkpoint_utils import checkpoint_score
 from model.ear_landmarker import EarLandmarker, EarLandmarkerHeatmap
 from model.smoothing import EarTracker
 
@@ -74,6 +75,28 @@ ROI_OCC_TOL = 0.06        # skip refinement when occupancy is already this close
 ROI_SATURATED = 0.88      # above this the ear is clipped, so measured extent under-reads
 ROI_SAT_BOOST = 1.25      # ...so grow more aggressively than the measurement implies
 ROI_MAX_REFINE = 1        # refinement passes; 1 lands within 1% of the fixed point
+
+# Average each prediction with the un-mirrored prediction on the mirrored crop.
+# ON by default. Measured on the 861-row cross-source test split with the
+# shipped fixed_conv_s42 checkpoint:
+#   nme_normal        -1.83%  (p=0.009)
+#   points over 0.05  -0.57pp (p=1.4e-09)
+#   points over 0.10  -0.14pp (p=5.0e-03)
+#   mean worst point  -1.73%  (p=1.1e-03)
+# Batched, so it is one forward of batch 2 rather than two passes.
+#
+# WHEN TO TURN IT OFF. The gain is in the mean and the body of the distribution,
+# NOT in the far tail. On this checkpoint the rate of rows whose worst point
+# exceeds 0.20 went the wrong way, 3.48% -> 4.30% (p=0.039 nominal, and not
+# significant after correcting for the five thresholds tested). Ear_3D_Lifter
+# measured the same sign independently on a >10mm gross-error gate on renders.
+# Two weak signals in different domains agreeing on direction is worth more than
+# either p-value, so a consumer whose metric IS the far tail should measure
+# before trusting this, and pass flip_fusion=False if it does not pay there.
+# On the LEGACY manual_occ_s42 checkpoint fusion helped at every threshold; the
+# tail cost appears only once the handedness bias is gone, which is consistent
+# with fusion no longer having a systematic offset to cancel.
+FLIP_FUSION_DEFAULT = True
 # Hard bounds on the expansion, as a multiple of the detector box extent.
 # Without these the refinement is a positive feedback loop: a landmarker that
 # reports a saturated extent (confused by motion blur, an occluded ear, or a
@@ -216,8 +239,10 @@ class EarDetector:
 class LandmarkPredictor:
     """Wraps EarLandmarker for inference."""
 
-    def __init__(self, weights_path: str | Path, device: str = "cpu") -> None:
+    def __init__(self, weights_path: str | Path, device: str = "cpu",
+                 flip_fusion: bool = FLIP_FUSION_DEFAULT) -> None:
         self.device = torch.device(device)
+        self.flip_fusion = flip_fusion
 
         ckpt = torch.load(str(weights_path), map_location="cpu", weights_only=True)
         # Architecture comes from the checkpoint's saved hyperparameters, so a
@@ -238,13 +263,18 @@ class LandmarkPredictor:
         self.model.to(self.device).eval()
 
     @torch.no_grad()
-    def predict(self, crop_rgb: np.ndarray, with_confidence: bool = False):
+    def predict(self, crop_rgb: np.ndarray, with_confidence: bool = False,
+                flip_fusion: bool | None = None):
         """Predict 55 landmarks on a cropped ear image.
 
         Args:
             crop_rgb: (H, W, 3) uint8 RGB ear crop.
             with_confidence: Also return per-point confidence. Only the heatmap
                 architecture can produce it; the GAP head returns None.
+            flip_fusion: Average the prediction with the un-mirrored prediction
+                on the mirrored crop. None uses the instance default
+                (FLIP_FUSION_DEFAULT). See the class docstring for why this is
+                on by default and when to turn it off.
 
         Returns:
             (55, 2) float32 landmarks in pixel coords of the crop, or a
@@ -260,14 +290,34 @@ class LandmarkPredictor:
         tensor = (tensor - 0.5) / 0.5
         tensor = tensor.to(self.device)
 
+        fuse = self.flip_fusion if flip_fusion is None else flip_fusion
+        if fuse:
+            # Both arms in ONE batched forward, so the second costs a fraction
+            # of a pass rather than a whole one. Mirroring here -- after the
+            # resize, on the normalised tensor -- keeps the two arms pixel-exact
+            # mirrors of each other; mirroring the uint8 crop and re-resizing
+            # does not, because the resize is not flip-commutative at the edges.
+            tensor = torch.cat([tensor, torch.flip(tensor, dims=[3])], dim=0)
+
         conf = None
         if with_confidence and hasattr(self.model, "predict_with_confidence"):
             out, c = self.model.predict_with_confidence(tensor)
-            conf = c.cpu().numpy().reshape(-1)
+            conf = c.cpu().numpy().reshape(-1, 55).mean(0)
         else:
-            out = self.model(tensor)  # (1, 110)
+            out = self.model(tensor)  # (B, 110)
 
-        lm = out.cpu().numpy().reshape(55, 2)
+        if fuse:
+            arms = out.cpu().numpy().reshape(2, 55, 2)
+            # Un-mirror is exactly 1-x: the decoder's x grid is (i+0.5)/w
+            # (model/ear_landmarker.py), and data/dataset.py trains the flip as
+            # landmarks[:, 0] = 1.0 - landmarks[:, 0] with NO index permutation,
+            # so point i is the same anatomical point in both arms. An index
+            # remap here would be wrong, and MMPose's shift_heatmap would inject
+            # a half-pixel error.
+            arms[1, :, 0] = 1.0 - arms[1, :, 0]
+            lm = arms.mean(0)
+        else:
+            lm = out.cpu().numpy().reshape(55, 2)
         lm[:, 0] *= w
         lm[:, 1] *= h
         return (lm, conf) if with_confidence else lm
@@ -341,11 +391,13 @@ class EarLandmarkerPipeline:
         smooth: bool = True,
         smoothing_kwargs: dict | None = None,
         refine_roi: bool = True,
+        flip_fusion: bool = FLIP_FUSION_DEFAULT,
     ) -> None:
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.detector = EarDetector(detector_weights, device, detector_confidence)
-        self.landmarker = LandmarkPredictor(landmarker_weights, device)
+        self.landmarker = LandmarkPredictor(landmarker_weights, device,
+                                            flip_fusion=flip_fusion)
         # Defaults tuned on scripts/eval_smoothing.py: these cut jitter ~66-80%
         # while also REDUCING error against a perfect-detector reference, in both
         # the static and realistic-motion scenarios.
@@ -584,7 +636,31 @@ def draw_results(frame_bgr: np.ndarray, results: List[dict]) -> np.ndarray:
 # image-gradient response -- three seeds of this model beat three seeds of
 # v6_persp65 with complete separation (4.0668 vs 3.8886, p=0.05 exact, the
 # floor for 3v3). See RESULTS.md.
-SHIPPED_RUN = "manual_occ_s42"
+#
+# Now fixed_conv_s42, same recipe and the same data/manual-only provenance, so
+# the Apache-2.0 position in NOTICE is unchanged. It differs from
+# manual_occ_s42 by one thing: the sub-pixel augmentation fix in
+# data/dataset.py (LEGACY_SUBPIXEL_SHIFT). That removes a handedness bias which
+# was real and large -- paired within-row, the R-L antisymmetry on the
+# handedness-balanced audioear2d source was +17.05% of nme_normal at p=2.7e-19,
+# and is now +1.01% at p=0.46. The legacy model was better on RIGHT-presented
+# ears and worse on left; side labels come from the canal (point 39) being
+# anterior, not from the rim's signed area, whose polarity is not self-evident. Accuracy is a wash (val_nme 0.01452 against
+# 0.01487 is one seed on data/manual, the cut that flatters the fix; the
+# cross-source split reverses it slightly), so the bias removal is the reason,
+# not accuracy.
+#
+# NOT A STRICT UPGRADE FOR EVERY CONSUMER. On Ear_3D_Lifter's >10mm
+# gross-error gate over renders this checkpoint is worse as-is than
+# manual_occ_s42, +0.275pp at p=3.2e-04, while their mirrored arm improves by
+# about as much. Their corpus presents every ear in left form, where an
+# anti-equivariant offset is a constant of fixed sign rather than a handedness
+# bias -- so the legacy model carried a constant offset that a single-handed
+# pipeline can be benefiting from, and which would reverse for the opposite
+# presentation. Which presentation it favours in THAT pipeline's own frame is
+# for that pipeline to measure; it does not follow from the side names here.
+# A consumer in that position should measure before adopting.
+SHIPPED_RUN = "fixed_conv_s42"
 
 
 def find_best_checkpoint(run: str | None = SHIPPED_RUN) -> Path:
@@ -613,20 +689,7 @@ def find_best_checkpoint(run: str | None = SHIPPED_RUN) -> Path:
             return last
         raise FileNotFoundError(f"No checkpoints found under {search_dir}")
 
-    def score(c: Path) -> float:
-        try:
-            ck = torch.load(str(c), map_location="cpu", weights_only=False)
-            for v in (ck.get("callbacks") or {}).values():
-                if isinstance(v, dict) and v.get("current_score") is not None:
-                    return float(v["current_score"])
-        except Exception:
-            pass
-        try:
-            return float(c.stem.split("nme=")[1])
-        except (IndexError, ValueError):
-            return float("inf")
-
-    return min(candidates, key=score)
+    return min(candidates, key=checkpoint_score)
 
 
 def run_image(args: argparse.Namespace) -> None:
@@ -637,6 +700,7 @@ def run_image(args: argparse.Namespace) -> None:
     pipeline = EarLandmarkerPipeline(
         detector_weights, landmarker_weights,
         device=args.device, detector_confidence=args.confidence,
+        flip_fusion=args.flip_fusion,
     )
 
     img = cv2.imread(args.image)
@@ -666,6 +730,7 @@ def run_webcam(args: argparse.Namespace) -> None:
     pipeline = EarLandmarkerPipeline(
         detector_weights, landmarker_weights,
         device=args.device, detector_confidence=args.confidence,
+        flip_fusion=args.flip_fusion,
     )
 
     cap = cv2.VideoCapture(args.camera)
@@ -721,6 +786,13 @@ def main() -> None:
                        help=f"BlazeEar weights (default: BlazeEar/{DETECTOR_WEIGHTS})")
         p.add_argument("--landmarker-weights", type=str, default=None,
                        help="EarLandmarker weights (default: best checkpoint)")
+        p.add_argument("--no-flip-fusion", dest="flip_fusion",
+                       action="store_false", default=FLIP_FUSION_DEFAULT,
+                       help="Predict from the crop only, instead of averaging "
+                            "with the mirrored crop. Fusion is on by default "
+                            "and costs one batched forward; turn it off if your "
+                            "metric is the far error tail (see "
+                            "FLIP_FUSION_DEFAULT)")
 
     args = parser.parse_args()
     if args.mode == "image":

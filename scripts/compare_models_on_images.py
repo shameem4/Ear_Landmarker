@@ -32,15 +32,15 @@ import numpy as np
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from checkpoint_utils import best_checkpoint
+
 from scheme import STRIPS                                 # noqa: E402
 
 
 def best_ckpt(run):
-    d = ROOT / "runs" / "checkpoints" / run
-    cks = [c for c in d.glob("*.ckpt") if "nme=" in c.name]
-    if not cks:
-        return None
-    return min(cks, key=lambda c: float(c.stem.split("nme=")[1]))
+    # Ranked by the score inside the file, not the rounded nme= in the name:
+    # see checkpoint_utils for why a name-based tie-break picks the worst.
+    return best_checkpoint(ROOT / "runs" / "checkpoints" / run, recursive=False)
 
 
 def main():

@@ -43,6 +43,8 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from checkpoint_utils import best_checkpoint as _best_checkpoint
+
 from model.ear_landmarker import EarLandmarker, EarLandmarkerHeatmap  # noqa: E402
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -70,16 +72,13 @@ def load_checkpoint(path: Path) -> torch.nn.Module:
 
 
 def best_checkpoint(run_dir: Path) -> Path | None:
-    """Lowest-NME checkpoint in a run directory."""
-    best, best_nme = None, float("inf")
-    for c in run_dir.rglob("*nme=*.ckpt"):
-        try:
-            nme = float(c.stem.split("nme=")[1])
-        except (IndexError, ValueError):
-            continue
-        if nme < best_nme:
-            best, best_nme = c, nme
-    return best
+    """Lowest-scoring checkpoint in a run directory.
+
+    Delegates to checkpoint_utils: the previous version ranked by the rounded
+    nme= field in the filename, which systematically returned the earliest of
+    the tied checkpoints rather than the best.
+    """
+    return _best_checkpoint(run_dir)
 
 
 def load_images(limit: int | None) -> list[np.ndarray]:
