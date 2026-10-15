@@ -38,22 +38,68 @@ these can be tried in sequence.
 |---|---|---|---|
 | **B1** | Widen `scale_range` low end from 0.75 to ~0.35 | one line | the training median ear is 64.9 px, so x0.75 = 48.7 px -- augmentation **cannot currently manufacture a sub-32 px ear**. Only the natively-small 5.9% populate that band. Attacks the exposure gap directly and leaves the mode's mass intact |
 | ~~B2~~ | ~~Turn focal loss on~~ | **dead** | **Focal loss has been ON for every run in BlazeEar's history.** `train_blazeear.py` calls `set_defaults(use_focal_loss=True)` at alpha 0.35 / gamma 1.5; the README documented it as opt-in at 0.25/2.0 and was wrong on both counts. Retracted by BlazeEar, whose finding it was |
-| **B3** | Per-level hard-negative cap | small change to `loss_functions.py` | `HARD_NEGATIVE_RATIO = 50` mines globally across all 3584 anchors, so the 2048 slots holding the two smallest priors absorb the bulk of mined negatives every image |
+| ~~B3~~ | ~~Per-level hard-negative cap~~ | **misaimed** | the mining imbalance is real but at the **large** end, not the small one -- see below. A cap would help a band that is already at 95.7% |
 | **B4** | Lower the score threshold 0.70 -> 0.60 | **no training** | +2.81 pp recall for -6.94 pp precision. An operating-point decision, not a free win |
 | **B5** | Expose a calibrated score to the caller | small | better shape than moving a default, since consumers differ on the precision/recall trade |
 
-**Root cause for B1-B3**, measured on 12,595 training ears: the anchor budget is
-misallocated by scale. 2048 of 3584 slots carry the two smallest priors and
-receive 7.7% of all positives -- 0.29 and 2.54 positives per slot against **68.71**
-for the prior serving the 64-80 px mode. Small ears are *not* starved of positive
-supervision (`ANCHOR_TOP_K = 3` gives exactly 3.00 per ear at every band); the
-problem is the negative side.
+**The anchor-budget root cause recorded here was wrong, and measuring it
+reverses the direction.** It said the 2048 slots holding the two smallest priors
+absorb the mined-negative budget because they own 57% of the slots while taking
+7.7% of positives. The premise is right and the conclusion does not follow:
+hard-negative mining takes a global top-k of background *logits*, so the budget
+follows how **confusing** a prior is, not how many slots it owns. BlazeEar
+inferred it from the slot table, then measured the mining and retracted it.
+
+Mined-negative share against positive share per prior, shipped weights, 1,280
+augmented training images:
+
+| prior (px) | slots | neg share | pos share | ratio |
+|---|---|---|---|---|
+| 6.9 x 11.3 | 1024 | 9.6% | 1.0% | 9.4x |
+| 12.5 x 24.3 | 1024 | 16.8% | 12.6% | **1.3x** |
+| 17.7 x 41.2 | 256 | 0.2% | 9.2% | 0.0x |
+| 34.8 x 39.9 | 256 | 0.1% | 18.3% | 0.0x |
+| 29.2 x 62.7 | 256 | 0.3% | 35.0% | 0.0x |
+| 58.4 x 101.1 | 256 | 19.3% | 22.3% | 0.9x |
+| **129.8 x 178.2** | 256 | **53.5%** | **1.0%** | **52.4x** |
+| 191.5 x 260.4 | 256 | 0.1% | 0.6% | 0.2x |
+
+**The pathology is at the LARGE end.** One prior with 7.1% of slots and 1.0% of
+positives takes over half the entire negative budget; the three priors carrying
+62.5% of positives take 0.6% between them, which is why the mode reaches 95.7%.
+The 32x32 priors a small ear lands on sit at **1.3x, close to balanced** -- so
+mining is *not* what holds the small bands back. It is learned rather than
+structural: at initialisation that prior takes 2.1% while 58.4x101.1 takes 87%.
+
+It also predicts a result that had looked anomalous: the score head's **worst
+discard is at the largest ears, 36.9 pp at 198 px**, and that prior is trained
+52:1 against. Two measurements taken for different reasons agreeing is the
+reason to quote either.
+
+Still standing from the original account: small ears are **not** starved of
+positive supervision -- `ANCHOR_TOP_K = 3` delivers exactly 3.00 per ear at
+every band by design.
 
 **Guard on every run:** report the 64-80 px band, mean positives-per-ear, and the
 per-prior positive share. 1402 of 3790 ears sit in the mode, so a run that
 improved the tail by starving the mode would show there before it showed in
 recall. `measure_anchor_budget.py` prints the latter two, so the guard costs one
 script invocation per arm.
+
+**What this does to B1.** It survives and is *better* motivated -- it is now the
+only lever aimed at where the ears actually are, rather than the cheaper of two
+competing rebalances, since the other addresses the opposite end of the scale.
+
+**But one scoping result cuts against part of it.** The 0-32 px band is
+**information-limited, not supervision-limited**: across its 741 training ears
+the median ear is **24 real pixels**, 70.9% are under 32 real pixels, and the
+crop resamples at 0.94x -- essentially 1:1. Those ears are small *in the source*.
+No augmentation, loss re-weighting or anchor rebalance manufactures information
+nobody captured, so 18.2% recall there may be far nearer its ceiling than it
+looks, and **a B1 arm that moves 0-32 px deserves suspicion rather than
+celebration**. 32-48 px is the band with headroom -- 1,322 ears, median 38 real
+pixels, only 36.5% under 32 real, at 58.0% recall -- and is where B1's result
+should be read hardest.
 
 **B1 is built and queued, not started.** `AUGMENT_SCALE_RANGE` is (0.35, 1.25)
 with the old range reachable from the environment. At the data level the change
