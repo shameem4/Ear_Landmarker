@@ -97,6 +97,29 @@ ROI_MAX_REFINE = 1        # refinement passes; 1 lands within 1% of the fixed po
 # tail cost appears only once the handedness bias is gone, which is consistent
 # with fusion no longer having a systematic offset to cancel.
 FLIP_FUSION_DEFAULT = True
+
+# Also run the DETECTOR on the mirrored frame and merge the two box sets.
+# OFF by default. This is a different lever from FLIP_FUSION_DEFAULT: that one
+# mirrors the crop tensor inside the landmarker, so the detector has already
+# run and its output is fixed. Measured on 1200 full frames with human ear
+# ground truth, detector only, at IoU>=0.3:
+#     as-is frame     80.00%
+#     mirrored frame  79.58%
+#     union of both   83.75%     <- +3.75 pp
+# Neither presentation is better; they are DIFFERENTLY wrong. Per-box agreement
+# across presentations is median IoU 0.813, with 6.4% of boxes disagreeing below
+# IoU 0.1 -- found in one presentation, essentially absent in the other. No
+# amount of averaging inside the landmarker recovers a crop that was never made.
+#
+# COSTS A SECOND FULL DETECTOR PASS, and the detector is ~68% of pipeline wall
+# clock, so expect roughly +68% per frame. That is why it is off by default.
+#
+# NOT the whole of what a frame-level mirror buys. Ear_3D_Lifter mirrors the
+# entire frame, so their ROI refinement loop sees the mirror too and compounds a
+# better first pass; refinement fires on 81% of their render views. On
+# photographs it never fires (1.000 landmarker calls per ear), so that route is
+# worth nothing here and is not implemented.
+DETECTOR_FRAME_TTA_DEFAULT = False
 # Hard bounds on the expansion, as a multiple of the detector box extent.
 # Without these the refinement is a positive feedback loop: a landmarker that
 # reports a saturated extent (confused by motion blur, an occluded ear, or a
@@ -327,6 +350,26 @@ class LandmarkPredictor:
 # End-to-end pipeline
 # ---------------------------------------------------------------------------
 
+def unmirror_boxes(detections: np.ndarray, width: int) -> np.ndarray:
+    """Map boxes detected on a mirrored frame back to the original frame.
+
+    Boxes are [ymin, xmin, ymax, xmax, score, ...]. Mirroring sends a column x
+    to width - x, which REVERSES the order of the two x edges: the mirrored
+    box's xmin corresponds to the original's xmax. Assigning the two columns
+    without the swap yields boxes with xmin > xmax, whose area computes
+    negative and which then silently survive NMS and match nothing.
+
+    Returns a copy; the input is not modified.
+    """
+    detections = np.asarray(detections, dtype=np.float64)
+    if not len(detections):
+        return detections
+    out = detections.copy()
+    out[:, 1] = width - detections[:, 3]
+    out[:, 3] = width - detections[:, 1]
+    return out
+
+
 def square_roi_crop(frame_rgb: np.ndarray, cx: float, cy: float, side: float,
                     pad_value: int = 128):
     """Crop a SQUARE ROI centred on (cx, cy), padding outside the frame.
@@ -392,6 +435,7 @@ class EarLandmarkerPipeline:
         smoothing_kwargs: dict | None = None,
         refine_roi: bool = True,
         flip_fusion: bool = FLIP_FUSION_DEFAULT,
+        detector_frame_tta: bool = DETECTOR_FRAME_TTA_DEFAULT,
     ) -> None:
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -410,6 +454,8 @@ class EarLandmarkerPipeline:
         # box; see the ROI_* constants. Pass refine_roi=False for the old
         # single-pass behaviour.
         self.refine_roi = refine_roi
+        # See DETECTOR_FRAME_TTA_DEFAULT. Costs a second detector pass.
+        self.detector_frame_tta = detector_frame_tta
         self._roi_expand: dict[int, float] = {}
 
     def reset(self) -> None:
@@ -440,7 +486,20 @@ class EarLandmarkerPipeline:
         h, w = frame_rgb.shape[:2]
         detections = self.detector.detect(frame_rgb)
 
-        # Suppress duplicate boxes (secondary NMS on denormalized detections)
+        if self.detector_frame_tta:
+            # The detector is presentation-sensitive: the two arms are not
+            # better and worse, they fail on different boxes. Merging them is
+            # what recovers the 3.75 pp; see DETECTOR_FRAME_TTA_DEFAULT.
+            mirrored = unmirror_boxes(
+                self.detector.detect(np.ascontiguousarray(frame_rgb[:, ::-1])), w)
+            if len(mirrored):
+                detections = (np.concatenate([detections, mirrored], axis=0)
+                              if len(detections) else mirrored)
+
+        # Suppress duplicate boxes (secondary NMS on denormalized detections).
+        # This is also what merges the two presentations when frame TTA is on:
+        # a box both arms found is deduplicated, a box only one arm found
+        # survives, which is exactly the union the measurement scored.
         detections = self._nms(detections)
 
         # Smooth the detector boxes before cropping. The jitter benchmark showed
@@ -701,6 +760,7 @@ def run_image(args: argparse.Namespace) -> None:
         detector_weights, landmarker_weights,
         device=args.device, detector_confidence=args.confidence,
         flip_fusion=args.flip_fusion,
+        detector_frame_tta=args.detector_frame_tta,
     )
 
     img = cv2.imread(args.image)
@@ -731,6 +791,7 @@ def run_webcam(args: argparse.Namespace) -> None:
         detector_weights, landmarker_weights,
         device=args.device, detector_confidence=args.confidence,
         flip_fusion=args.flip_fusion,
+        detector_frame_tta=args.detector_frame_tta,
     )
 
     cap = cv2.VideoCapture(args.camera)
@@ -786,6 +847,12 @@ def main() -> None:
                        help=f"BlazeEar weights (default: BlazeEar/{DETECTOR_WEIGHTS})")
         p.add_argument("--landmarker-weights", type=str, default=None,
                        help="EarLandmarker weights (default: best checkpoint)")
+        p.add_argument("--detector-frame-tta", dest="detector_frame_tta",
+                       action="store_true", default=DETECTOR_FRAME_TTA_DEFAULT,
+                       help="Also run the detector on the mirrored frame and "
+                            "merge the boxes. Worth +3.75pp of detector recall "
+                            "and costs a second detector pass (~+68%% per "
+                            "frame). Off by default")
         p.add_argument("--no-flip-fusion", dest="flip_fusion",
                        action="store_false", default=FLIP_FUSION_DEFAULT,
                        help="Predict from the crop only, instead of averaging "
