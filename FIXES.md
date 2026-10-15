@@ -116,11 +116,19 @@ half the faces would go, so real faces do not become background labels) left
 | v2 unfiltered | 0.199 | 0.487 | 0.264 | 0.841 | 0.920 |
 | v2 min-16 | 0.912 | 0.448 | 0.028 | **0.869** | **0.923** |
 
-The filter confirmed the mechanism -- precision recovers 0.199 -> 0.912, a 4.6x
-jump -- and 16-32 px beats stock for the first time, 0.869 against 0.857. But
-**32+ px lands at 0.923 against the 0.966-0.973 gate, a 5-point miss**, and
-aggregate recall is still below stock. **No checkpoint in that repository beats
-the frozen MediaPipe weights it initialises from.**
+The filter confirmed the mechanism -- **precision recovers 0.199 -> 0.912, a
+4.6x jump**, predicted from the size distribution before the run and far
+outside noise. That is the one result from this line of work worth defending
+without hedging. But **32+ px lands at 0.923 against the 0.966-0.973 gate, a
+5-point miss**, and aggregate recall is still below stock. **No checkpoint in
+that repository beats the frozen MediaPipe weights it initialises from.**
+
+The 16-32 px figure of 0.869 against stock's 0.857 is the first time anything
+there has beaten its own initialisation, and **it should carry no weight**:
+single bin, adjacent to the filter boundary that was chosen, one seed, no
+confidence interval, +1.2 points. trainable_blazeface downgraded it themselves
+as "exactly the size of thing that does not replicate", and it would need a
+second seed before it meant anything.
 
 One caveat in the fine-tuned models' favour, flagged by trainable_blazeface
 against their own interest: the fine-tuned checkpoints are calibrated
@@ -128,6 +136,24 @@ differently and fall off much faster with threshold (min-16 goes 0.912
 precision at 0.5 to 0.985 at 0.75, recall 0.448 to 0.294), so a fixed-threshold
 comparison understates them. At matched precision the gap is smaller. It does
 not close.
+
+### If the face-box test runs, build these in from the start
+
+The cheap decisive gate for T4 is to fine-tune on a slice of *this* corpus with
+ordinary face-box targets and ask whether it holds 0.966 at 32+ px. Two
+protocol requirements, both free up front and both costing a whole run if
+skipped. They come from trainable_blazeface, who was caught by the second one
+twice:
+
+1. **Compare at matched precision, not at a fixed threshold.** A fine-tuned
+   checkpoint and stock are not on the same score scale, and 0.5 is stock's
+   natural operating point rather than a neutral one. Sweep.
+2. **Hold out an evaluation slice that no label-selection rule has touched.**
+   Every flattering number in their investigation came from a set narrowed in
+   the same direction as the hypothesis -- the sorted head slice, then the
+   filtered val, which still reports AP 0.957 beside a detection-level loss. If
+   the slice here is selected by anything correlated with ear reachability, the
+   same thing happens.
 
 **What this does and does not establish for T4.** It establishes that the
 failure mechanism is understood and that removing unresolvable labels clears
