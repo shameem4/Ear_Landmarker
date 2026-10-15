@@ -777,43 +777,51 @@ Its ceiling is bounded and worth stating before anyone spends a week on it:
 **The larger prize is stage 2.** 60% of misses are ears that a correct crop
 delivered and BlazeEar still missed; no amount of face-stage work touches them.
 
-### A labelling artefact that moved most of these numbers
+### Getting the ground truth right took three attempts
 
-**Everything in the two sections above was scored against half the ground
-truth, and the corrected figures are below.** The YOLO export under
-`BlazeEar/data/yolo11_ears/labels/` carries exactly one box per image --
-**0 of 13,482 label files contain more than one** -- while BlazeEar's own
-`data/splits/master.csv` gives 26,567 ears over those same 13,482 images, with
-47.7% of them multi-ear. The export dropped roughly half the boxes. Anything
-reading those labels sees one ear per image and cannot tell.
+The numbers below were measured against the YOLO export under
+`BlazeEar/data/yolo11_ears/labels/`, which carries exactly one box per image.
+That is not the full ground truth, and chasing it produced one wrong correction
+before landing on the right basis. All three bases, on the same corpus:
 
-Rescored against `master.csv` (1500 images, 3007 ears, 48.0% multi-ear):
+| basis | boxes | per image | what is wrong with it |
+|---|---|---|---|
+| YOLO export (used below) | 13,482 | 1.000 | misses 1,877 genuine second ears |
+| all of `master.csv` | 26,567 | 1.971 | 39.9% are POSE pseudo-labels sitting on eyebrows and hair |
+| **human sources + geometry** | **15,359** | **1.181** | **correct** |
 
-| | collapsed labels | full ground truth |
-|---|---|---|
-| recall@0.3 | 75.60% | **54.34%** |
-| precision at 0.70 | 61.30% | **84.41%** |
-| false positives / image | 0.477 | **0.201** |
-| stage-2 misses proposed below threshold | 90.2% | **56.2%** |
-| stage-2 misses never proposed | 9.8% | **43.8%** |
-| ear size, hits vs misses (px in crop) | 67.6 vs 40.1 | **68.2 vs 56.0** |
+`HUMAN_ANNOTATION_SOURCES` is `GT`, `GT+EAR`, `GT+REVIEW`, plus
+`finetune_yolov11.py`'s geometry filter (min 6 px side, 100 px area, aspect
+0.15-2.0, which drops 613 of 15,972 = 3.8%). The POSE rows are pseudo-labels:
+0.0% of them reach IoU 0.30 with any human box in the same image and 97.8% are
+exactly zero, so scoring against them makes every ear an automatic miss.
 
-Precision was understated because a correct detection on an unlabelled second
-ear counted as a false positive. Recall was overstated because the denominator
-was missing those ears. And the headline claim below -- that stage 2 is
-overwhelmingly a scoring problem -- **weakens from 90.2% to 56.2%**: the ears
-the collapse was hiding are disproportionately ones the detector never proposes
-at all. The size correlation survives but halves, from a 27px gap to a 12px one
-(Mann-Whitney p=4.9e-21), so part of it was "the surviving label is the smaller
-ear".
+Rescored on the correct basis -- 1500 images, 1746 ears, 15.9% multi-ear:
 
-What stands unchanged is the `FACE_CROP_EXPAND` null, re-run on full ground
-truth: 1.2 at -5.62pp (p=5e-14), 1.5 optimal, 1.9 at -3.01pp (p=4e-07), 2.4 at
--6.72pp (p=2e-20), same ranking and the same gains-coverage/loses-resolution
-mechanism in the paired counts.
+| | YOLO export | all master.csv | **human + geometry** |
+|---|---|---|---|
+| recall@0.3 | 75.60% | 54.34% | **79.55%** |
+| precision at 0.70 | 61.30% | 84.41% | **73.68%** |
+| false positives / image | 0.477 | 0.201 | **0.330** |
+| misses proposed below threshold | 90.2% | 56.2% | **93.1%** |
+| misses never proposed | 9.8% | 43.8% | **6.9%** |
+| ear size, hits vs misses (px) | 67.6 / 40.1 | 68.2 / 56.0 | **68.0 / 45.4** |
 
-The sections below are kept as measured, with this correction applying to all
-of them.
+79.55% against the independently documented 78.6% is the check that the basis is
+now right. The section below therefore stands, slightly strengthened -- 93.1%
+rather than 90.2% -- and the middle column is what a contaminated target does to
+an otherwise sound measurement.
+
+The never-proposed group is **14 ears**, with median 43.8 px and p25 18.2 px.
+At that size BlazeEar's anchor coverage is 0.571 with 3.6% below IoU 0.35, so
+anchor geometry is not the mechanism and the under-scoring hypothesis stands
+alone.
+
+The `FACE_CROP_EXPAND` null survived every basis unchanged -- 1.5 optimal, 1.2
+at -5.62 pp, 1.9 at -3.01 pp, 2.4 at -6.72 pp on full `master.csv`, with the
+same gains-coverage/loses-resolution mechanism in the paired counts. A result
+that holds across two wrong targets and the right one is as settled as this
+corpus can make it.
 
 ### Stage 2 is a scoring problem, not a localisation one
 
