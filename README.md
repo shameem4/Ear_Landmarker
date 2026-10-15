@@ -409,13 +409,22 @@ python export_onnx.py
 python export_onnx.py --checkpoint runs/checkpoints/fixed_conv_s42/EarLandmarker_433_nme=0.0145.ckpt
 ```
 
-The browser demo runs the landmarker **single-arm**, without the flip fusion the
-Python pipeline now applies by default. The exported graph is fixed batch 1
-(`dynamic_axes=None` in `export_onnx.py`), so fusing in the browser means either
-a dynamic-batch export or two sequential sessions; neither has been measured in
-`onnxruntime-web`. The gap is the -1.83% `nme_normal` fusion buys, which is not
-visible by eye on a webcam feed, but it does mean the page is not a pixel-exact
-preview of the Python result.
+The browser demo applies the same flip fusion the Python pipeline does, so the
+page is a faithful preview rather than an approximation. Verified by feeding
+both the identical PNG: browser and Python agree to **all six decimals** on
+every point, in both fused and single-arm modes. The mirror is taken on the
+normalised tensor after the resize, exactly where `inference.py` takes it, which
+is what makes that parity exact -- mirroring the crop canvas and redrawing is
+not equivalent, because the resize is not flip-commutative at the edges.
+
+The exported graph is fixed batch 1 (`dynamic_axes=None` in `export_onnx.py`),
+so the browser runs the session **twice** rather than one batch of 2. That costs
+more here than it does in Python: measured end-to-end on a 266x346 frame,
+**97.0 ms against 77.9 ms, +24.5%**, where the same change on CUDA is +0.3%.
+The browser runs WASM and the landmarker is a much larger share of the total
+there. Pass `{ flipFusion: false }` to `EarLandmarkerPipeline` for the single
+arm if you would rather have the frame rate; a dynamic-batch export would
+recover most of the difference and has not been attempted.
 
 ### Comparing the ROI refinement
 

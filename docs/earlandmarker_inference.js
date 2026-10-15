@@ -108,6 +108,14 @@ class EarLandmarkerPipeline {
         // Re-derive the ROI from the landmarks instead of trusting the detector
         // box. Pass { refineRoi: false } for the old single-pass behaviour.
         this.refineRoi = options.refineRoi ?? true;
+        // Average the prediction with the un-mirrored prediction on the
+        // mirrored crop, matching FLIP_FUSION_DEFAULT in inference.py. Worth
+        // -1.83% nme_normal (p=0.009) there. The exported graph is fixed batch
+        // 1, so this is two sequential runs rather than one batch of 2; the
+        // landmarker is the small model here, the detector dominates. Pass
+        // { flipFusion: false } for a single arm, which is what a consumer
+        // whose metric is the far error tail should measure first.
+        this.flipFusion = options.flipFusion ?? true;
         this._roiExpand = new Map();   // trackId -> expansion that worked last frame
         this.minAspectRatio = options.minAspectRatio ?? 0.35;
         this.maxAspectRatio = options.maxAspectRatio ?? 1.4;
@@ -385,21 +393,57 @@ class EarLandmarkerPipeline {
             tensorData[2 * size * size + i] = (pixels[i * 4 + 2] / 255.0 - 0.5) / 0.5;
         }
 
-        const feeds = {
+        const results = await this.landmarkerSession.run({
             'image': new ort.Tensor('float32', tensorData, [1, 3, size, size]),
-        };
-
-        const results = await this.landmarkerSession.run(feeds);
+        });
         const lmData = results.landmarks.data;  // (1, 55, 2) flattened
         // The heatmap model also emits per-point confidence; a GAP-head model
         // exported earlier does not, so treat it as optional.
-        const pointConfidence = results.confidence ? results.confidence.data : null;
+        let pointConfidence = results.confidence ? results.confidence.data : null;
+
+        let fusedX = null, fusedY = null;
+        if (this.flipFusion) {
+            // Mirror the NORMALISED TENSOR, after the resize -- the same point
+            // in the chain as inference.py -- so the two arms are pixel-exact
+            // mirrors. Mirroring the crop canvas and redrawing is not
+            // equivalent, because the resize is not flip-commutative at edges.
+            const mirrored = new Float32Array(tensorData.length);
+            for (let c = 0; c < 3; c++) {
+                const base = c * size * size;
+                for (let r = 0; r < size; r++) {
+                    const row = base + r * size;
+                    for (let x = 0; x < size; x++) {
+                        mirrored[row + x] = tensorData[row + size - 1 - x];
+                    }
+                }
+            }
+            const flipRes = await this.landmarkerSession.run({
+                'image': new ort.Tensor('float32', mirrored, [1, 3, size, size]),
+            });
+            const fData = flipRes.landmarks.data;
+            fusedX = new Float32Array(55);
+            fusedY = new Float32Array(55);
+            for (let i = 0; i < 55; i++) {
+                // Un-mirror is exactly 1-x: the decoder grid is (i+0.5)/w and
+                // training applies the flip as 1.0 - x with NO index
+                // permutation, so point i is the same anatomical point in both
+                // arms. Remapping indices here would be wrong.
+                fusedX[i] = (lmData[i * 2] + (1.0 - fData[i * 2])) / 2;
+                fusedY[i] = (lmData[i * 2 + 1] + fData[i * 2 + 1]) / 2;
+            }
+            if (pointConfidence && flipRes.confidence) {
+                const c0 = pointConfidence, c1 = flipRes.confidence.data;
+                const avg = new Float32Array(55);
+                for (let i = 0; i < 55; i++) avg[i] = (c0[i] + c1[i]) / 2;
+                pointConfidence = avg;
+            }
+        }
 
         const landmarks = [];
         for (let i = 0; i < 55; i++) {
             landmarks.push({
-                x: lmData[i * 2],      // normalized [0, 1]
-                y: lmData[i * 2 + 1],
+                x: fusedX ? fusedX[i] : lmData[i * 2],      // normalized [0, 1]
+                y: fusedY ? fusedY[i] : lmData[i * 2 + 1],
             });
         }
         return { landmarks, pointConfidence };
