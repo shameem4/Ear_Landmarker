@@ -478,10 +478,53 @@ same operation. The two results are orthogonal, not competing. Ear_3D_Lifter
 measures a frame-mirrored single pass beating this two-arm fusion on their
 gross-error gate, which is consistent with both.
 
-A frame-level option is not implemented. The case against making it the default
-is that every measurement either project has is on a corpus that is
-single-presentation (theirs) or scored on crops (this one), and 3.75 pp is a
-union bound rather than what a single mirrored arm achieves.
+### Symmetric rules survive a mixed corpus; asymmetric ones do not
+
+The gap in all of the above was that every measurement came from a corpus that
+is single-presentation (Ear_3D_Lifter's) or scored on crops (this one), so
+nothing could say whether a mirror rule survives when handedness varies.
+Ear_3D_Lifter built the missing test by relabelling an existing `--tta pair`
+run: it already holds a full pipeline pass on each frame *and* on its mirror, so
+presenting a seeded half of the views mirrored is a relabelling rather than a
+re-render, and the mirror is an exact pixel permutation. 112 ears x 25 views,
+200 draws, escape past 10 mm:
+
+| rule | mean | sd | 2.5% | 97.5% |
+|---|---|---|---|---|
+| as-presented | 3.221% | 0.048 | 3.134% | 3.317% |
+| always-mirror | 3.216% | 0.048 | 3.119% | 3.303% |
+| **fusion** | **2.719%** | **0.000** | 2.719% | 2.719% |
+| oracle (unreachable) | 1.871% | 0.000 | | |
+
+**The single-arm mirror is worth -0.005 pp and beats doing nothing on exactly
+50% of draws.** Its 0.53 pp gain on their single-presentation corpus is entirely
+a handedness artefact -- mirroring half the ears *into* the unfavourable
+presentation cancels the gain from the other half, exactly. **Fusion keeps its
+full gain and has zero variance across draws**, because a coordinate average is
+symmetric and is therefore literally the same arm whichever way a view was
+presented.
+
+That licenses fusion as a default here and retires *replacement* as a candidate
+anywhere. It does not transfer the magnitude -- that is their render domain,
+with their detector failures and a refinement loop firing on 81% of views where
+this one never fires, so -1.83% remains the number for this domain. **What
+transfers is the shape: a symmetric rule survives, an asymmetric one does not.**
+
+It also retroactively settles a design choice in `detector_frame_tta`, which
+merges the two presentations' detections through NMS rather than taking the
+mirrored arm. A union is symmetric -- the same set whichever presentation you
+start from -- so it falls in the surviving class. A single-arm mirrored detector
+would not have.
+
+Two caveats worth carrying. "Mixed" there is presentation randomised per
+ear-view, while a real corpus has handedness correlated with the subject and
+with everything else about the photograph, so the independence is idealised.
+And the **oracle gap is large and unexplained**: a perfect per-point arm
+selection would reach 1.871% against fusion's 2.719%, another third again, and
+neither project has anything that gets at it.
+
+`detector_frame_tta` stays off by default on cost grounds -- a second detector
+pass at ~68% of pipeline wall clock -- not on presentation grounds.
 
 **WebGPU was the obvious next lever and it is also rejected, on correctness
 before speed.** Tested by loading `ort.webgpu.min.js` in an isolated iframe and
