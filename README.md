@@ -1128,7 +1128,65 @@ so any rebalancing that trades mode accuracy for tail accuracy can lose overall
 recall while improving the thing it was aimed at.** Report the mode band every
 time.
 
-**Not estimated here:** training cost. That is BlazeEar's to state.
+**Training cost: 1-3 GPU-hours per run** on this box (BlazeEar's estimate,
+inferred from checkpoint mtimes rather than a logged run, so order-of-magnitude
+-- but hours rather than days is the safe part). Cost is therefore not the
+constraint on the ~+2 pp, and all three candidate fixes can be tried in
+sequence.
+
+### The training-side origin of the 2700:1
+
+BlazeEar traced it, and the obvious explanation is not the right one. Small
+ears are **not** starved of positive supervision: `ANCHOR_TOP_K = 3` delivers
+exactly 3.00 positive anchors per ear at every size band by design, because
+only 23.8% of ears reach IoU 0.5 with even fitted priors. Positive *count* is
+size-independent.
+
+The budget is misallocated instead. Over 12,595 human training ears:
+
+| prior (px) | slots | positives | pos/slot | share of positives |
+|---|---|---|---|---|
+| 6.9 x 11.3 | 1024 | 299 | 0.29 | 0.8% |
+| 12.5 x 24.3 | 1024 | 2,596 | 2.54 | 6.9% |
+| 17.7 x 41.2 | 256 | 2,955 | 11.54 | 7.8% |
+| 34.8 x 39.9 | 256 | 7,088 | 27.69 | 18.8% |
+| **29.2 x 62.7** | 256 | 17,589 | **68.71** | **46.6%** |
+| 58.4 x 101.1 | 256 | 6,760 | 26.41 | 17.9% |
+| 129.8 x 178.2 | 256 | 405 | 1.58 | 1.1% |
+| 191.5 x 260.4 | 256 | 93 | 0.36 | 0.2% |
+
+**2048 of 3584 slots -- 57% of the anchor budget -- carry the two smallest
+priors and receive 7.7% of all positives.** Pos-per-slot is 0.29 and 2.54
+against 68.71 for the prior serving the 64-80 px mode, a 27x gap. And
+`HARD_NEGATIVE_RATIO = 50` mines the highest-scoring backgrounds *globally*
+across all 3584 anchors with no per-level cap, so those 2048 slots absorb the
+bulk of mined negatives on every image. That is the 2700:1, upstream of
+inference.
+
+Two secondary asymmetries push the same way: a small ear's three positives are
+worse matches than the mode's (median IoU 0.425 at 0-32 px against 0.535 at
+64-80), and `ANCHOR_IGNORE_IOU = 0.35` protects ~0.94 neighbouring anchors
+around a small ear against 8.84 at the mode -- so a small ear's immediate
+neighbourhood is almost entirely available for hard-negative mining.
+
+**Three levers, cheapest first.** (1) Focal loss is already implemented and
+*off* -- `use_focal_loss=False`, alpha 0.25, gamma 2.0 unused; a flag flip.
+(2) Scale augmentation range: the dataloader uses `scale_range=(0.75, 1.25)`
+and the training median ear is 64.9 px, so x0.75 = 48.7 px -- augmentation
+essentially *cannot* manufacture a sub-32 px ear, and only the natively-small
+5.9% populate that band. Widening the low end to ~0.35 synthesises small-ear
+mass at zero data cost, one line. (3) A per-level hard-negative cap so the 2048
+small slots cannot absorb the global budget.
+
+BlazeEar would try (2) before (1), on the grounds that it attacks the exposure
+gap directly rather than reweighting a loss over a distribution that still
+barely contains the band -- and that it leaves the mode's mass intact, which is
+what the guard above is protecting.
+
+**Strengthened guard:** report mean positives-per-ear and the per-prior positive
+share on every run alongside the 64-80 band, because levers (2) and (3) change
+the assignment statistics and a run that improved the tail by starving the mode
+would show up there before it showed up in recall.
 
 ## Where to revisit
 
