@@ -446,6 +446,43 @@ sequentially and a batch of 2 is exactly twice the work plus a larger
 allocation. `ort.env.wasm.numThreads` reads 4, but that is the requested value,
 not the effective one.
 
+### Where fusion is applied matters, and the current placement leaves gain behind
+
+Flip fusion here mirrors the normalised crop tensor *inside* `LandmarkPredictor`,
+so the detector and the ROI loop both run once, on the un-mirrored frame. That
+is deliberate -- it is what makes the fused result immune to the integer
+crop-origin rounding in `square_roi_crop` -- but it means presentation effects
+upstream of the crop are unreachable.
+
+They are not negligible. Running the two-stage detector on 1200 full frames and
+on their mirrors, un-mirroring and scoring at IoU>=0.3:
+
+| | detector recall |
+|---|---|
+| as-is frame | 80.00% |
+| mirrored frame | 79.58% |
+| **union of the two** | **83.75%** |
+
+Neither presentation is better; they are *differently wrong*. Per-box agreement
+across presentations is median IoU 0.813, with **6.4% of boxes disagreeing below
+IoU 0.1** -- found in one presentation, essentially absent in the other. So the
+face stage is materially presentation-unstable, and up to **3.75 pp** of recall
+sits in a frame-level union that in-landmarker fusion cannot reach by
+construction: no averaging inside the landmarker recovers a crop that was never
+made.
+
+Note what this does *not* say about the -1.83% fusion gain recorded above. That
+was measured on `data/preprocessed`, which is pre-cropped -- no detector, no ROI
+loop -- and in that regime a frame-level mirror and a crop-level mirror are the
+same operation. The two results are orthogonal, not competing. Ear_3D_Lifter
+measures a frame-mirrored single pass beating this two-arm fusion on their
+gross-error gate, which is consistent with both.
+
+A frame-level option is not implemented. The case against making it the default
+is that every measurement either project has is on a corpus that is
+single-presentation (theirs) or scored on crops (this one), and 3.75 pp is a
+union bound rather than what a single mirrored arm achieves.
+
 **WebGPU was the obvious next lever and it is also rejected, on correctness
 before speed.** Tested by loading `ort.webgpu.min.js` in an isolated iframe and
 scoring all three graphs against the WASM backend on the same inputs:
