@@ -777,6 +777,44 @@ Its ceiling is bounded and worth stating before anyone spends a week on it:
 **The larger prize is stage 2.** 60% of misses are ears that a correct crop
 delivered and BlazeEar still missed; no amount of face-stage work touches them.
 
+### A labelling artefact that moved most of these numbers
+
+**Everything in the two sections above was scored against half the ground
+truth, and the corrected figures are below.** The YOLO export under
+`BlazeEar/data/yolo11_ears/labels/` carries exactly one box per image --
+**0 of 13,482 label files contain more than one** -- while BlazeEar's own
+`data/splits/master.csv` gives 26,567 ears over those same 13,482 images, with
+47.7% of them multi-ear. The export dropped roughly half the boxes. Anything
+reading those labels sees one ear per image and cannot tell.
+
+Rescored against `master.csv` (1500 images, 3007 ears, 48.0% multi-ear):
+
+| | collapsed labels | full ground truth |
+|---|---|---|
+| recall@0.3 | 75.60% | **54.34%** |
+| precision at 0.70 | 61.30% | **84.41%** |
+| false positives / image | 0.477 | **0.201** |
+| stage-2 misses proposed below threshold | 90.2% | **56.2%** |
+| stage-2 misses never proposed | 9.8% | **43.8%** |
+| ear size, hits vs misses (px in crop) | 67.6 vs 40.1 | **68.2 vs 56.0** |
+
+Precision was understated because a correct detection on an unlabelled second
+ear counted as a false positive. Recall was overstated because the denominator
+was missing those ears. And the headline claim below -- that stage 2 is
+overwhelmingly a scoring problem -- **weakens from 90.2% to 56.2%**: the ears
+the collapse was hiding are disproportionately ones the detector never proposes
+at all. The size correlation survives but halves, from a 27px gap to a 12px one
+(Mann-Whitney p=4.9e-21), so part of it was "the surviving label is the smaller
+ear".
+
+What stands unchanged is the `FACE_CROP_EXPAND` null, re-run on full ground
+truth: 1.2 at -5.62pp (p=5e-14), 1.5 optimal, 1.9 at -3.01pp (p=4e-07), 2.4 at
+-6.72pp (p=2e-20), same ranking and the same gains-coverage/loses-resolution
+mechanism in the paired counts.
+
+The sections below are kept as measured, with this correction applying to all
+of them.
+
 ### Stage 2 is a scoring problem, not a localisation one
 
 For every stage-2 miss, re-running that same crop with `min_score_thresh`
