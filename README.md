@@ -1017,6 +1017,69 @@ correct second detection scores as a false positive. Precision is a **lower
 bound**, and how loose a bound depends on whether one-ear-per-image is a
 labelling convention or a property of the images.
 
+## Scope: scale-rebalancing stage 2
+
+The one piece of work this analysis supports. Written so it can be funded or
+declined on evidence rather than re-derived.
+
+**The deficit.** Stage-2 recall against ear size in the 256 px crop: 18.2% at
+0-32 px, 58.0% at 32-48, 92.1% at 48-64, peaking at 95.7% in 64-80. 92.8% of
+its misses are boxes already localised at IoU>=0.3 and discarded by the 0.70
+score gate. The peak sits on the training mass -- BlazeEar's training median of
+0.253 ear/frame is 65 px in a 256 crop.
+
+**Already ruled out, with the measurement, so nobody repeats them:**
+
+| candidate | verdict |
+|---|---|
+| anchor coverage | best-anchor IoU 0.571 at 32-48 px, 3.6% below 0.35 -- not a mechanism for the 92.8% |
+| NMS | recall and median IoU flat to three decimals from 0.10 to 0.99 |
+| crop geometry | `FACE_CROP_EXPAND` 1.5 optimal; 1.2 -7.93 pp, 1.9 -4.29 pp, 2.4 -9.00 pp |
+| **size-dependent threshold** | **dominated by the global gate at every config tried** |
+
+That last one is the new result and it is what makes this a training job. The
+score separates true from false positives at every band (AUC 0.93-0.98), so the
+score is not broken -- but a per-band gate still loses to simply moving the
+global one:
+
+| config | recall | FP/image | precision |
+|---|---|---|---|
+| global 0.70 (current) | 78.93% | 0.317 | 74.7% |
+| global 0.60 | 81.37% | 0.458 | 67.8% |
+| leave <32 alone, 32-48 at 0.45 | 81.23% | 0.484 | 66.5% |
+| <32 at 0.30, 32-48 at 0.40 | 83.06% | 1.788 | 35.5% |
+
+Every size-aware variant sits below the global curve. There is no post-hoc
+calibration fix.
+
+**The likely mechanism, and the lever.** The negative-to-positive ratio among
+candidate boxes is wildly scale-dependent: at 0-32 px it is 126,363 false to 47
+true, roughly 2700:1; at the 64-80 px mode it is 891 to 751, about 1.2:1. A
+classifier trained on that is correctly expressing that a small box is a poor
+bet, and the fix is to rebalance what it is asked to learn -- scale-aware loss
+weighting or focal gamma, scale augmentation to synthesise small-ear mass, or
+rebalancing hard-negative mining per scale. Those are `trainable_blazeface`-
+and BlazeEar-side changes; none of them live here.
+
+**How to evaluate it**, which is the part this repo can supply: the harness at
+`/var/tmp/claude/ear_landmarker/2026-10-15-face-nms/scale_curve.py`, human
+ground-truth basis, 3500 images / 3790 ears delivered in crop. Primary metric is
+recall@IoU 0.3 **per size band at matched FP/image**, never pooled -- 0-32 and
+32-48 reported separately, because 18.2% against 58.0% is a 40-point cliff that
+a pooled number would hide. Baseline `BlazeEar_best_256px.pth`.
+
+**What would make it a success, and what would make it a failure.** 32-48 px is
+the band to target: 426 ears at 58.0%, where the scores already sit just under
+the gate (TP median 0.757 against FP p90 0.298). Moving that band to ~75% at
+today's 0.317 FP/image would be worth roughly +2 pp of overall recall. The
+0-32 band is a stretch and may be irreducible -- at 20 px an ear may not be
+decidable. **The guard that matters: 1402 of 3790 ears sit in the 64-80 mode,
+so any rebalancing that trades mode accuracy for tail accuracy can lose overall
+recall while improving the thing it was aimed at.** Report the mode band every
+time.
+
+**Not estimated here:** training cost. That is BlazeEar's to state.
+
 ## Where to revisit
 
 This configuration is considered done, not finished. What stopped it was not
