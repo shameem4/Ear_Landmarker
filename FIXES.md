@@ -84,11 +84,13 @@ directions and the recoverable mass is small.
 **T1 has run, it did not clear MediaPipe, and the reason reframes T4 rather
 than blocking it.** v2 converged flat (val loss 6.70 -> 6.63, mean IoU 0.578 ->
 0.582, AP 0.758 -> 0.760) and still destroys precision. The cause is the label
-set, not the code: measured at the model's 128x128 input, their ground-truth
-faces have a **median of 5.4 px against a finest anchor stride of 8 px**, with
-67.3% under 8 px. MediaPipe's recall by size bin is 0.000 / 0.000 / 0.078 /
-0.854 / 0.966, so its 43.7% is near the **architectural ceiling**, not a weak
-baseline. Training on those labels chases unresolvable positives and the damage
+set, not the code: measured at the model's 128x128 input across the complete
+splits, their ground-truth faces have a **median of 13.4 px (val) against a
+finest anchor stride of 8 px**, with 39.4% under 8 px and only 46.7% clearing
+16 px. MediaPipe's recall by size bin is 0.000 / 0.000 / 0.078 / 0.854 / 0.966,
+and its measured overall recall is 0.4954 -- **46.7% of boxes being resolvable
+and 49.5% being recalled, agreeing to within a point, is the case that it sits
+at the architectural ceiling** rather than being a weak baseline. Training on those labels chases unresolvable positives and the damage
 lands on faces it could previously see -- 32+ px recall falls 0.966 -> 0.579.
 They validated the port against Google's own `blaze_face_short_range.tflite`
 (recall 0.4936 vs 0.4954, per-bin identical), so none of it is a porting
@@ -98,18 +100,25 @@ artefact.
 Measured here on 2000 images, same units -- original pixels scaled to the 128
 letterboxed input:
 
-| | this corpus | their training labels |
+| | this corpus | their labels (val) |
 |---|---|---|
-| detected face box, median | **31.6 px** | 5.4 px |
-| face >= 16 px | **98.7%** | 12.3% |
-| face >= 8 px | **100.0%** | 32.7% |
+| detected face box, median | **31.6 px** | 13.4 px |
+| face >= 16 px | **98.7%** | 46.7% |
+| face under 8 px | **0.0%** | 39.4% |
 | **hull of face + its ears** (what T4 must predict) | **median 42.7 px** | -- |
 | hull >= 16 px | **99.4%** | -- |
 | hull at 32+ px | **70.4%** | -- |
 
-Essentially every head here sits in the band where the architecture works, and
-70.4% of the actual T4 targets are in the 32+ px bin where stock MediaPipe
-already recalls 0.966. So T1's failure is a property of *their* WIDER-style
+(An earlier version of this table cited a 5.4 px median and 12.3% over 16 px.
+Those were measured on a sorted slice of `val.csv`, which is ordered by
+category, so the head of it is WIDER crowd scenes. Retracted by
+trainable_blazeface, whose figures they were. The corrected gap is roughly 2x in
+usable-target fraction rather than 8x; the direction and the conclusion are
+unchanged.)
+
+Essentially every head here sits in the band where the architecture works --
+98.7% over 16 px against their 46.7% -- and 70.4% of the actual T4 targets are
+in the 32+ px bin where stock MediaPipe already recalls 0.966. So T1's failure is a property of *their* WIDER-style
 crowd labels against a detector Google documents as "optimized for front-facing
 phone camera images at short range", and it is not evidence that this
 architecture resists fine-tuning on *this* data. Their next step is a
