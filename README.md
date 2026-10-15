@@ -735,6 +735,48 @@ order -- which is epoch order. The result was a systematic preference for the
 converged run back 45 epochs. Fixed in `checkpoint_utils.py`, which ranks by the
 score stored inside the file.
 
+## Where the detector's recall actually goes
+
+Measured on 2000 labelled full frames, because the obvious fixes to the face
+stage kept failing and it was worth knowing why. Two-stage recall is 75.65% at
+IoU>=0.3. Splitting the 24.35% of misses by asking whether any face crop even
+covered the ear:
+
+| | share of all ears | share of misses | fixable by a better FACE model? |
+|---|---|---|---|
+| ear-stage miss -- a crop covered the ear, BlazeEar still missed it | 14.60% | **60%** | **no** |
+| face-stage miss -- no crop covered the ear | 9.75% | 40% | partly |
+
+Faces per frame: mean 1.84, median 1, max 8, and only **1.1% of frames detect no
+face at all**. So the large majority of face-stage misses happen on frames where
+a face *was* found and the crop simply did not reach the ear -- which is crop
+geometry, not detection.
+
+**Crop geometry is already optimal, and sharply.** `FACE_CROP_EXPAND` is 1.5;
+sweeping it on 1200 frames loses significantly in both directions -- 1.2 gives
+-9.25 pp (p=4e-19), 1.9 gives -3.42 pp (p=1e-05), 2.4 gives -8.25 pp, 3.0 gives
+-14.42 pp. The mechanism is visible in the paired counts: expanding to 1.9
+*gains* 22 ears by covering more, and *loses* 63 by shrinking the ear inside the
+256 px crop. Coverage and resolution trade directly, and 1.5 is the optimum.
+
+### What this means for training a new stage-1 detector
+
+Not a custom NMS -- NMS is post-processing, needs no training, and the measured
+version costs recall (see the web-demo section). The real version of the idea is
+**re-targeting stage 1**: BlazeFace is stock MediaPipe, built for "a single
+frontal face in selfie-style images", while this pipeline's subject is a profile
+head. A stage-1 model fine-tuned to emit one *ear-inclusive* box per head would
+attack the coverage misses **without** the resolution penalty that expanding the
+crop pays, and `trainable_blazeface` exists to fine-tune exactly these weights.
+
+Its ceiling is bounded and worth stating before anyone spends a week on it:
+- compute -- one crop per frame instead of 1.84 is **-45.8% of stage-2 calls**
+- recall -- at most **+9.75 pp**, and only if BlazeEar then finds ears it has
+  never had the chance to see
+
+**The larger prize is stage 2.** 60% of misses are ears that a correct crop
+delivered and BlazeEar still missed; no amount of face-stage work touches them.
+
 ## Where to revisit
 
 This configuration is considered done, not finished. What stopped it was not
