@@ -53,6 +53,30 @@ problem is the negative side.
 per-prior positive share. 1402 of 3790 ears sit in the mode, so a run that
 improved the tail by starving the mode would show there before it showed in recall.
 
+**A trap sitting directly in B1's path.** `_tensors_to_detections` does three
+things `BlazeEarInference` does not -- sorts each box's corners so an inverted
+prediction is repaired, drops boxes under 1e-5 in width or height, and drops
+non-finite scores -- so the two paths can hand NMS **different candidate sets on
+identical weights**. On the shipped model this is latent: zero inverted and zero
+degenerate across 1,075,200 candidates from 300 real crops, emitted detections
+matching to 0.0 over 150 images. On random weights it is live: 2,191 of 3,584
+candidates come out corner-inverted. A trained regressor does not predict
+negative width; a *partly* trained one may. So **the two paths are not safe to
+compare on a model that is still training**, which is precisely when someone
+would reach for that comparison. Found by BlazeEar while widening the parity
+test.
+
+**And a scoping note on "under-scores small ears",** which is half right. Two
+different statistics, both measured, not in conflict: the *scoring discard rate*
+-- the gap between localised and gated -- is flat at ~20 pp below the mode and
+grows to 36.9 pp at 198 px, so the worst discards are at the large end. The
+*recall* is lost at the small end: 18.2% at 0-32 px and 58.0% at 32-48 against
+95.7% at the mode, with 148 of 203 small ears localised-but-gated against 3 of
+34 at 120-160. The large bands hold 17 to 34 ears against 203 and 426. For B1's
+targeting the recall statistic is operative, because that is where the mass is.
+The accurate phrasing is that the scoring gap is scale-dependent in **both**
+directions and the recoverable mass is small.
+
 ---
 
 ## Open: trainable_blazeface, stage 1
