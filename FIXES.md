@@ -37,7 +37,7 @@ these can be tried in sequence.
 | # | fix | cost | why it should work |
 |---|---|---|---|
 | **B1** | Widen `scale_range` low end from 0.75 to ~0.35 | one line | the training median ear is 64.9 px, so x0.75 = 48.7 px -- augmentation **cannot currently manufacture a sub-32 px ear**. Only the natively-small 5.9% populate that band. Attacks the exposure gap directly and leaves the mode's mass intact |
-| **B2** | Turn focal loss on | flag flip | already implemented and unused (`use_focal_loss=False`, alpha 0.25, gamma 2.0). Downweights easy negatives, which is exactly the small-anchor background |
+| ~~B2~~ | ~~Turn focal loss on~~ | **dead** | **Focal loss has been ON for every run in BlazeEar's history.** `train_blazeear.py` calls `set_defaults(use_focal_loss=True)` at alpha 0.35 / gamma 1.5; the README documented it as opt-in at 0.25/2.0 and was wrong on both counts. Retracted by BlazeEar, whose finding it was |
 | **B3** | Per-level hard-negative cap | small change to `loss_functions.py` | `HARD_NEGATIVE_RATIO = 50` mines globally across all 3584 anchors, so the 2048 slots holding the two smallest priors absorb the bulk of mined negatives every image |
 | **B4** | Lower the score threshold 0.70 -> 0.60 | **no training** | +2.81 pp recall for -6.94 pp precision. An operating-point decision, not a free win |
 | **B5** | Expose a calibrated score to the caller | small | better shape than moving a default, since consumers differ on the precision/recall trade |
@@ -57,10 +57,39 @@ improved the tail by starving the mode would show there before it showed in reca
 
 ## Open: trainable_blazeface, stage 1
 
-**T1 is a precondition for everything else here.** The fine-tuned checkpoint
-currently recalls 25.3% against frozen MediaPipe's 43.7% at matched ~95%
-precision, so re-targeting would be fine-tuning a pipeline that has not beaten
-its own starting point, and a null result would be uninterpretable.
+**T1 has run, it did not clear MediaPipe, and the reason reframes T4 rather
+than blocking it.** v2 converged flat (val loss 6.70 -> 6.63, mean IoU 0.578 ->
+0.582, AP 0.758 -> 0.760) and still destroys precision. The cause is the label
+set, not the code: measured at the model's 128x128 input, their ground-truth
+faces have a **median of 5.4 px against a finest anchor stride of 8 px**, with
+67.3% under 8 px. MediaPipe's recall by size bin is 0.000 / 0.000 / 0.078 /
+0.854 / 0.966, so its 43.7% is near the **architectural ceiling**, not a weak
+baseline. Training on those labels chases unresolvable positives and the damage
+lands on faces it could previously see -- 32+ px recall falls 0.966 -> 0.579.
+They validated the port against Google's own `blaze_face_short_range.tflite`
+(recall 0.4936 vs 0.4954, per-bin identical), so none of it is a porting
+artefact.
+
+**That failure does not transfer to this corpus, and the gap is not close.**
+Measured here on 2000 images, same units -- original pixels scaled to the 128
+letterboxed input:
+
+| | this corpus | their training labels |
+|---|---|---|
+| detected face box, median | **31.6 px** | 5.4 px |
+| face >= 16 px | **98.7%** | 12.3% |
+| face >= 8 px | **100.0%** | 32.7% |
+| **hull of face + its ears** (what T4 must predict) | **median 42.7 px** | -- |
+| hull >= 16 px | **99.4%** | -- |
+| hull at 32+ px | **70.4%** | -- |
+
+Essentially every head here sits in the band where the architecture works, and
+70.4% of the actual T4 targets are in the 32+ px bin where stock MediaPipe
+already recalls 0.966. So T1's failure is a property of *their* WIDER-style
+crowd labels against a detector Google documents as "optimized for front-facing
+phone camera images at short range", and it is not evidence that this
+architecture resists fine-tuning on *this* data. Their next step is a
+minimum-face-size filter on the training GT, unstarted.
 
 | # | fix | status | notes |
 |---|---|---|---|
