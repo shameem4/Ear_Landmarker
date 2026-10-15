@@ -836,18 +836,43 @@ IoU>=0.3 with that ear:
 Peak recall is the 64-80 band, and BlazeEar's training median of 0.253 ear per
 frame is **65 px** in a 256 crop. The peak sits on the training mass.
 
-Recall falls away in both directions, but **the score does not** -- it rises
-monotonically all the way to 0.961. So the two tails are not the same failure.
-Below the mode, boxes are correctly localised and under-scored: 0-32 px sits at
-0.370, well under the 0.70 gate, which is the 93.1% finding seen from another
-angle. Above it the model is *more* confident than anywhere else, so a missed
-ear there cannot be a thresholded box -- no box reached IoU 0.3 at all, which is
-localisation, not confidence.
+Recall falls away in both directions while the score column rises monotonically
+to 0.961. **An earlier version of this section read that as two different
+failures -- under-scoring below the mode, localisation above it -- and that was
+an inference error.** The median score is taken over every ear in the band,
+which is overwhelmingly the hits, so it says nothing about the handful of
+misses. Decomposing the misses themselves settles it:
 
-The practical consequence for any fix: 0-48 px holds 281 ears at 25% and 67%
-recall, against 70 ears above 96 px at 92.5% and 82.4%. The recall is on the
-small side, and a scale-rebalanced classifier addresses that side only. (The
-120-160 band is n=17, so the 82.4% is weak on its own.)
+| band | misses | never proposed | proposed, under-scored |
+|---|---|---|---|
+| 0-32 | 78 | 14 (18%) | 64 (82%) |
+| 32-48 | 59 | 1 (2%) | 58 (98%) |
+| 48-64 | 33 | 0 | 33 (100%) |
+| 64-80 | 25 | 0 | 25 (100%) |
+| 80-96 | 11 | 4 (36%) | 7 (64%) |
+| 96-120 | 4 | 1 (25%) | 3 (75%) |
+| 120-160 | 3 | 0 | 3 (100%) |
+
+Under-scoring dominates at **every** band, including above the mode. There is
+one mechanism here, not two, and it is the same one the 93.1% headline
+identifies. Only the smallest band carries meaningful localisation failure, and
+even there it is 18%.
+
+BlazeEar's render measurements agree rather than conflict: at 0.774 ear/frame
+(198 px in a 256 crop, beyond anything in this table) 97.6% of renders have a
+box at IoU>=0.3, median IoU 0.704, and the full-anchor oracle is 100% at
+IoU>=0.5 -- correct boxes, scores under the gate.
+
+Above 80 px the miss counts are 11, 4 and 3, so those rows are indicative only.
+The practical consequence is unchanged: 0-48 px holds 281 ears at 25% and 67%
+recall against 70 ears above 96 px, so the recall is on the small side whatever
+the mechanism above the mode turns out to be.
+
+One confound worth naming for anyone reading the size axis: ear size relative to
+the *detector's* face box climbs monotonically across these bands, 0.14 to 0.75.
+A large ear-in-crop arises when the face box is small relative to the ear, which
+is what a profile or strongly rotated head produces -- so the upper bands are
+not a clean size variable, they carry pose with them.
 
 The `FACE_CROP_EXPAND` null survived every basis unchanged. On the correct one
 (1200 images, 1400 ears): 1.5 optimal at 79.86%, 1.2 at -7.93 pp (p=7e-19), 1.9
