@@ -881,13 +881,23 @@ The practical consequence is unchanged: 0-48 px holds 281 ears at 25% and 67%
 recall against 70 ears above 96 px, so the recall is on the small side whatever
 the mechanism above the mode turns out to be.
 
-One confound worth naming for anyone reading the size axis: ear size relative to
-the *detector's* face box climbs monotonically across these bands, 0.14 to 1.04.
-A large ear-in-crop arises when the face box is small relative to the ear, which
-is what a profile or strongly rotated head produces -- so the upper bands are
-not a clean size variable, they carry pose with them. Testing that directly is
-possible but was not done: the upper bands are n=130, 34 and 17, which can
-describe a confound but not settle it.
+The size axis is confounded above the mode, and the last column settles it
+rather than merely flagging it. Ear size relative to the *detector's* face box
+climbs monotonically across the bands: 0.14, 0.24, 0.34, 0.41, 0.50, 0.60,
+0.79, **1.04**. In the top band the ear is *larger than the detected face box*.
+That is not a face seen at an angle; it is a face mostly out of frame or mostly
+occluded. So the upper bands are not a size variable with pose as a nuisance --
+they are substantially a pose variable wearing a size label, and no separate
+frontality test is needed to say so. (The trend is measured over all 3790 ears;
+the individual upper bands are n=130, 34 and 17.)
+
+This also dissolves the one apparent tension with BlazeEar's render data. Never
+proposed rises to 16%, 33% and 40% in the top bands here, while their renders
+localise 97.6% at 198 px with a full-anchor oracle of 100%. At n=4, 4 and 2
+that is noise either way, but the images differ systematically: their renders
+are clean, centred, unoccluded ears on a complete head, and an ear at
+ear/face-box ~1 is the opposite. Same nominal size, different pictures, no
+contradiction to resolve.
 
 **The face stage predicts ear tragions and the pipeline throws them away.**
 BlazeFace carries MediaPipe's 6 keypoints -- `num_coords = 16`, separate
