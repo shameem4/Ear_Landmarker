@@ -86,7 +86,44 @@ measuring alongside recall, and it is a query against a harness that already exi
 |---|---|---|
 | L1 | Detection is 68-76% of pipeline wall clock | the real latency target; no mechanism proposed |
 | L2 | Decide whether `detector_frame_tta` should default on | currently off. Every measurement either project has is on a corpus that is single-presentation or scored on crops. Ear_3D_Lifter can build a mixed-presentation corpus that would settle it |
-| L3 | Recover the face keypoints | one line at `blazedetector.py:262` (`[:, :5]` in NMS discards them after decode). Only worth it if T3 finds a direction predictor |
+| L3 | Recover the face keypoints | **4 lines in BlazeEar, 0 here** -- see below. Only worth doing if T3 finds a direction predictor |
+
+### L3 in detail: propagating keypoints through NMS
+
+The discard is **not** at `blazedetector.py:262`, which is what an earlier note
+here and the `trainable_blazeface` session both said. That `[:, :5]` is a no-op:
+the tensor already has exactly 5 columns by then. The real discard is upstream
+at **`blazedetector.py:326`**, inside `_tensors_to_detections`:
+
+```python
+boxes = detection_boxes[i, mask[i]][:, :4]      # <- keypoints dropped here
+scores = detection_scores[i, mask[i]].unsqueeze(dim=-1)
+output_detections.append(torch.cat((boxes, scores), dim=-1))
+```
+
+`_decode_boxes` really does return keypoints (it calls
+`decode_boxes_with_keypoints`), and they are thrown away one line later, before
+NMS ever sees them.
+
+The change, in dependency order:
+
+1. **`:326`** keep all coords: `boxes = detection_boxes[i, mask[i]]`, giving the
+   layout `[ymin, xmin, ymax, xmax, kp_x0, kp_y0, ..., score]` -- **score last**.
+2. **`:260-261`** `nms_indices(image_detections[:, :4], image_detections[:, 4], ...)`
+   must take the score from `[:, -1]`. **This is the line that breaks silently if
+   missed**: with keypoints at index 4, NMS would sort by `kp_x0`.
+3. **`:262`** drop the `[:, :5]`.
+4. **`:255-256`** widen the empty-detection `torch.zeros((0, 5))` to match.
+
+**`denormalize_detections` needs no change** -- it already computes
+`keypoint_coords = num_coords - 5` and transforms indices `4..kp_end`, which is
+exactly the score-last layout above.
+
+**Nothing changes on this side either.** `inference.py:_as_boxes` already
+collapses a wider detection to `[box4, last column]`, and its docstring records
+that scoring by a keypoint has bitten this project before: *"made NMS sort by a
+keypoint and report nonsense scores"*. So the one real risk in this change is
+step 2, and it is a risk the project has already paid for once.
 
 ---
 
