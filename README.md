@@ -446,12 +446,56 @@ sequentially and a batch of 2 is exactly twice the work plus a larger
 allocation. `ort.env.wasm.numThreads` reads 4, but that is the requested value,
 not the effective one.
 
-The real lever is the execution provider, not the batch shape. The demo loads
-`ort.min.js`, which carries only the WASM backend; `navigator.gpu` reports an
-adapter, so a WebGPU build (`ort.webgpu.min.js`) would run on the GPU, where
-batching *would* pay. That is untested here -- it means swapping the bundle,
-re-validating numerics on a different backend and keeping a WASM fallback -- so
-it is an opportunity, not a recommendation.
+**WebGPU was the obvious next lever and it is also rejected, on correctness
+before speed.** Tested by loading `ort.webgpu.min.js` in an isolated iframe and
+scoring all three graphs against the WASM backend on the same inputs:
+
+| model | WASM | WebGPU | speedup | WASM-vs-WebGPU output |
+|---|---|---|---|---|
+| BlazeFace | 2.69 ms | 27.72 ms | **0.10x** | **max diff 13400** |
+| BlazeEar | 10.0 ms | 29.7 ms | **0.34x** | **max diff 287** |
+| landmarker | 11.9 ms | 10.0 ms | 1.19x | 2.98e-07 |
+| modelled frame | 46.5 ms | 107.2 ms | **0.43x** | |
+
+Only the landmarker both speeds up and stays correct. The two detectors are 3-10x
+*slower* on WebGPU and return numerically different results, which disqualifies
+the backend here whatever the timings say. A frame modelled from these parts is
+2.3x slower overall. (Pinning also matters: the demo's `onnxruntime-web@1.18.0`
+cannot use WebGPU at all -- its backend calls `adapter.requestAdapterInfo()`,
+which current Chrome has removed -- so this needed 1.20.1 or 1.22.0 to test.)
+
+One result from that run is worth keeping, because it is the counterfactual for
+the section above: **on WebGPU, batching does pay** -- one batch-2 landmarker run
+is 8.87 ms against 17.16 ms for two batch-1 runs, a 48.3% saving. So the
+dynamic-batch export is not a bad idea in general, it is a bad idea *on WASM*.
+If the backend ever becomes viable the two changes would compose, and fusion
+would be close to free as it is on CUDA.
+
+### What is actually left
+
+Profiled per stage in the browser on a 266x346 frame, JS and canvas work is
+0.33 ms of 91 ms -- there is nothing to win outside the models. The split is
+BlazeFace 10.7 ms once, BlazeEar **16.7 ms per detected face**, landmarker
+28.6 ms for both fusion arms.
+
+That middle term is the one real opportunity left. BlazeFace runs at a 0.2
+score threshold and up to 8 faces, and on these fixtures it returns 2-3 "faces"
+for a single-ear photo -- one of them typically a box that *contains* another.
+Every one of them costs a full BlazeEar pass. Suppressing overlapping face boxes
+before stage 2, the way the pipeline already suppresses overlapping *ear* boxes
+with an IoMin test, cuts 19-28% of frame time on all four fixtures with the ear
+count unchanged.
+
+It is **not** shipped, for two reasons. It is not behaviour-preserving -- final
+landmarks move by up to 1.02 px, because a different face crop wins and the ROI
+shifts. And `max_faces=8` / `threshold=0.2` are not arbitrary: they match
+BlazeEar's own `FACE_CROP_MAX_FACES` and `FACE_CROP_THRESHOLD` exactly, and
+`inference.py` deliberately defers face-crop geometry to BlazeEar rather than
+reimplementing it. The 78.6% two-stage recall figure was measured with this
+configuration on 500 annotated scenes, and suppressing a low-scoring face box
+that is the only one containing the ear would cost recall in exactly the case
+the second stage exists for. Four fixtures cannot see that. Validating it means
+re-running BlazeEar's recall benchmark, not testing here.
 
 ### Comparing the ROI refinement
 
