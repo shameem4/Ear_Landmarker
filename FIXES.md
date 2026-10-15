@@ -145,14 +145,32 @@ web wrappers). So:
   change, consistently.
 
 **And the test that exists to catch exactly this will not.**
-`utils/tests/tests/test_inference_parity.py` asserts the paths agree, but it
-calls `decode_boxes_with_keypoints(..., num_keypoints=0)` and then slices
-`[..., :4]` before comparing -- box geometry only, not even the score. A
-keypoint change made in one path and not the other **passes it silently**. That
-is the repository's own documented failure mode: four paths carrying the same
-weights, disagreeing, with three defects reaching the browser because the Python
-suite could not see them. If this work ever starts, widening the parity test is
-the first commit, not the last.
+`utils/tests/tests/test_inference_parity.py` pins a great deal -- preprocessing
+bit-identically, one shared anchor tensor, and the raw model outputs across both
+paths at `(1, 3584, 16)`, keypoint channels included, bit for bit. What it never
+pins is **what either path emits to a caller**. Both decode tests compare four
+columns: one calls `decode_boxes_with_keypoints(..., num_keypoints=0)` then
+slices `[..., :4]`, the other pads with twelve zeros and also compares four. Not
+even the score is asserted. `BlazeEarInference.predict` returns `(100, 5)` and
+`BlazeEar.process` returns `(N, 5)` on the same image, and nothing compares
+those two tensors.
+
+So a keypoint widening in one path and not the other **passes silently**, and
+the divergence would live precisely in the unguarded decode/discard layer where
+the repository's earlier four-paths-disagree defects lived. If this work starts,
+widening the parity test is the first commit -- and the widening wanted is not
+more raw-tensor comparison, which is already bit-exact, but an assertion on the
+**emitted** detections: same column count, same scores, same keypoints after
+`denormalize_detections`.
+
+**The exported graphs are covered, but not by the test suite.** No test loads an
+exported artefact -- `onnxruntime` appears only in `export_onnx.py` and
+`export_two_stage_web.py`, which check the graph against the PyTorch wrapper at
+export time. Two consequences: the check runs when someone exports rather than
+in CI, and `export_onnx.py` returns success when `onnxruntime` is missing (it
+prints a notice first). Worth knowing because the parity file's own docstring
+names "the exported graphs themselves" among the things *these tests* pin, and
+they do not -- the export scripts do.
 
 ---
 
