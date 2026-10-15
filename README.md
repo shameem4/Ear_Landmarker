@@ -817,11 +817,44 @@ At that size BlazeEar's anchor coverage is 0.571 with 3.6% below IoU 0.35, so
 anchor geometry is not the mechanism and the under-scoring hypothesis stands
 alone.
 
-The `FACE_CROP_EXPAND` null survived every basis unchanged -- 1.5 optimal, 1.2
-at -5.62 pp, 1.9 at -3.01 pp, 2.4 at -6.72 pp on full `master.csv`, with the
-same gains-coverage/loses-resolution mechanism in the paired counts. A result
-that holds across two wrong targets and the right one is as settled as this
-corpus can make it.
+### Recall against ear scale, and the two mechanisms are different
+
+Binned by ear size inside the 256 px crop, on the human basis, for ears a crop
+actually delivered. "Median best score" is the score of the best box reaching
+IoU>=0.3 with that ear:
+
+| size (px in 256 crop) | n | recall | median best score |
+|---|---|---|---|
+| 0-32 | 104 | **25.0%** | 0.370 |
+| 32-48 | 177 | 66.7% | 0.820 |
+| 48-64 | 461 | 92.8% | 0.927 |
+| **64-80** | 620 | **96.0%** | 0.940 |
+| 80-96 | 187 | 94.1% | 0.946 |
+| 96-120 | 53 | 92.5% | 0.955 |
+| 120-160 | 17 | 82.4% | **0.961** |
+
+Peak recall is the 64-80 band, and BlazeEar's training median of 0.253 ear per
+frame is **65 px** in a 256 crop. The peak sits on the training mass.
+
+Recall falls away in both directions, but **the score does not** -- it rises
+monotonically all the way to 0.961. So the two tails are not the same failure.
+Below the mode, boxes are correctly localised and under-scored: 0-32 px sits at
+0.370, well under the 0.70 gate, which is the 93.1% finding seen from another
+angle. Above it the model is *more* confident than anywhere else, so a missed
+ear there cannot be a thresholded box -- no box reached IoU 0.3 at all, which is
+localisation, not confidence.
+
+The practical consequence for any fix: 0-48 px holds 281 ears at 25% and 67%
+recall, against 70 ears above 96 px at 92.5% and 82.4%. The recall is on the
+small side, and a scale-rebalanced classifier addresses that side only. (The
+120-160 band is n=17, so the 82.4% is weak on its own.)
+
+The `FACE_CROP_EXPAND` null survived every basis unchanged. On the correct one
+(1200 images, 1400 ears): 1.5 optimal at 79.86%, 1.2 at -7.93 pp (p=7e-19), 1.9
+at -4.29 pp (p=3e-09), 2.4 at -9.00 pp (p=4e-24), with the same
+gains-coverage/loses-resolution mechanism in the paired counts (1.9 gains 22,
+loses 82). A result that holds across two wrong targets and the right one is as
+settled as this corpus can make it.
 
 ### Stage 2 is a scoring problem, not a localisation one
 
