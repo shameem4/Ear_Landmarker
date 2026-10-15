@@ -478,6 +478,30 @@ same operation. The two results are orthogonal, not competing. Ear_3D_Lifter
 measures a frame-mirrored single pass beating this two-arm fusion on their
 gross-error gate, which is consistent with both.
 
+### Every Ear_3D_Lifter gate figure below is PROVISIONAL
+
+> All of them -- the mixed-handedness table, the arm-selector oracle, and the
+> `detector_frame_tta` recovery -- were measured on their renderer at a sun
+> direction of x=+0.3, which they have since changed to x=+1.2 after sweeping
+> it. That move is worth **-2.29 pp on 39 of 40 ears, p=2.0e-07**, taking their
+> baseline from 3.49% to about 1.6%. For scale, the entire
+> fusion-versus-replacement-versus-nothing spread on that gate is about 0.8 pp,
+> so **the lighting change is larger than every TTA effect put together.**
+>
+> The plausible way the orderings break: mirroring may buy less once the
+> occluding contour already has a strong edge, since weak-edge failure is what
+> mirroring was compensating for. If so the 43% recovery and the p=0.058
+> residual both need restating. The 112-ear audit is re-running at the new sun.
+>
+> The structural claims should survive regardless, because they are not about
+> magnitude: a coordinate average is symmetric whatever the lighting, so
+> fusion's zero variance across presentations is a property rather than a
+> measurement. The *sizes* of every gap below are the provisional part.
+>
+> **Nothing in this touches the photograph-domain results** -- the NME figures,
+> the detector recall, the bias measurements and the size-band analysis never
+> involved their renderer.
+
 ### Symmetric rules survive a mixed corpus; asymmetric ones do not
 
 The gap in all of the above was that every measurement came from a corpus that
