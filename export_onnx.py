@@ -92,11 +92,17 @@ class EarLandmarkerWeb(torch.nn.Module):
 def _probe_inputs(n: int = 4) -> list[torch.Tensor]:
     """Inputs that actually exercise the graph, in the [-1, 1] range it sees.
 
-    One is a real ear crop when the corpus is present. A check driven only by
-    noise can pass while verifying nothing interesting -- that is how BlazeEar's
-    ONNX post-process graph shipped with its confidence threshold missing: the
-    self-check probed with a random image, nothing scored above the gate, and it
-    reported success having compared two empty results.
+    One is a real ear crop when the corpus is present. The failure mode this
+    guards is not only "no check" but "a check whose probe cannot reach the code
+    path": BlazeEar's exporter probed with `torch.randn`, which its wrapper's
+    `x / 127.5 - 1.0` maps to roughly [-1.03, -0.97] -- a near-uniform grey that
+    scores nothing above the 0.8 gate -- so decode, NMS and the threshold went
+    unverified while the check reported success.
+
+    That cannot happen here for the same reason, since a fixed-55-point
+    regressor emits 55 points for any input and has no gated path to miss. The
+    probes are full-range rather than grey anyway, and `verify_export`'s
+    non-vacuity test is the general form of the same guard.
     """
     gen = torch.Generator().manual_seed(0)
     probes = [(torch.rand(1, 3, 192, 192, generator=gen) - 0.5) / 0.5
