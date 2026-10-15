@@ -785,11 +785,27 @@ ears-total and an ears-delivered figure that were drawn with *different seeds*,
 which is the same cross-run arithmetic error retracted elsewhere in this file;
 **8.70% is measured within a single 3500-image sample** and is the one to use.
 
-Not directly comparable to BlazeEar's own 11.3% unreachable on `common_heldout`
-(2.5% no-face plus 8.7% escaping, 355 ears): that counts an ear as reachable
-when its *centre* falls inside a crop window, where this requires 50% of its
-area, on a different split. Same phenomenon, two operationalisations. Anyone
-scoping stage-1 work should pick one and state it rather than averaging them.
+**Beware a numeric coincidence across the two repositories.** BlazeEar's README
+also reports an 8.7%, and it is *not* the same quantity as the 8.70% above --
+it is a sub-component of it. Decomposed the way BlazeEar decomposes it, on the
+same 3500-image sample:
+
+| | this repo | BlazeEar `common_heldout` |
+|---|---|---|
+| all face-stage misses | **8.70%** (361/4151) | **11.3%** (40/355) |
+| of which, no face detected at all | 0.99% | 2.5% |
+| of which, face found but ear outside every window | 7.71% | **8.7%** |
+
+So BlazeEar's headline 8.7% corresponds to the **7.71%** row here, not to the
+8.70% total. Read side by side without this table, the two documents look like
+they agree exactly, and they would be wrong twice -- about the agreement, and
+about which quantity is being compared.
+
+The residual differences are definitional and should not be reconciled or
+averaged: this counts an ear as delivered when 50% of its *area* falls inside a
+window, BlazeEar counts it when its *centre* does, on a different split and
+355 ears against 4151. Anyone scoping stage-1 work picks one operationalisation
+and states it.
 
 **The larger prize is stage 2.** 60% of misses are ears that a correct crop
 delivered and BlazeEar still missed; no amount of face-stage work touches them.
