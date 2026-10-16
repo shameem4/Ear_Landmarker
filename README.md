@@ -1178,25 +1178,48 @@ a worse position than having a bad candidate, and the honest one.
 
 The `FACE_CROP_EXPAND` null survived every basis unchanged. On the correct one
 (1200 images, 1400 ears): 1.5 optimal at 79.86%, 1.2 at -7.93 pp (p=7e-19), 1.9
-at -4.29 pp (p=3e-09), 2.4 at -9.00 pp (p=4e-24), with the same
-gains-coverage/loses-resolution mechanism in the paired counts (1.9 gains 22,
-loses 82). A result that holds across two wrong targets and the right one is as
-settled as this corpus can make it.
+at -4.29 pp (p=3e-09), 2.4 at -9.00 pp (p=4e-24), with the paired counts at 1.9
+gaining 22 and losing 82. A result that holds across two wrong targets and the
+right one is as settled as this corpus can make it.
+
+**The sweep stands; the MECHANISM given for it was tested predictively and
+failed.** "Going bigger gains coverage and loses resolution" was used in 2026-10
+to predict that a detector emitting boxes 1.0998x larger should have its
+constant divided by that ratio to restore the same effective geometry. At the
+rescaled 1.364 **both** arms got worse and face-stage misses rose in every band,
+so the optimum is not about effective scale relative to the face box. Half the
+story survives -- a smaller window does lose coverage -- but the resolution half
+does no predictive work, and the 1.5 optimum has no mechanism that has survived
+a prediction. See "T4 reopened" below. Do not re-derive a crop constant from
+this mechanism; re-fit it against the downstream objective.
 
 ### Stage 2 is a scoring problem, not a localisation one
+
+**Every number in this subsection is on the COLLAPSED YOLO-export basis, which
+is retracted** (see above). The conclusion survives re-measurement and the
+figures do not; the corrected ones follow the table. Retained because the
+decomposition method is the reusable part.
 
 For every stage-2 miss, re-running that same crop with `min_score_thresh`
 floored to 0.01 and asking whether any box reaches IoU>=0.3 with ground truth:
 
-| | count | share |
-|---|---|---|
-| proposed, but below the 0.70 threshold | 202 | **90.2%** |
-| never proposed at any score | 22 | 9.8% |
+| | count | share | *corrected basis* |
+|---|---|---|---|
+| proposed, but below the gate | 202 | 90.2% | **93.1%**, and 92.8% at n=3790 |
+| never proposed at any score | 22 | 9.8% | **6.9%** |
 
-Scores of the recoverable ones: median **0.404**, p25 0.274, p75 0.570. The box
-regression is working and the classification head is under-scoring, and what it
-under-scores is small ears -- largest side inside the 256 px crop is a median
-**40.1 px for misses against 67.6 px for hits**.
+Scores of the recoverable ones were given as median 0.404 -- **withdrawn**, same
+retracted basis, and never re-measured until 2026-10-15. On the human-source
+basis, 3,500 images / 4,136 ears / 3,809 delivered inside a crop, the median is
+**0.453 at our 0.70 gate**, 0.599 at 0.80, 0.701 at 0.85. A miss-score median is
+gate-dependent by construction -- a miss at 0.70 cannot include a box scoring
+0.75 -- so it is meaningless without its gate and its localisation IoU.
+
+The surviving claim: the box regression is working and the classification head
+is under-scoring. What it under-scores was given as small ears -- largest side
+inside the 256 px crop a median 40.1 px for misses against 67.6 px for hits --
+and that reading is now **contested** by BlazeEar's null levers; see "The prize
+behind stage-2 calibration is contested".
 
 Sliding the threshold does not fix it, because precision pays for it:
 
@@ -1215,11 +1238,19 @@ stage-2 training change: 202 ears are already localised and scored around 0.40,
 so scoring them like the 68 px ones would be up to **+13.5 pp of pipeline
 recall at an unchanged threshold and unchanged compute**.
 
-**Caveat on that precision column.** All 13,482 labelled frames carry exactly
-one ear -- 100%, no exceptions -- so on a frontal face showing both ears, a
-correct second detection scores as a false positive. Precision is a **lower
-bound**, and how loose a bound depends on whether one-ear-per-image is a
-labelling convention or a property of the images.
+**Caveat on that precision column -- and it is ANSWERED.** All 13,482 frames in
+the collapsed YOLO export carry exactly one ear, 100%, no exceptions, so on that
+basis a correct second detection on a frontal face scores as a false positive
+and precision is a lower bound. The open question was whether one-ear-per-image
+was a labelling convention or a property of the images. **It is neither: it was
+an artefact of the export.** BlazeEar measured master.csv's human sources with
+the geometry filter -- 15,972 ears over 13,482 images -- and 17.8% of images
+carry two or more, holding 30.6% of all ears (82.2% one, 17.2% two, 0.5% three,
+0.1% four-five); `data/yolo11_ears_human/` shows the same split over its 13,007
+label files. So on the corrected basis precision is **not** systematically
+depressed, and every measurement in this file taken on that basis -- including
+every matched-precision table below -- stands as measured. Only the figures in
+this retracted subsection carry the lower-bound caveat.
 
 ### T4 reopened: a better stage 1 improves coverage and delivers nothing
 

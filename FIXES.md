@@ -263,12 +263,28 @@ so 0.2 hands stage 2 6.16 crops/image against 1.84). Recalibrating expand to
 1.364 makes *both* arms worse, so the units observation is right and that
 correction is wrong.
 
-**The lever moves to stage 2, and is now worth more.** The extra ears arrive as
-boxes the 0.70 threshold discards -- the same constraint as the 90.2%
-under-scoring result. Revisit the crop union only after stage-2 scoring is
-fixed, at which point +16.79 pp of raw 0-32 px coverage (the one
+**The lever moves to stage 2, but how much it is worth is contested.** The extra
+ears arrive as boxes the gate discards -- the same under-scoring constraint,
+re-measured on the correct basis at **93.1% localised, median 0.453 at our 0.70
+gate** (the 90.2% / 0.404 pair was on the retracted YOLO-export basis and is
+withdrawn; a miss-score median is gate-dependent by construction, so quote the
+gate and the localisation IoU). Revisit the crop union only after stage-2
+scoring is fixed, at which point +16.79 pp of raw 0-32 px coverage (the one
 configuration-invariant gain, p<1e-08 in all four configurations) is sitting
 unconverted for the price of a second detector pass.
+
+**BlazeEar contests the size of that prize**, and it is accepted as a discount
+on the prize rather than the direction: their downward scale augmentation and
+per-prior mining ceiling were both null, and paired on the same ears they shift
+confidence uniformly across *all* ears (0.005-0.009, p=1.7e-17) with no
+small-ear-specific component (+0.0004, p=0.81). On that reading "stage 2
+under-scores small ears" describes where a uniform shift crosses a gate, and
+fixing calibration will not make 24-pixel ears scoreable.
+
+**Also withdrawn here: "the cheapest stage-1 win is `FACE_CROP_THRESHOLD`".**
+BlazeEar measured it end to end -- a wash at loose operating points, -1.40 pp at
+the deployed 0.80 and -2.40 pp at 0.85, while raw coverage improved as far as it
+can. Volume at stage 1 has now failed to convert twice. It stays at 0.2.
 
 Full measurements and the matched-precision table: README, "T4 reopened".
 
