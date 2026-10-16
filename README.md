@@ -52,10 +52,17 @@ rather than wrong output. Keep 0.70; see
 [Choosing the stage-2 gate](#choosing-the-stage-2-gate).
 
 A note on how these numbers were arrived at, since several are retractions of
-earlier ones: across one day's work eight wrong mechanisms were caught, and not
-one of them by reviewing the reasoning -- every one by a clash with an
-independent number. Figures withdrawn here are marked where they were asserted,
-not quietly replaced.
+earlier ones. Nine wrong mechanisms were caught in a day's work and **not one by
+reviewing the reasoning.** Eight fell to a clash with an independent number --
+the standing rule here is to name, for any result, the other number it must
+agree with. The ninth fell to something else and is the reason the visual check
+is a standing directive rather than a nicety: the argument for a
+precision-weighted gate was coherent, its measurements were all correct, and it
+died the first time the crops were rendered, because **the statistic was not
+measuring what it was being read as measuring** -- "false positives" were
+overwhelmingly correct detections of unlabelled ears. No amount of checking the
+arithmetic would have found that. Figures withdrawn here are marked where they
+were asserted, not quietly replaced.
 
 ## Scope
 
@@ -1733,20 +1740,34 @@ corpus, and `resolve_confidence()` takes a name, a number or `None`. The default
 is `interactive` precisely so that naming the choice did not change shipped
 behaviour -- `DETECTOR_CONFIDENCE` is still 0.70.
 
-**Recommendation: do not pick one number.** The cost asymmetry is real but it is
-*consumer-dependent*, and the threshold is already a parameter rather than a
-constant. Keep 0.70 for interactive and human-in-the-loop use, where a false
-positive is cheap and visible, and pass a higher gate -- 0.80, or 0.86 if the
-consumer cannot detect a wrong fit -- where output is consumed automatically and
-a silent corruption costs more than a dropped sample. If a single value is
-wanted anyway, 0.76 is the F1 argmax and buys 0.071 fewer FP/image for 2.6 pp of
-recall against what ships today.
+**Recommendation: ship 0.70 and do not raise it on quality grounds.** An
+earlier version of this section recommended the opposite -- "do not pick one
+number; pass a higher gate where output is consumed automatically, because a
+silent corruption costs more than a dropped sample" -- and that recommendation
+survived in place for one commit after the measurement above had refuted it,
+which is worth recording as its own small lesson: the argument was corrected
+where the argument was, and the actionable line three paragraphs below was not.
 
-**What to do before changing it either way:** look at the crops. Every figure
-here is detection-level, and none of it says whether the boxes gained between
-0.70 and 0.76 produce usable landmarks or merely usable IoU. Render both
-settings on the same frames and check, per the standing rule that the visual
-check comes before the statistic.
+The mechanism stands -- the gate genuinely is a consumer choice and remains a
+parameter -- but the *reason* to raise it does not. A higher gate removes real
+ears, not wrong ones, so `fewer` and `fewest` exist for consumers with their own
+reason to want fewer boxes (throughput, review cost, a stage that cannot take
+duplicate ears) and should be swept on that consumer's own corpus.
+
+**The visual check this section used to defer is done, and it is what overturned
+the recommendation.** The instruction here used to read "look at the crops before
+changing anything, because every figure is detection-level and none of it says
+whether the boxes produce usable landmarks or merely usable IoU". That was the
+right instruction and following it cost the argument: the crops showed the
+false-positive population was almost entirely correct detections. Two renderers
+are kept for re-running it -- `scripts/fp_audit.py` tiles false positives by
+score band, and `scripts/render_gates.py` draws each detection coloured by which
+gate would keep it.
+
+**Still unmeasured:** whether the boxes between 0.70 and 0.76 produce usable
+landmarks. The audit answered what the false positives are, not whether marginal
+true positives are worth having, and that needs a landmark-quality measure
+rather than a detection one.
 
 ### Our stage-2 gate and BlazeEar's have diverged
 
@@ -1757,11 +1778,19 @@ reporting F1 argmax 0.7273 at 0.80 against 0.7081 at 0.70, and 0.7497 fused at
 0.85 against 0.6886. They also report 0.70 being live for two hours and reverted
 because it tripled fused false positives per image, 0.152 to 0.488.
 
-**That makes our 0.70 a candidate defect rather than a choice**, and it is
-untested here: their sweep is on their corpus with their gate semantics. Not
-changed on their say-so -- it needs the same end-to-end sweep on this side
-before moving, and every arms table in this file is internally consistent at
-0.70 and therefore unaffected either way.
+**RESOLVED -- 0.70 is a choice, not a defect.** This section used to call it a
+candidate defect pending "the same end-to-end sweep on this side". That sweep
+has run (above): across 13,007 images the whole 0.70-0.80 range spans 0.60% of
+F1, so the divergence was never worth a redeploy, and rendering the false
+positives showed a higher gate discards real unlabelled ears rather than wrong
+detections. **0.70 stays.**
+
+One question this hands back to BlazeEar rather than answering: their 0.80 was
+picked on an F1 argmax and their revert of 0.70 on tripled fused false positives
+per image. Both are precision-driven, and precision here was measuring label
+incompleteness. Whether the same holds on val_v2 depends on whether its ears are
+labelled completely, which is theirs to check -- it is a question about their
+basis, not a claim about their number.
 
 ### The prize behind stage-2 calibration is contested
 
