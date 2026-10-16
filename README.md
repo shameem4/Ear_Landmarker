@@ -708,20 +708,28 @@ Two things come out of that. Most of the gap survives being decided **once per
 view** -- 0.446 pp of 0.502 pp, or 89% -- so a practical rule would not need 55
 decisions, which is what the per-point oracle had implied. And **the obvious
 selector buys nothing**: picking the arm whose detection scored higher lands at
-1.292% against fusion's 1.290%, a wash, and worse than always-mirror's 1.190% on
-the same single-presentation corpus. It is measuring the detector's response to
-presentation rather than which arm placed the landmarks better. An older note in
-that project independently found confidence selecting the good arm 32.3% of the
-time, on different data and through different bugs, four months earlier; the
+1.292%, **level with** fusion's 1.290% and **worse than** always-mirror's 1.190%
+on the same single-presentation corpus. The arms it chooses between are
+as-presented 1.710% and mirrored 1.190%, so it beats doing nothing and does not
+beat the fixed rule -- it is measuring the detector's response to presentation
+rather than which arm placed the landmarks better. An older note in that project
+independently found confidence selecting the good arm 32.3% of the time, on
+different data and through different bugs, four months earlier; the
 75%-of-points figure that accompanied this at the old sun was not re-reported
 and is not carried.
 
-*(Ear_3D_Lifter described this selector as "worse than both arms it would choose
-between". Their own numbers do not read that way to me -- 1.292% sits between the
-as-presented and mirrored arms, 1.710% and 1.190% -- so the weaker claim above is
-what is recorded, and the discrepancy is theirs to resolve. The conclusion is
-unaffected either way: a selector that lands on fusion's number is not worth
-building.)*
+That phrasing is precise because the first version of it was not. This was
+relayed as "worse than both arms it would choose between", which the numbers in
+the same message contradicted -- 1.292% sits *between* 1.710% and 1.190%.
+Declining it turned up a bug in Ear_3D_Lifter's own reporting script
+(fixed at their d2c41b1): the comparison tested the ordering *before* the
+tolerance, `"worse than" if cr > r else "level with" if abs(cr - r) < 0.02`, so
+the "level with" branch was unreachable on the worse side and a 0.002 pp gap
+printed as "worse than fusion". **The dead branch could only fire once the sun
+fix shrank the gap inside the tolerance**, so the improvement exposed the bug
+rather than causing it, and no pre-sun run would have shown it. Worth recording
+because the thing that caught it was a paraphrase disagreeing with the numbers
+carried alongside it, which is the only reason anyone looked.
 
 So the prize is recorded as real with no route to it, rather than as an
 opportunity -- because the attractive answer has now failed twice and the next
