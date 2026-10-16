@@ -161,8 +161,18 @@ directions and the recoverable mass is small.
 
 ## Open: trainable_blazeface, stage 1
 
-**T1 has run, it did not clear MediaPipe, and the reason reframes T4 rather
-than blocking it.** v2 converged flat (val loss 6.70 -> 6.63, mean IoU 0.578 ->
+**SUPERSEDED 2026-10-15: T1 HAS CLEARED MediaPipe.** The paragraph below was
+written when every available configuration used a defective anchor assignment,
+which trainable_blazeface retracted. With per-anchor targets plus an ignore
+band they beat stock on their own corpus and clear the gate this side set --
+0.934 at 16-32 px and 0.980 at 32+ px against thresholds of 0.854 and 0.966,
+recall 0.437 -> 0.501 at better precision. The size analysis below still holds
+as a description of their corpus and is why the sub-8px floor is unreachable;
+what is withdrawn is "it did not clear MediaPipe". See README, "T4 reopened".
+
+*Original, retained because its size analysis is still the reason for the
+sub-8px floor:* **T1 has run, it did not clear MediaPipe, and the reason
+reframes T4 rather than blocking it.** v2 converged flat (val loss 6.70 -> 6.63, mean IoU 0.578 ->
 0.582, AP 0.758 -> 0.760) and still destroys precision. The cause is the label
 set, not the code: measured at the model's 128x128 input across the complete
 splits, their ground-truth faces have a **median of 13.4 px (val) against a
@@ -450,7 +460,10 @@ post-hoc rule. L3, the keypoint plumbing, loses its only justification and
 should not be built. The face-stage 8.70 pp is back to having no proposed
 mechanism, and the remaining candidate is the one that does not depend on
 face-derived cues at all: **re-targeting stage 1 so the box is correct in the
-first place (T4), which is gated on T1**.
+first place (T4)**. T1 has since cleared and T4 was measured and closed -- the
+coverage it buys is real and does not convert. The surviving form of "make the
+box correct in the first place" is a **head-ness** objective, not an
+ear-inclusive one; see the row above and README, "T4 reopened".
 
 **Quote T3's numbers with their shift budget attached.** The 58.1% is 18 of 31
 ears on one 279-image split, and the required offsets are a smooth continuum
@@ -459,7 +472,7 @@ populations -- BlazeEar looked for a gap that would separate "near miss" from
 "wrong face" and there is none. So the recoverable share is purely a function of
 the shift budget allowed, and "58.1% of escaping ears are recoverable" without
 the `<=0.5 crop-sides` qualifier overstates it.
-| **T4** | Re-target stage 1 to an ear-inclusive box | blocked on T1 | ground truth is derivable from `master.csv` human ear boxes; the hard part is head-assignment at 1.84 faces/frame. Must come from this side |
+| **T4** | ~~Re-target stage 1 to an ear-inclusive box~~ | **CLOSED -- coverage does not convert** | T1 cleared, T4 reopened and was measured end to end. A better stage 1 cuts face-stage misses 1301 -> 530, and delivered recall at matched precision does not move. Under a per-ear oracle crop **1 of 332 rescued ears under 32 px clears the gate** and 56.9% are not localised at all, so neither stage-1 coverage nor stage-2 calibration reaches that population. Superseded as a direction by **head-ness** (below) |
 | **T5** | Add mirror-agreement to the v2 acceptance criteria | free | see below |
 
 **T5 is the cheapest item on this entire list.** The shipped face weights are
@@ -579,10 +592,32 @@ Do not re-attempt these without new information.
 
 ## Dependency order
 
-1. **T1** (running) gates T4, and its outcome decides whether the 8.70 pp is a
-   ceiling on a hard path or a blocked one.
-2. **B1** is the cheapest item with a measurable upside and needs nothing from
-   anyone else. It is the one to start.
-3. **T2** and **T5** are nearly free and independent of T1.
-4. **T3** is the only live mechanism for the face-stage 8.70 pp, and it reduces to
-   one question: can direction be predicted where position cannot?
+**Rewritten 2026-10-15: items 1, 3 and 4 below are resolved. The table that
+preceded this said "T1 (running) gates T4", which was true when written and
+sends a reader to finished work now.**
+
+1. ~~T1 gates T4~~ -- **both resolved.** T1 cleared MediaPipe once the anchor
+   assignment was fixed; T4 was then measured end to end and closed, because
+   the coverage a better stage 1 buys does not convert at matched precision and
+   the ears it rescues are not scoreable.
+2. **B1 remains the cheapest item with a measurable upside and needs nothing
+   from anyone else** -- but it is BlazeEar's to start, not this repo's, and
+   their user has not green-lit it. Unchanged.
+3. ~~T2~~ -- **dead**, the 45.8% compute saving was counting boxes rather than
+   people; see above.
+4. ~~T3~~ -- **answered, and the answer is no**; there is no direction
+   predictor, and BlazeEar found no gap separating "near miss" from "wrong
+   face".
+5. **T5** has data it did not have: trainable_blazeface measured mirror
+   agreement 0.9140 -> 0.9364 on their fine-tune, improved without being
+   trained for, and horizontal-flip TTA now roughly neutral for faces on both
+   stock and tuned. Still worth adopting as an acceptance criterion; no longer
+   a lever in itself.
+
+**What is actually open after all of that is short, and most of it is not this
+repo's:** a head-ness stage-1 objective (bounded to small-head frames, worth
+nothing below ~24 real px, and trainable_blazeface's to build), stage-2
+scoring at the 32-48 and 48-64 bands where rescued ears do convert at 6.9% and
+18.9% (BlazeEar's), and on this side whether the detector gate should go
+*below* 0.70, which cannot be answered until precision is measured against
+complete ear labels rather than one-per-image human rows.
