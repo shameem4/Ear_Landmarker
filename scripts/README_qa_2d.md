@@ -13,7 +13,7 @@ property that makes them worth running.
     scripts/qa_agreement.py        PER-IMAGE agreement with the GT landmarks
     scripts/qa_common.py           padding mask, shared by all of the above
 
-Everything heavy goes through `scripts/guard_run.sh <mem> <secs> <log> <cmd>`.
+Everything heavy goes through `"$CODE_UTILITIES/guard_run.sh" <mem> <secs> <log> <cmd>`.
 
 ## The three ridge channels
 

@@ -16,13 +16,15 @@ they are pinned here:
 
 Also covers guard_run.sh rejecting a unit-less memory cap, since a bare number
 is read by systemd as BYTES and its instant OOM is indistinguishable from a
-genuine memory blowup. That check lives in the shared wrap_work implementation
-that scripts/guard_run.sh execs, so those two tests skip where it is absent.
+genuine memory blowup. That check lives in the shared guard_run.sh in
+Code/utilities, found via $CODE_UTILITIES, so those two tests skip where that
+variable is unset or the file is absent.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 from pathlib import Path
 
@@ -170,16 +172,17 @@ def test_selecting_whole_images_preserves_the_correlation(ec):
 
 # --- guard_run.sh units -------------------------------------------------------
 
-# scripts/guard_run.sh is a thin wrapper that execs a shared implementation in
-# wrap_work/, which is NOT version-controlled and sits outside this repo. So
-# these two tests depend on a file a fresh clone will not have: skipped when it
-# is absent, because a missing dependency is not a finding and an exit 127 here
-# would read as the unit check having broken.
-GUARD = ROOT / "scripts" / "guard_run.sh"
-IMPL = Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/wrap_work/tools/guard_run.sh")
+# guard_run.sh is a shared utility in Code/utilities (its own git repo), located
+# through $CODE_UTILITIES so that no repo hardcodes the path and there are no
+# symlinks to maintain. It sits outside this repo, so these two tests depend on
+# something a fresh clone will not have: skipped when the variable is unset or
+# the file is missing, because a missing dependency is not a finding and an exit
+# 127 here would read as the unit check having broken.
+_UTILITIES = os.environ.get("CODE_UTILITIES")
+GUARD = Path(_UTILITIES) / "guard_run.sh" if _UTILITIES else None
 needs_impl = pytest.mark.skipif(
-    not IMPL.is_file(),
-    reason=f"shared guard_run implementation not present at {IMPL}")
+    GUARD is None or not GUARD.is_file(),
+    reason="guard_run.sh not found; set CODE_UTILITIES to the Code/utilities checkout")
 
 
 def _guard(mem: str):

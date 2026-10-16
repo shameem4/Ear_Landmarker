@@ -14,7 +14,7 @@ clash review and the dataset writer consume.
 Resumable: the npz is rewritten every CHUNK rows, and a re-run skips
 rows already in it. SAM 3 is the whole cost.
 
-    scripts/guard_run.sh 24G 36000 runs/corrected/pass.log \
+    "$CODE_UTILITIES/guard_run.sh" 24G 36000 runs/corrected/pass.log \
         python scripts/qa_correct_outer_pass.py runs/corrected
 """
 import csv
