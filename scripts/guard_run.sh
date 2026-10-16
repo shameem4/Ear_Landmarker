@@ -18,9 +18,20 @@
 # TIMEOUT STAYS OUTSIDE THE SCOPE. Inside, the cgroup OOM kill takes out every
 # process in the scope -- `timeout` included -- and the exit code comes back
 # 124, blaming the clock for a memory kill. Outside, the causes stay apart.
+#
+# <mem> MUST CARRY A UNIT. systemd reads a bare number as BYTES, so `12` is a
+# 12-byte ceiling: the job is OOM-killed before it prints anything, the log holds
+# only this header, and the guard reports "KILLED (memory cap 12) -- session
+# safe", which reads exactly like a genuine blowup. That typo once cost a
+# diagnosis of whether systemd itself was broken. Rejected up front instead.
 set -uo pipefail
 MEM=${1:?mem e.g. 12G}; SECS=${2:?seconds}; LOG=${3:?logfile}; shift 3
 [ $# -ge 1 ] || { echo "guard_run: no command given" >&2; exit 2; }
+case $MEM in
+  *[!0-9]*) ;;   # has a non-digit, so it carries a unit (or is MemoryMax=infinity)
+  *) echo "guard_run: mem '$MEM' has no unit -- systemd would read it as $MEM BYTES" >&2
+     echo "guard_run: use '${MEM}G' (or ${MEM}M/${MEM}K) instead" >&2; exit 2 ;;
+esac
 mkdir -p "$(dirname "$LOG")"
 { echo "### guard_run $(date -Is)"; echo "### mem=$MEM wall=${SECS}s"
   echo "### cmd: $*"; } > "$LOG"

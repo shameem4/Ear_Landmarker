@@ -2473,3 +2473,85 @@ landmarker re-marking rank, and BlazEar earness. They are useful for screening
 NEW data at onboarding -- the measured economics are 92% recall at
 $6.85/1000 -- which is the live goal. They are not useful for re-litigating
 the 10,535 rows already here.
+
+## What `heatmap_confidence` can and cannot carry, 2026-10-16
+
+Ear_3D_Lifter wanted a per-point confidence to filter views before
+triangulating, following Deep-MVLM (arXiv 1910.06007), which gates views on the
+heatmap peak. Our per-(landmark, view) table is a per-SCHEME prior and cannot
+adapt to an individual ear -- best-8 reaches 2.24 mm where an oracle choosing
+per ear reaches 1.49 -- so `heatmap_confidence` looked like the missing per-ear
+evidence. On their renders it predicted nothing: within-landmark Spearman
+**-0.018**, 2/55 landmarks below -0.1, at p50 error 19.39 px.
+
+They attributed that to our architecture, and **that part is correct**. The loss
+is WingLoss on COORDINATES through `soft_argmax` (`model/lightning_module.py`),
+and `heatmaps()` feeds straight into `F.softmax` (`model/ear_landmarker.py`), so
+amplitude is not merely unconstrained -- it is discarded before any loss or any
+consumer sees it. `softmax(x + c) == softmax(x)`. A softmax must place its mass
+somewhere, so it can express "unsure WHERE" and never "nothing is HERE", and
+absence is what view selection needs flagged. Deep-MVLM reads the AMPLITUDE of
+an hourglass heatmap trained with MSE against Gaussian targets, which pins the
+scale and makes a flat near-zero map a trained way to report absence. We have no
+such channel, and no way to read one out of the one we have.
+
+**The conclusion drawn from it was wrong in domain.** `scripts/eval_confidence.py`,
+same checkpoint (`fixed_conv_s42/433`), `data/manual/test.csv`, 1,054
+photographs, 57,970 landmark-views:
+
+| | renders | photographs |
+|---|---|---|
+| pooled Spearman | -0.066 | **-0.477** |
+| within-landmark median | -0.018 | **-0.486** |
+| landmarks below -0.1 | 2/55 | **55/55** |
+| confidence span p1->p99 | 35x | 3.3x |
+| 2D error p50 | 19.39 px | 1.92 px |
+
+Quintiles of within-landmark confidence give error p50 3.89 -> 2.47 -> 1.84 ->
+1.49 -> 1.21 px, monotone. As a detector for a gross miss (>10 px, base rate
+2.61%), flagging the lowest 10% of confidence gets **52.9% recall at 5.3x
+lift**; the worst 50 points, errors 22-77 px, sit at mean confidence percentile
+11.4.
+
+**Regime was the charitable rescue, and it is refuted from both ends.** Maybe
+the signal dies wherever the model is failing, and the render set simply sits in
+a part of the curve our test split barely reaches -- nothing to do with
+rendering. Going UP, keeping only our worst photographs, rho does not decay:
+worst 500 **-0.361**, worst 200 -0.289, worst 100 -0.338, worst 50 **-0.314** at
+6.32 px. Flat across a 3.3x error range. Coming DOWN, Ear_3D_Lifter selected
+views on their learned table -- selection on a PRIOR, so no truncation artefact
+-- and cutting their median error 40% moved nothing: all views -0.018 at 17.38
+px, best 8 -0.014 at 12.02 px, best 3 -0.037 at 10.87 px. At comparable error
+levels the two are an order of magnitude apart. The render null is a **domain**
+effect, and "architectural, NOT domain" was a false dichotomy: the architecture
+finding and the domain finding are about different quantities and both hold.
+
+**Detection is not ranking, and only detection works.** Restricting to worse
+errors decays the correlation: >0 px -0.475, >2 px -0.406, >5 px -0.250, >10 px
+-0.125, >15 px -0.134. Concentration separates good points from bad ones well
+and orders the bad ones among themselves poorly. This distinction does *not*
+rescue the render case -- that null starts at zero and has nowhere to fall, so
+it cannot discriminate truncation from absence of signal. Dropping bad views by
+confidence is not available there either, because the flag does not fire in the
+right places. That lead is closed on renders and will not reopen without a
+retrain changing the input.
+
+**Two limits, stated because neither is closed.** This split cannot reach 19.39
+px -- its worst 10 images reach 7.55 px -- so the regime match is approached
+from below, not met; the descending half came from Ear_3D_Lifter, not from here.
+And every point in `data/manual/test.csv` is in-frame (57,970 of 57,970
+visible), so **the absence claim is untested by either of us** and rests on the
+code alone. Do not cite either measurement as evidence on absence.
+
+**Not scheduled, and recorded so the option is not lost:** if a consumer ever
+needs absence reported, the fix is one auxiliary term -- MSE or BCE on the
+existing `to_heatmap` output against a Gaussian target, beside the coordinate
+loss -- not a second head or an architecture change. Nothing consumer-facing
+needs it today, view selection no longer has a claim on it, and a retrain is a
+real cost.
+
+A measurement trap worth keeping: the regime pass selects whole IMAGES by mean
+error, never points by their own error. Selecting points on the correlated
+variable truncates it and drives rho toward 0 as a pure artefact -- which would
+have reproduced the render null on photograph data and "confirmed" the wrong
+conclusion. Both behaviours are pinned in `tests/test_confidence_eval.py`.
