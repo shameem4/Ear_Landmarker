@@ -1,0 +1,18 @@
+### guard_run 2026-10-15T18:51:01-07:00
+### mem=32G wall=7200s
+### cmd: /home/shameem/.conda/envs/mocap/bin/python miss_scores.py --limit 3500 --seed 3
+GT basis: 13007 images resolved, 0 image_paths not in yolo11_ears_human (0.0%)
+Ear_Landmarker inference.py DETECTOR_CONFIDENCE = 0.7
+
+images sampled 3500, ears 4136, delivered inside a crop 3809
+
+  gate  stage-2 misses  localised    share   median     p25     p75  % >= gate-0.10
+  0.70             553        515    93.1%    0.453   0.305   0.600           25.0%
+  0.80             809        771    95.3%    0.599   0.379   0.734           33.2%
+  0.85            1070       1032    96.4%    0.701   0.454   0.800           40.0%
+
+localised-miss score median by band:
+  gate         0-32        32-48        48-64        64-80         80-+
+  0.70    0.415(205)    0.459(111)    0.475( 81)    0.444( 50)    0.514( 68)
+  0.80    0.493(256)    0.585(159)    0.617(124)    0.615( 79)    0.717(153)
+  0.85    0.552(294)    0.693(216)    0.697(160)    0.743(114)    0.777(248)

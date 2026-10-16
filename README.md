@@ -1364,6 +1364,55 @@ ear-labelled claim, since a box on hair or the back of a head is head-ness by
 our measure and a miss by theirs. **So "head-ness" versus "frame composition"
 is unresolved, and it matters before a training target is written, not after.**
 
+**RE-REPORTED PER FACE-SIZE BAND, and the aggregate was mostly composition.**
+BlazeEar ran the discriminator and told me the pooled figure is a mixture
+dominated by head-filling frames. They are right, and two things of mine were
+wrong.
+
+*The first attempt at banding was defective.* It binned images by the TUNED
+model's largest detection at threshold 0.10 -- an arm emitting ~35 boxes per
+image, including large spurious ones -- so the max side was inflated and only 70
+of 6,000 frames qualified as small-head. Head scale has to come from a sober
+estimate (stock at its own 0.20), not from the tail under test. Re-run that way,
+this corpus has 433 small-head frames, not 70.
+
+*The "ninefold" was a miss-ratio, and miss-ratios inflate when the base rate is
+small.* 110 against 1026 face-stage misses is a ninefold in misses and a **1.36x**
+difference in coverage. Both are arithmetically true; the miss framing is the
+misleading one to headline.
+
+Coverage of ears by band, head scale = stock's largest face side / frame short
+side, null destroys placement only (4,000 images, 4,749 ears):
+
+| head scale | images | ears | tuned | stock | placement-destroyed | lift |
+|---|---|---|---|---|---|---|
+| 0.00-0.20 | 433 | 523 | 89.1% | 70.4% | 41.3% | **2.16x** |
+| 0.20-0.30 | 1085 | 1368 | 95.6% | 87.5% | 57.0% | 1.68x |
+| 0.30-0.45 | 1143 | 1340 | 97.6% | 95.2% | 72.5% | 1.35x |
+| 0.45+ | 1339 | 1518 | 99.6% | 98.4% | 93.2% | **1.07x** |
+| **all** | 4000 | 4749 | 96.7% | 91.3% | 71.2% | 1.36x |
+
+**Both conclusions are needed.** On head-filling frames the lift is 1.07x
+against a 93.2% null -- there, placement genuinely carries almost nothing beyond
+composition, exactly as the confound predicted. But the gap widens monotonically
+as heads shrink, and in the small-head band a placement-destroyed window lands
+on an ear 41.3% of the time against the detector's 89.1%. **That widening is
+head-ness's prediction and not composition's**, so the direction survives in the
+regime where the two explanations come apart -- and the aggregate is not the
+evidence for it.
+
+BlazeEar measured the same structure independently on val_v2 with the ordinary
+stock crop rather than the tuned tail: 5.15x / 2.58x / 1.61x / 1.10x across the
+same bands, aggregate 1.69x. Different population, same monotone shape and the
+same two conclusions.
+
+**Consequence for a head-ness target:** it would be worth training for
+small-head frames and worth almost nothing for head-filling ones, which is also
+where this corpus has least data (433 of 4,000 frames). And per BlazeEar, score
+it on **delivered ears at matched precision and on midline false positives per
+image, not on coverage** -- coverage has now failed to convert twice, and their
+midline FP/image went 0.022 to 0.056 when crops were multiplied.
+
 **The tail is neither a shotgun nor a face detector. On this corpus it behaves as
 an implicit head detector** -- boxes no face metric will credit, landing reliably
 on ear-bearing regions. Which makes head-ness, not face-ness, the stage-1

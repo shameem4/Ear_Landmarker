@@ -1,0 +1,12 @@
+### guard_run 2026-10-15T18:54:54-07:00
+### mem=32G wall=10800s
+### cmd: /home/shameem/.conda/envs/mocap/bin/python banded_ablation.py --limit 4000 --seed 11
+GT basis: 13007 images resolved, 0 image_paths not in yolo11_ears_human (0.0%)
+head scale = stock's largest face side / frame short side, stock @0.20
+
+        band  images   ears  tuned cov  stock cov  null cov  lift(t/null)
+   0.00-0.20     433    523      89.1%      70.4%     41.3%         2.16x
+   0.20-0.30    1085   1368      95.6%      87.5%     57.0%         1.68x
+   0.30-0.45    1143   1340      97.6%      95.2%     72.5%         1.35x
+       0.45+    1339   1518      99.6%      98.4%     93.2%         1.07x
+         ALL    4000   4749      96.7%      91.3%     71.2%         1.36x
