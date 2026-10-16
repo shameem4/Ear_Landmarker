@@ -595,12 +595,13 @@ class EarLandmarkerPipeline:
         track_ids: List[int] = []
         if self.tracker is not None:
             t = time.perf_counter() if timestamp is None else timestamp
-            boxes = [np.asarray(d[:4], dtype=np.float64) for d in detections]
-            track_ids = self.tracker.assign(boxes)
-            detections = [
-                np.concatenate([self.tracker.smooth_box(tid, b, t), d[4:]])
-                for tid, b, d in zip(track_ids, boxes, detections)
-            ]
+            # One call does association and box smoothing (BlazeEar's
+            # BoxTracker, vendored). Only matched tracks come back, so a
+            # coasting track keeps its filter and landmark state alive across a
+            # short dropout without reporting an ear on a frame that had none.
+            tracked = self.tracker.update(detections, t)
+            track_ids = [tid for tid, _ in tracked]
+            detections = [det for _, det in tracked]
 
         results = []
         live: set[int] = set()

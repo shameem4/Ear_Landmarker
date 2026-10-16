@@ -53,11 +53,18 @@ weight precision, rested on a false premise: rendering the false positives showe
 removes correct output. Keep 0.70; see
 [Choosing the stage-2 gate](#choosing-the-stage-2-gate).
 
-**The largest unmeasured axis is temporal, and neither repo has it.** Every
-number here is per-image and this ships a real-time demo, so a gate that is
-better per frame and flickers more is worse where it matters. Adjacent-frame IoU
-and no-face-frame rate are unmeasured for every arm and every gate. **Nothing
-above should be read as settled for video.**
+**The temporal axis is now partly measured.** Everything else here is
+per-image, and this ships a real-time demo, so a gate that is better per frame
+and flickers more is worse where it matters. On 25 conversational clips / 7,500
+frames: **6.1% of frames yield no detection at all**, and the emitted box holds
+an **adjacent-frame IoU of 0.924**. Association and box smoothing are now
+BlazeEar's shared `BoxTracker`, vendored -- replayed against the nearest-centre
+rule this repo used before, track switches fall **400 -> 342 (-14.5%**, better
+on 13 clips and worse on 5, Wilcoxon p=0.03, sign test p=0.10 -- real but
+modest, and significant by one test and not the other) with adjacent-frame IoU
+indistinguishable (+0.0006, p=0.39). **What is still unmeasured is the gate on
+this axis:** nothing says whether 0.70 and 0.76 differ in frame-to-frame
+stability, so the gate conclusions remain per-image ones.
 
 **On method, since several figures here are retractions.** Nine wrong mechanisms
 were caught in a day and **not one by reviewing the reasoning** -- eight by a

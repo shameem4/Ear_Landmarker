@@ -221,10 +221,13 @@ class EarLandmarkerPipeline {
         const t = (timestamp ?? performance.now()) / 1000;
         let trackIds = [];
         if (this.tracker) {
-            trackIds = this.tracker.assign(detections);
-            detections = detections.map((d, i) => ({
-                ...d, ...this.tracker.smoothBox(trackIds[i], d, t),
-            }));
+            // One call does association and box smoothing. Only matched tracks
+            // come back, so a coasting track keeps its filter, landmark and
+            // ROI state alive across a short dropout without reporting an ear
+            // on a frame that had none.
+            const tracked = this.tracker.update(detections, t);
+            trackIds = tracked.map((x) => x.id);
+            detections = tracked.map((x) => x.det);
         }
 
         // Stage 2: For each detection, crop and run landmarker

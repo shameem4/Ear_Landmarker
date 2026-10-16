@@ -21,7 +21,16 @@ rates rather than assuming a fixed dt.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+from typing import Sequence
+
 import numpy as np
+
+# Association and box smoothing are BlazeEar's, vendored verbatim; see
+# vendor/README.md. Do not edit the vendored file here.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "vendor"))
+from box_tracker import BoxTracker, OneEuroBoxSmoother  # noqa: E402
 
 __all__ = ["OneEuroFilter", "LandmarkSmoother", "BoxSmoother", "EarTracker"]
 
@@ -190,90 +199,105 @@ class BoxSmoother:
 class EarTracker:
     """Associates detections across frames and owns one filter pair per track.
 
-    Smoothing only means anything if frame N's box is filtered against the *same*
-    ear's box from frame N-1. Without association, two ears in frame would swap
-    filter states and the smoothing would actively corrupt the output.
+    Smoothing only means anything if frame N's box is filtered against the
+    *same* ear's box from frame N-1. Without association, two ears in frame
+    would swap filter states and the smoothing would actively corrupt the
+    output.
 
-    Association is nearest-centre within a fraction of box size, which is ample
-    for the 1-2 well-separated ears this pipeline sees; it is not a general MOT
-    solution.
+    **Association and box smoothing are BlazeEar's `BoxTracker`** (vendored at
+    `vendor/box_tracker.py`, pinned to `docs/ear_tracker.js` by a fixture in
+    BlazeEar). This repo kept the per-track landmark smoothing, which that
+    module does not do and should not: landmarks are this pipeline's output,
+    boxes are the shared part.
+
+    Two deltas from the nearest-centre rule this class used before, both
+    deliberate and both measured in BlazeEar:
+      * matching is IoU >= `match_iou` rather than nearest centre within a
+        fraction of box size, and
+      * it reads the RAW detection rather than the smoothed centre, so the
+        constants mean what they were measured to mean.
+
+    Defaults are near pass-through, reproducing this repo's previous behaviour
+    as closely as the new association allows: no hysteresis (`confirm_score`
+    == `continue_score`, `min_hits` 1) and only matched tracks are returned, so
+    an ear is reported on detected frames exactly as before. Real hysteresis
+    (0.80 / 0.65 / 3) is a separate, measured decision for this pipeline and is
+    deliberately NOT enabled here.
 
     Args:
-        max_dist_frac: Match radius as a fraction of the mean box size.
         max_missed: Drop a track after this many frames without a detection.
+        match_iou: IoU required to continue a track.
+        confirm_score / continue_score / min_hits: hysteresis, off by default.
     """
 
     def __init__(
         self,
-        max_dist_frac: float = 0.6,
         max_missed: int = 5,
+        match_iou: float = 0.3,
+        confirm_score: float = 0.70,
+        continue_score: float = 0.70,
+        min_hits: int = 1,
         landmark_kwargs: dict | None = None,
         box_kwargs: dict | None = None,
     ) -> None:
-        self.max_dist_frac = float(max_dist_frac)
-        self.max_missed = int(max_missed)
         self._lm_kwargs = landmark_kwargs or {}
         self._box_kwargs = box_kwargs or {}
-        self._tracks: dict[int, dict] = {}
-        self._next_id = 0
+        self._bt = BoxTracker(
+            confirm_score=confirm_score, continue_score=continue_score,
+            min_hits=int(min_hits), max_misses=int(max_missed),
+            match_iou=float(match_iou),
+            smoother=(lambda: OneEuroBoxSmoother(**self._box_kwargs)),
+        )
+        self._lm: dict[int, LandmarkSmoother] = {}
 
     def reset(self) -> None:
-        self._tracks.clear()
-        self._next_id = 0
+        self._bt.reset()
+        self._lm.clear()
 
     @staticmethod
-    def _centre(box: np.ndarray) -> np.ndarray:
-        ymin, xmin, ymax, xmax = box
-        return np.array([(ymin + ymax) / 2.0, (xmin + xmax) / 2.0])
+    def _to_det(d: np.ndarray) -> dict:
+        """[ymin, xmin, ymax, xmax, conf, ...] -> BoxTracker's dict form."""
+        ymin, xmin, ymax, xmax = (float(v) for v in d[:4])
+        conf = float(d[4]) if len(d) > 4 else 1.0
+        return {"xmin": xmin, "ymin": ymin,
+                "width": max(xmax - xmin, 0.0), "height": max(ymax - ymin, 0.0),
+                "confidence": conf}
 
-    def assign(self, boxes: list[np.ndarray]) -> list[int]:
-        """Match each box to an existing track id, creating tracks as needed.
+    def update(
+        self, detections: Sequence[np.ndarray], t: float,
+    ) -> list[tuple[int, np.ndarray]]:
+        """Associate and smooth, returning (track_id, detection) for matches.
 
-        Greedy nearest-centre, each track claimed at most once.
+        The returned detection keeps every column past the box, so a caller
+        can carry confidence and anything else through to the landmarker. Only
+        matched tracks are returned: a coasting track keeps its filter and
+        landmark state alive through a short dropout without reporting an ear
+        on a frame where none was detected, which is what this pipeline did
+        before and what its consumers expect.
         """
-        taken: set[int] = set()
-        ids: list[int] = []
-        for box in boxes:
-            c = self._centre(box)
-            size = max(float(np.mean([box[2] - box[0], box[3] - box[1]])), 1.0)
-            best_id, best_d = None, self.max_dist_frac * size
-            for tid, tr in self._tracks.items():
-                if tid in taken:
-                    continue
-                d = float(np.linalg.norm(c - tr["centre"]))
-                if d < best_d:
-                    best_id, best_d = tid, d
-            if best_id is None:
-                best_id = self._next_id
-                self._next_id += 1
-                self._tracks[best_id] = {
-                    "box_f": BoxSmoother(**self._box_kwargs),
-                    "lm_f": LandmarkSmoother(**self._lm_kwargs),
-                    "centre": c,
-                    "missed": 0,
-                }
-            taken.add(best_id)
-            ids.append(best_id)
-        self._expire(taken)
-        return ids
-
-    def _expire(self, seen: set[int]) -> None:
-        for tid in list(self._tracks):
-            if tid in seen:
-                self._tracks[tid]["missed"] = 0
-            else:
-                self._tracks[tid]["missed"] += 1
-                if self._tracks[tid]["missed"] > self.max_missed:
-                    del self._tracks[tid]
-
-    def smooth_box(self, tid: int, box: np.ndarray, t: float) -> np.ndarray:
-        tr = self._tracks[tid]
-        out = tr["box_f"](box, t)
-        tr["centre"] = self._centre(out)
+        dets = [self._to_det(d) for d in detections]
+        out: list[tuple[int, np.ndarray]] = []
+        live: set[int] = set()
+        for tr in self._bt.update(dets, t):
+            live.add(tr["id"])
+            if not tr["matched"]:
+                continue
+            src = detections[tr["det_index"]]
+            box = np.array([tr["ymin"], tr["xmin"], tr["ymax"], tr["xmax"]],
+                           dtype=np.float64)
+            tail = np.asarray(src, dtype=np.float64)[4:]
+            out.append((tr["id"], np.concatenate([box, tail])))
+        # BoxTracker owns track lifetime; mirror its expiries so a landmark
+        # filter cannot outlive its track and be handed to a reused id.
+        for tid in [k for k in self._lm if k not in live]:
+            del self._lm[tid]
         return out
 
     def smooth_landmarks(
         self, tid: int, landmarks: np.ndarray, t: float,
         confidence: np.ndarray | None = None,
     ) -> np.ndarray:
-        return self._tracks[tid]["lm_f"](landmarks, t, confidence)
+        f = self._lm.get(tid)
+        if f is None:
+            f = self._lm[tid] = LandmarkSmoother(**self._lm_kwargs)
+        return f(landmarks, t, confidence)

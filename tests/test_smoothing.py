@@ -113,49 +113,94 @@ def test_box_smoother_preserves_shape_under_noise():
     assert abs(h - w) < 3.0, "box drifted away from square"
 
 
+def _det(box, conf=0.9):
+    """[ymin, xmin, ymax, xmax] -> a detection row with a confidence column."""
+    return np.concatenate([np.asarray(box, dtype=np.float64), [conf]])
+
+
 def test_tracker_keeps_two_ears_separate():
     """Two well-separated ears must keep distinct, non-swapping track ids."""
     tr = EarTracker()
     left = np.array([100.0, 100.0, 180.0, 180.0])
     right = np.array([100.0, 400.0, 180.0, 480.0])
-    ids0 = tr.assign([left, right])
-    for i in range(1, 20):
-        t = i / FPS
-        for tid, box in zip(ids0, (left, right)):
-            tr.smooth_box(tid, box, t)
-        ids = tr.assign([left + 1.0, right + 1.0])
-        assert ids == ids0, f"track ids changed at frame {i}: {ids} != {ids0}"
+    ids0 = [tid for tid, _ in tr.update([_det(left), _det(right)], 0.0)]
     assert len(set(ids0)) == 2
+    for i in range(1, 20):
+        ids = [tid for tid, _ in
+               tr.update([_det(left + 1.0), _det(right + 1.0)], i / FPS)]
+        assert ids == ids0, f"track ids changed at frame {i}: {ids} != {ids0}"
 
 
 def test_tracker_does_not_swap_when_order_changes():
-    """Detection order is not identity -- swapping the list must not swap tracks."""
+    """Detection order is not identity -- reversing the list must not swap."""
     tr = EarTracker()
     left = np.array([100.0, 100.0, 180.0, 180.0])
     right = np.array([100.0, 400.0, 180.0, 480.0])
-    ids = tr.assign([left, right])
-    mapping = {"left": ids[0], "right": ids[1]}
-    for tid, box in zip(ids, (left, right)):
-        tr.smooth_box(tid, box, 1 / FPS)
-    swapped = tr.assign([right, left])          # same ears, reversed order
-    assert swapped[0] == mapping["right"] and swapped[1] == mapping["left"]
+    first = tr.update([_det(left), _det(right)], 0.0)
+    # map each id to the x it was acquired at, so identity is checked by
+    # position rather than by the order the tracker happens to emit
+    at = {tid: det[1] for tid, det in first}
+    swapped = tr.update([_det(right), _det(left)], 1 / FPS)
+    for tid, det in swapped:
+        assert abs(det[1] - at[tid]) < 50.0, (
+            f"track {tid} jumped from x={at[tid]} to x={det[1]} -- ids swapped")
 
 
 def test_tracker_expires_and_reuses_nothing_stale():
     tr = EarTracker(max_missed=2)
-    box = np.array([100.0, 100.0, 180.0, 180.0])
-    first = tr.assign([box])[0]
-    tr.smooth_box(first, box, 0.0)
-    for _ in range(4):
-        tr.assign([])                            # no detections
-    later = tr.assign([box])[0]
+    box = _det(np.array([100.0, 100.0, 180.0, 180.0]))
+    first = tr.update([box], 0.0)[0][0]
+    for k in range(4):
+        assert tr.update([], (k + 1) / FPS) == [], "coasting must emit nothing"
+    later = tr.update([box], 5 / FPS)[0][0]
     assert later != first, "expired track was resurrected with stale filter state"
+
+
+def test_track_ids_are_never_reused_after_expiry():
+    """A returning id would hand a new ear another ear's filter state.
+
+    Acquire a track, let it expire, acquire again, and assert the second id
+    was never issued before -- repeated, because an off-by-one in the expiry
+    counter shows up as reuse only on a later cycle.
+    """
+    tr = EarTracker(max_missed=1)
+    box = _det(np.array([100.0, 100.0, 180.0, 180.0]))
+    issued: set[int] = set()
+    t = 0.0
+    for _ in range(5):
+        tid = tr.update([box], t)[0][0]
+        t += 1 / FPS
+        assert tid not in issued, f"id {tid} was reused after expiry"
+        issued.add(tid)
+        for _ in range(3):                       # outlast max_missed
+            tr.update([], t)
+            t += 1 / FPS
+    assert len(issued) == 5
+
+
+def test_coasting_track_is_not_reported_but_survives():
+    """A short dropout must not emit an ear, and must not reset the filter."""
+    tr = EarTracker(max_missed=5)
+    box = _det(np.array([100.0, 100.0, 180.0, 180.0]))
+    first = tr.update([box], 0.0)[0][0]
+    assert tr.update([], 1 / FPS) == []
+    assert tr.update([], 2 / FPS) == []
+    again = tr.update([box], 3 / FPS)
+    assert again and again[0][0] == first, (
+        "a track inside max_missed must keep its id across the gap")
+
+
+def test_columns_past_the_box_are_carried_through():
+    """Confidence and anything after it must reach the landmarker unchanged."""
+    tr = EarTracker()
+    det = np.array([100.0, 100.0, 180.0, 180.0, 0.77, 42.0])
+    _, out = tr.update([det], 0.0)[0]
+    assert np.allclose(out[4:], [0.77, 42.0])
 
 
 def test_new_track_starts_at_the_observation():
     """A newly acquired ear must not ease in from the previous ear's position."""
     tr = EarTracker()
     box = np.array([100.0, 100.0, 180.0, 180.0])
-    tid = tr.assign([box])[0]
-    out = tr.smooth_box(tid, box, 0.0)
-    assert np.allclose(out, box, atol=1e-6)
+    _, out = tr.update([_det(box)], 0.0)[0]
+    assert np.allclose(out[:4], box, atol=1e-6)

@@ -153,65 +153,86 @@ export class BoxSmoother {
  * history. Nearest-centre matching is ample for the 1-2 well-separated ears
  * this pipeline sees; it is not a general tracker.
  */
+/**
+ * Associates detections across frames and owns one filter pair per track.
+ *
+ * Association and box smoothing are BlazeEar's `BoxTracker`, loaded from
+ * `ear_tracker.js` (vendored verbatim; see ../vendor/README.md). This file
+ * keeps the per-track landmark smoothing, which that module does not do and
+ * should not -- landmarks are this pipeline's output, boxes are the shared
+ * part.
+ *
+ * Two deliberate deltas from the nearest-centre rule used before, both
+ * measured in BlazeEar: matching is IoU rather than centre distance, and it
+ * reads the RAW detection rather than the smoothed centre. Replayed against
+ * the old rule, a single ear's track survives 44 px/frame of motion where the
+ * old one broke at 34 -- matching its own lagging smoothed centre was costing
+ * it tolerance.
+ *
+ * Defaults are near pass-through: no hysteresis (confirmScore ===
+ * continueScore, minHits 1) and only matched tracks are consumed, so an ear is
+ * reported on detected frames exactly as before. Real hysteresis
+ * (0.80 / 0.65 / 3) is a separate, measured decision for this pipeline.
+ *
+ * `ear_tracker.js` is a classic script, so it publishes on globalThis; do not
+ * add a bare `export` to it, which would silently disable BlazeEar's
+ * require()-based parity test.
+ */
+import './ear_tracker.js';
+const { BoxTracker, OneEuroBoxSmoother } = globalThis;
+
 export class EarTracker {
-    constructor({ maxDistFrac = 0.6, maxMissed = 5,
-                  landmarkOptions = {}, boxOptions = {} } = {}) {
-        this.maxDistFrac = maxDistFrac;
-        this.maxMissed = maxMissed;
-        this.landmarkOptions = landmarkOptions;
-        this.boxOptions = boxOptions;
-        this.tracks = new Map();
-        this.nextId = 0;
-    }
-
-    reset() { this.tracks.clear(); this.nextId = 0; }
-
-    static centre(b) {
-        return [(b.xmin + b.xmax) / 2, (b.ymin + b.ymax) / 2];
-    }
-
-    /** Greedy nearest-centre assignment; each track claimed at most once. */
-    assign(boxes) {
-        const taken = new Set();
-        const ids = [];
-        for (const box of boxes) {
-            const [cx, cy] = EarTracker.centre(box);
-            const size = Math.max(
-                ((box.xmax - box.xmin) + (box.ymax - box.ymin)) / 2, 1);
-            let bestId = null;
-            let bestD = this.maxDistFrac * size;
-            for (const [tid, tr] of this.tracks) {
-                if (taken.has(tid)) continue;
-                const d = Math.hypot(cx - tr.centre[0], cy - tr.centre[1]);
-                if (d < bestD) { bestId = tid; bestD = d; }
-            }
-            if (bestId === null) {
-                bestId = this.nextId++;
-                this.tracks.set(bestId, {
-                    box: new BoxSmoother(this.boxOptions),
-                    lm: new LandmarkSmoother(this.landmarkOptions),
-                    centre: [cx, cy],
-                    missed: 0,
-                });
-            }
-            taken.add(bestId);
-            ids.push(bestId);
+    constructor({ maxMissed = 5, matchIou = 0.3, confirmScore = 0.70,
+                  continueScore = 0.70, minHits = 1,
+                  landmark = {}, box = {} } = {}) {
+        // BoxTracker does `new this.smoother()` in JS (a constructor taking
+        // no arguments) while the Python module accepts any zero-arg factory.
+        // Bind this repo's box options by subclassing rather than passing a
+        // factory, which would work in Python and throw here.
+        const boxOpts = box;
+        class BoundBoxSmoother extends OneEuroBoxSmoother {
+            constructor() { super(boxOpts); }
         }
-        for (const [tid, tr] of [...this.tracks]) {
-            if (taken.has(tid)) tr.missed = 0;
-            else if (++tr.missed > this.maxMissed) this.tracks.delete(tid);
-        }
-        return ids;
+        this._bt = new BoxTracker({
+            confirmScore, continueScore, minHits, maxMisses: maxMissed,
+            matchIou, smoother: BoundBoxSmoother,
+        });
+        this._lm = new Map();
+        this._landmarkOpts = landmark;
     }
 
-    smoothBox(tid, box, t) {
-        const tr = this.tracks.get(tid);
-        const out = tr.box.smooth(box, t);
-        tr.centre = EarTracker.centre(out);
+    reset() { this._bt.reset(); this._lm.clear(); }
+
+    /**
+     * Associate and smooth. Returns [{ id, det }] for matched tracks only,
+     * `det` being the caller's own detection object with the smoothed box
+     * applied, so every other field survives untouched.
+     */
+    update(detections, t) {
+        const dets = detections.map((d) => ({
+            xmin: d.xmin, ymin: d.ymin,
+            width: Math.max(d.xmax - d.xmin, 0),
+            height: Math.max(d.ymax - d.ymin, 0),
+            confidence: d.confidence ?? 1,
+        }));
+        const live = new Set();
+        const out = [];
+        for (const tr of this._bt.update(dets, t)) {
+            live.add(tr.id);
+            if (!tr.matched) continue;
+            const src = detections[tr.detIndex];
+            out.push({ id: tr.id, det: { ...src,
+                xmin: tr.xmin, ymin: tr.ymin, xmax: tr.xmax, ymax: tr.ymax } });
+        }
+        // BoxTracker owns track lifetime; mirror its expiries so a landmark
+        // filter cannot outlive its track and be handed to a reused id.
+        for (const tid of [...this._lm.keys()]) if (!live.has(tid)) this._lm.delete(tid);
         return out;
     }
 
     smoothLandmarks(tid, landmarks, t, confidence) {
-        return this.tracks.get(tid).lm.smooth(landmarks, t, confidence);
+        let f = this._lm.get(tid);
+        if (!f) { f = new LandmarkSmoother(this._landmarkOpts); this._lm.set(tid, f); }
+        return f.smooth(landmarks, t, confidence);
     }
 }
