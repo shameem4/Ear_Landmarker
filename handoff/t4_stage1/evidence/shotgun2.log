@@ -1,0 +1,28 @@
+### guard_run 2026-10-15T18:42:16-07:00
+### mem=32G wall=7200s
+### cmd: /home/shameem/.conda/envs/mocap/bin/python shotgun_control.py --limit 3000 --seed 11
+GT basis: 13007 images resolved, 0 image_paths not in yolo11_ears_human (0.0%)
+shotgun calibrated to tuned@0.10: 35 boxes/image, size median 77.5 px (n=14058)
+
+images 3000, ears 3550
+
+      arm  crops/img  facemiss  recall@0.70
+    stock          -       312       78.76%
+    tuned          -       110       81.80%
+  shotgun          -      1417       37.15%
+shot_local          -      1026       52.82%
+
+face-stage misses by band:
+      arm      0-32     32-48     48-64     64-80      80-+
+    stock       137        66        39        19        51
+    tuned        45        21        21         7        16
+  shotgun       190       193       176       180       678
+shot_local       245       232       192       153       204
+
+ thresh |    stock rec    prec |    tuned rec    prec |  shotgun rec    prec | shot_local rec    prec
+   0.90 |       54.51%  88.52% |       55.63%  86.74% |       20.20%  83.96% |       34.14%  87.89% 
+   0.86 |       64.25%  85.43% |       65.92%  81.85% |       25.89%  76.33% |       41.35%  80.88% 
+   0.82 |       70.31%  81.78% |       72.25%  77.14% |       30.08%  69.85% |       45.77%  75.13% 
+   0.78 |       74.39%  79.67% |       76.08%  72.55% |       33.13%  62.45% |       48.79%  68.38% 
+   0.74 |       76.99%  77.38% |       79.27%  67.76% |       35.27%  55.08% |       51.04%  63.00% 
+   0.70 |       78.73%  75.17% |       81.72%  62.93% |       37.15%  47.77% |       52.79%  56.91% 

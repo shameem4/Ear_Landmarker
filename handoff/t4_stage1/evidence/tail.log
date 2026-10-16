@@ -1,0 +1,14 @@
+### guard_run 2026-10-15T18:38:43-07:00
+### mem=32G wall=3600s
+### cmd: /home/shameem/.conda/envs/mocap/bin/python tail_placement.py --limit 3000 --seed 11
+images 3000, ears 3550, expand 1.5, tuned face thr 0.10
+
+  score band    crops  cover an ear      null    lift  ears only this band
+ 0.10-0.20     113975        12.72%    12.81%     1.0x                  148
+ 0.20-0.30      13802        13.40%     9.49%     1.4x                    4
+ 0.30-0.50       1443        23.15%     9.91%     2.3x                    1
+ 0.50-1.01       3475        78.68%    50.22%     1.6x                  696
+
+the 0.10-0.20 tail is 85.9% of all crops
+tail coverage 12.72% vs null 12.81%  p=3.407e-01
+ears reachable ONLY via a tail crop: 148 (4.17% of all ears)

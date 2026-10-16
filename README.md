@@ -1315,6 +1315,49 @@ in, +10.33 pp at expand 1.364, +5.74 pp at a matched crop budget, +16.79 pp for
 the union, each at p<1e-08. A better stage 1 really does find small faces this
 one misses.
 
+### The low-score tail is an implicit head detector, and both first explanations were wrong
+
+The tail is where the coverage lives, and explaining it took two retractions.
+
+**Mine, refuted by them.** I claimed their face-precision metric was mislabelling
+real faces their RetinaFace ground truth had missed. They checked against YuNet,
+a third architecture: of 39,822 tuned detections in 0.10-0.20 that miss their
+ground truth, YuNet confirms **19** as faces -- **0.0%** (1.6% at 0.20-0.30,
+against stock's 1.5% and 6.8%). Those boxes are not unlabelled faces by any
+available face criterion. A crop does not have to *be* a face to *contain* one.
+
+**Mine again, caught by my own control.** Their follow-up -- is the tail's worth
+*placement*? -- was answered first with a per-crop null: move each crop's centre
+at random, keep its size. 12.72% covering an ear against 12.81% null, lift 1.0x,
+p=0.34, apparently chance. **That statistic has no power.** On a head-filling
+photograph a same-sized box dropped anywhere hits an ear about 13% of the time,
+so the rate saturates. It also contradicted the arm's own face-stage-miss count,
+and that contradiction was the tell -- the same lesson as every wrong measurement
+in this file.
+
+Re-run as controls destroying one thing at a time (3,000 images / 3,550 ears):
+
+| arm | face-stage misses | recall @0.70 |
+|---|---|---|
+| tuned @ face 0.10 | **110** | 81.80% |
+| stock @ face 0.20 | 312 | 78.76% |
+| **placement destroyed, per-image box sizes kept** | **1026** | 52.82% |
+| placement and scale destroyed | 1417 | 37.15% |
+
+Randomising only *where* the boxes land -- same count, same sizes, same images --
+multiplies face-stage misses by nine. So placement is strongly informative, and
+"it is just volume" dies with it: 35 random windows per image recover a third of
+the ears, the same 35 placed by the model recover 82%.
+
+**The tail is neither a shotgun nor a face detector. On this corpus it behaves as
+an implicit head detector** -- boxes no face metric will credit, landing reliably
+on ear-bearing regions. Which makes head-ness, not face-ness, the stage-1
+objective this pipeline actually wants, and their tail an accidental uncalibrated
+version of it. That is a different and better-supported direction than T4's
+ear-inclusive box, and it is still gated on stage 2, because a better head
+detector delivers more crops of exactly the small marginal heads stage 2
+under-scores.
+
 **So T4 closes again, for a better reason, and it hands its lever to stage 2.**
 The coverage is now there and cannot be converted: 516 remaining face-stage
 misses against 1301, and the extra ears arrive as boxes the 0.70 threshold

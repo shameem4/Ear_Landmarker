@@ -244,6 +244,65 @@ remains the least-bad and is still only neutral.
 crop union -- and the verdict does not move. That is as settled as one seed can
 make it.
 
+## What the low-score tail actually is: an implicit head detector
+
+The tail matters because it is where the coverage lives, so both sides tried to
+explain it and **both first explanations were wrong.** This section is the
+corrected account, and it is the part most likely to be worth acting on.
+
+**My explanation, refuted by them.** I claimed their face-precision metric was
+mislabelling real faces -- that their tail was full of faces their RetinaFace
+ground truth missed. They tested it against YuNet, a third architecture neither
+model trained on: of **39,822** tuned detections between 0.10 and 0.20 that miss
+their ground truth, YuNet confirms **19** as faces. **0.0%.** At 0.20-0.30 it is
+1.6%, against stock's 1.5% and 6.8% in the same bands. Those boxes are not
+unlabelled faces by any face criterion available. **A crop does not have to BE a
+face to CONTAIN one.**
+
+**Their follow-up question, which only an ear ground truth can answer:** if the
+tail's worth is not facefulness, is it placement -- do those boxes cluster on
+heads, or scatter?
+
+**My first answer to it was also wrong, and the error is instructive.** Scoring
+each tail crop against a null that moved its centre uniformly at random while
+keeping its size gave 12.72% covering an ear against a null of 12.81% -- lift
+1.0x, p=0.34, apparently pure chance. That contradicted the arm's own
+face-stage-miss count, and the contradiction was the tell. **The per-crop
+statistic has no power:** on a head-filling photograph a same-sized box dropped
+anywhere hits an ear about 13% of the time by default, so the rate saturates and
+cannot distinguish a detector from a dart. The statistic with power is *unique
+ear coverage*, which is what the face-stage-miss count measures.
+
+**Re-run as controls that destroy one thing at a time** (3,000 images, 3,550
+ears, stage-2 threshold 0.70, expand 1.5):
+
+| arm | face-stage misses | recall @0.70 |
+|---|---|---|
+| tuned @ face 0.10 | **110** | 81.80% |
+| stock @ face 0.20 | 312 | 78.76% |
+| **placement destroyed, each image's own box sizes kept** | **1026** | 52.82% |
+| placement *and* scale destroyed (sizes from a global pool) | 1417 | 37.15% |
+
+Randomising only *where* the boxes land, while keeping exactly how many and how
+big they are per image, takes face-stage misses from 110 to **1026** -- a
+factor of nine. Destroying scale as well adds the rest.
+
+**So the tail's placement is strongly informative, and "it is just volume" is
+dead too.** 35 windows per image placed at random recover a third of the ears;
+the same 35 placed by the model recover 82%. The tail is not a shotgun and it is
+not a face detector. On this corpus **it behaves as an implicit head detector**:
+boxes that no face metric will credit, landing reliably on ear-bearing regions.
+
+**Which makes their proposed lever the live one, and it is a different stage 1
+from the one T4 was about.** If what the pipeline needs is head-ness rather than
+face-ness, then the objective to train is head-ness -- and their tuned model's
+low-score tail is already an accidental, uncalibrated version of it. That is
+worth more than re-targeting stage 1 at an ear-inclusive box, because it is
+supported by a measurement rather than by an assumption about what a face
+detector ought to find. It is **also still gated on stage 2**: a better head
+detector delivers more crops of exactly the small marginal heads stage 2
+under-scores.
+
 ## What this hands to BlazeEar
 
 **The lever moves to stage 2 and is now worth more than when it was measured
@@ -284,6 +343,16 @@ than ours:**
   pessimistic by an unknown amount. That is the single assumption most likely to
   change the verdict, and resolving it needs the labelling convention, which is
   BlazeEar's to know.
+
+  **And the penalty is not symmetric**, which `trainable_blazeface` pointed out
+  and I had not: it falls hardest on the arm that delivers more crops containing
+  more ears, which is theirs at a low threshold. So the configurations that lose
+  on the matched-precision table are precisely the ones a one-ear-per-image
+  convention would penalise most. This does not rescue their arm and they did
+  not argue that it does -- the bottleneck finding rests on stage 2
+  under-scoring correctly localised boxes and does not touch the precision
+  column at all. But **do not read the matched-precision rows as settled until
+  this is answered.**
 * Whether the 80+ px regression matters. It is small and partly geometric, but
   80+ px is 44% of the ears.
 * One seed throughout. Nothing here is seed-replicated; the effects are large
