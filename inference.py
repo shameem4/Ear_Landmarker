@@ -35,7 +35,74 @@ DETECTOR_INPUT_SIZE = 256   # must match the checkpoint; see DETECTOR_WEIGHTS
 ROI_EXPAND = 1.3  # expand detected bbox by 30% for context
 NMS_IOU_THRESH = 0.3  # suppress duplicate detections on same ear
 NMS_IOMIN_THRESH = 0.35  # also suppress when overlap covers this much of the SMALLER box
-DETECTOR_CONFIDENCE = 0.70
+# The right detector gate is not a property of the model, it is a property of
+# WHO CONSUMES the output, because the two error types have opposite costs for
+# different consumers:
+#   * a false positive is 55 landmarks drawn confidently on a cheek or a
+#     background edge. A human sees that instantly and discounts it; an
+#     automated consumer cannot, because nothing downstream can detect a
+#     confident fit on the wrong thing, so it propagates silently (e.g. into a
+#     3D lift) and corrupts the result rather than dropping it.
+#   * a miss produces nothing. Obvious to a human, who re-runs or adjusts;
+#     merely a dropped sample to a batch job.
+# So name the consumer rather than guessing a number. Measured 2026-10-15 on
+# 13,007 images / 15,359 human-source ears at IoU 0.30, plus a 6,000-image band
+# pass; see README, "Choosing the stage-2 gate".
+#
+#   gate  recall  precision  FP/image
+#   0.70  79.02%    74.77%     0.315   <- F1 is flat 0.70-0.80 (0.60% of F1),
+#   0.76  76.38%    78.70%     0.244      so 0.76 is the F1 argmax but the
+#   0.86  64.83%    85.80%     0.127      whole range is within noise of it.
+#                                         0.86 is the F0.5 (precision-weighted)
+#                                         argmax.
+#
+# Raising the gate is NOT a neutral trade. 0.70 -> 0.86 discards 45.8% of the
+# ears it was finding under 32 px against 12.5% of those over 80 px -- uniform
+# in absolute points, 3.7x tilted in relative terms -- so a high gate biases
+# against small-in-frame ears: children, distant subjects, profile views. That
+# tilt is invisible in any pooled metric, so re-measure per band, not pooled,
+# before re-pointing any name below.
+DETECTOR_PROFILES = {
+    # A human looks at the output. False positives are cheap and visible,
+    # misses are the expensive error. Also the right choice for annotation
+    # assist and corpus onboarding, where the costs invert outright: a false
+    # positive is one click to reject, a missing ear has to be noticed first.
+    "interactive": 0.70,
+    # No stated preference. F1 argmax.
+    "balanced": 0.76,
+    # Output is consumed without review. A wrong fit cannot be detected
+    # downstream, so pay recall to avoid silent corruption.
+    "automated": 0.86,
+}
+DETECTOR_PROFILE_DEFAULT = "interactive"
+
+# Unchanged shipped value; `interactive` is the default profile precisely so
+# that naming the choice did not alter existing behaviour.
+DETECTOR_CONFIDENCE = DETECTOR_PROFILES[DETECTOR_PROFILE_DEFAULT]
+
+
+def resolve_confidence(value: float | str | None = None) -> float:
+    """Turn a profile name, a raw threshold, or None into a gate.
+
+    `None` gives the default profile. A string is looked up in
+    DETECTOR_PROFILES. Anything else is taken as an explicit threshold, so a
+    caller who has swept their own corpus is never forced through a name.
+    """
+    if value is None:
+        return DETECTOR_PROFILES[DETECTOR_PROFILE_DEFAULT]
+    if isinstance(value, str):
+        try:
+            return DETECTOR_PROFILES[value]
+        except KeyError:
+            raise ValueError(
+                f"unknown detector profile {value!r}; choose from "
+                f"{', '.join(sorted(DETECTOR_PROFILES))}, or pass a float "
+                f"threshold if you have swept your own corpus"
+            ) from None
+    gate = float(value)
+    if not 0.0 < gate <= 1.0:
+        raise ValueError(f"detector gate must be in (0, 1], got {gate}")
+    return gate
 
 # BlazeEar v2 ships a two-stage pipeline and the ear model is trained on FACE
 # CROPS, not full frames. runs/checkpoints/ still holds the pre-v2 single-stage
@@ -178,7 +245,7 @@ class EarDetector:
     """
 
     def __init__(self, weights_path: str | Path, device: str = "cpu",
-                 confidence: float | None = None, two_stage: bool = True,
+                 confidence: float | str | None = None, two_stage: bool = True,
                  face_weights: str | Path | None = None,
                  legacy_anchors: bool | None = None,
                  input_size: int = DETECTOR_INPUT_SIZE) -> None:
@@ -211,7 +278,7 @@ class EarDetector:
                               and "model_weights/BlazeEar_best_" not in p)
         self.model = load_ear_model(
             str(weights_path),
-            DETECTOR_CONFIDENCE if confidence is None else confidence,
+            resolve_confidence(confidence),
             str(self.device), legacy_anchors=legacy_anchors,
             input_size=input_size)
 
@@ -430,7 +497,7 @@ class EarLandmarkerPipeline:
         detector_weights: str | Path,
         landmarker_weights: str | Path,
         device: str = "auto",
-        detector_confidence: float | None = None,
+        detector_confidence: float | str | None = None,
         smooth: bool = True,
         smoothing_kwargs: dict | None = None,
         refine_roi: bool = True,
@@ -758,7 +825,9 @@ def run_image(args: argparse.Namespace) -> None:
 
     pipeline = EarLandmarkerPipeline(
         detector_weights, landmarker_weights,
-        device=args.device, detector_confidence=args.confidence,
+        device=args.device,
+        detector_confidence=(args.confidence if args.confidence is not None
+                             else args.profile),
         flip_fusion=args.flip_fusion,
         detector_frame_tta=args.detector_frame_tta,
     )
@@ -789,7 +858,9 @@ def run_webcam(args: argparse.Namespace) -> None:
 
     pipeline = EarLandmarkerPipeline(
         detector_weights, landmarker_weights,
-        device=args.device, detector_confidence=args.confidence,
+        device=args.device,
+        detector_confidence=(args.confidence if args.confidence is not None
+                             else args.profile),
         flip_fusion=args.flip_fusion,
         detector_frame_tta=args.detector_frame_tta,
     )
@@ -841,8 +912,24 @@ def main() -> None:
     # Shared args
     for p in [img_parser, cam_parser]:
         p.add_argument("--device", type=str, default="auto")
-        p.add_argument("--confidence", type=float, default=None,
-                       help="Detector confidence threshold (default: use BlazeEar model default)")
+        # Name the consumer, or give a number. Mutually exclusive, because
+        # silently letting one win is how a caller ends up running a gate they
+        # did not pick.
+        gate = p.add_mutually_exclusive_group()
+        gate.add_argument("--profile", type=str, default=None,
+                          choices=sorted(DETECTOR_PROFILES),
+                          help="Who consumes the output, which sets the "
+                               "detector gate: "
+                               + ", ".join(f"{k}={v:.2f}" for k, v in
+                                           sorted(DETECTOR_PROFILES.items()))
+                               + f" (default: {DETECTOR_PROFILE_DEFAULT}). "
+                                 "A higher gate trades recall for precision "
+                                 "and costs small ears disproportionately; "
+                                 'see README "Choosing the stage-2 gate".')
+        gate.add_argument("--confidence", type=float, default=None,
+                          help="Explicit detector gate, overriding --profile. "
+                               f"Default: the {DETECTOR_PROFILE_DEFAULT} "
+                               f"profile ({DETECTOR_CONFIDENCE:.2f}).")
         p.add_argument("--detector-weights", type=str, default=None,
                        help=f"BlazeEar weights (default: BlazeEar/{DETECTOR_WEIGHTS})")
         p.add_argument("--landmarker-weights", type=str, default=None,

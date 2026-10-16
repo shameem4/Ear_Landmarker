@@ -1677,6 +1677,27 @@ there recall is the thing to buy. And the precision column overstates what
 passes: it is measured at **IoU 0.30**, a loose localisation bar, so some
 "true positives" are boxes poor enough to produce bad landmarks anyway.
 
+**Shipped as a named consumer choice, not a constant.** Since the right answer
+depends on the consumer rather than on the model, `inference.py` names the
+consumer instead of asking a caller to guess a number:
+
+| profile | gate | for |
+|---|---|---|
+| `interactive` *(default)* | 0.70 | a human looks at the output; also annotation assist and corpus onboarding, where the costs invert outright |
+| `balanced` | 0.76 | no stated preference (F1 argmax) |
+| `automated` | 0.86 | output consumed without review, where a wrong fit cannot be detected downstream |
+
+```bash
+python inference.py image photo.jpg --profile automated
+```
+
+`--profile` and `--confidence` are mutually exclusive and argparse refuses the
+pair, because letting one silently win is how a caller ends up running a gate
+they did not choose. A raw float still works for anyone who has swept their own
+corpus, and `resolve_confidence()` takes a name, a number or `None`. The default
+is `interactive` precisely so that naming the choice did not change shipped
+behaviour -- `DETECTOR_CONFIDENCE` is still 0.70.
+
 **Recommendation: do not pick one number.** The cost asymmetry is real but it is
 *consumer-dependent*, and the threshold is already a parameter rather than a
 constant. Keep 0.70 for interactive and human-in-the-loop use, where a false
