@@ -15,6 +15,12 @@ property that makes them worth running.
 
 Everything heavy goes through `"$CODE_UTILITIES/guard_run.sh" <mem> <secs> <log> <cmd>`.
 
+Pass `auto` for `<mem>` unless you have actually measured the job. It caps at
+half the free headroom on a first run, records the peak, and uses 2.5x it
+afterwards -- which is both tighter than a guessed size and necessary under
+admission control, where a cap is a reservation held against the machine
+ceiling rather than just a kill threshold.
+
 ## The three ridge channels
 
     base    sato on intensity        the no-model default, needs no GPU

@@ -14,8 +14,15 @@ clash review and the dataset writer consume.
 Resumable: the npz is rewritten every CHUNK rows, and a re-run skips
 rows already in it. SAM 3 is the whole cost.
 
-    "$CODE_UTILITIES/guard_run.sh" 24G 36000 runs/corrected/pass.log \
+    "$CODE_UTILITIES/guard_run.sh" auto 36000 runs/corrected/pass.log \
         python scripts/qa_correct_outer_pass.py runs/corrected
+
+`auto` rather than a size because the 24G this used to carry was never
+measured -- it was the convention, not a footprint. The first run caps at half
+the free headroom and records the peak; later runs cap at 2.5x it. That matters
+beyond tightness now that guard_run does admission control: a cap is a
+reservation, so two unmeasured 24G jobs are 48 GiB of promises against a
+47.4 GiB ceiling and the second is refused outright.
 """
 import csv
 import importlib.util as ilu
