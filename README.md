@@ -342,13 +342,26 @@ address that, all covered by tests.
 One Euro filters (Casiez et al., CHI 2012), the same speed-adaptive low-pass
 MediaPipe uses: heavy smoothing when a point is still, light when it moves fast,
 so lag does not trade against stability. Box wobble is roughly 90% of
-frame-to-frame jitter, so `BoxSmoother` runs *before* the crop (on centre and
+frame-to-frame jitter, so box smoothing runs *before* the crop (on centre and
 size, not corners) and `LandmarkSmoother` after, in frame coordinates, weighted
-by the model's per-landmark confidence. `EarTracker` associates ears across
-frames by nearest centre so each keeps its own filter state.
+by the model's per-landmark confidence.
+
+**Association and box smoothing are BlazeEar's shared `BoxTracker`**, vendored
+at `vendor/box_tracker.py` and `docs/ear_tracker.js` and pinned to BlazeEar by
+`tests/test_vendored_tracker.py`, so all three consumers run one
+implementation. It associates on **IoU >= 0.3 against the raw detection** --
+this repo previously used nearest centre within 0.6x box size against its own
+*smoothed* centre, which lagged during motion and cost it tolerance: replayed,
+a track survives 44 px/frame where the old rule broke at 34. `EarTracker` keeps
+the per-track `LandmarkSmoother`, because landmarks are this pipeline's output
+while boxes are the shared part. Settings are near pass-through -- no
+hysteresis, matched tracks only -- so an ear is reported on detected frames
+exactly as before; real hysteresis is a separate, unmade decision.
 
 Measured with `scripts/eval_smoothing.py`: **jitter down 66-80%**, and error
-drops too rather than trading against it.
+drops too rather than trading against it. The tracker swap itself moved neither
+landmark jitter (p=0.58) nor adjacent-frame box IoU (p=0.39), and cut track
+switches 14.5%; see the top note.
 
 **Duplicate suppression.** NMS suppresses on IoU *or* intersection-over-minimum.
 Plain IoU cannot catch a small box nested inside a larger one on the same ear --

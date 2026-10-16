@@ -448,10 +448,10 @@ augmentation. The three scripts it cites -- `eval_homography_fidelity.py`,
 Perspective augmentation is a homography. It reproduces foreshortening but not
 parallax or self-occlusion, and its measured benefit plateaued at 65 deg. Two
 readings fit -- the model saturates, or the warp stops resembling a head turn.
-Rendering real ear meshes (`scripts/render3d_ears.py`, AudioEar3D) separates them.
+Rendering real ear meshes (`Ear_3D_Lifter/scripts/render3d_ears.py`, AudioEar3D) separates them.
 
 **The warp is a poor match to a real rotation at every angle**, not just past 65
-(`scripts/eval_homography_fidelity.py`, 12 ears). There is no cliff. NOTE: these
+(`Ear_3D_Lifter/scripts/eval_homography_fidelity.py`, 12 ears). There is no cliff. NOTE: these
 numbers predate the reconstruction fix below; both sides of each comparison come
 from the same mesh so the NCC column largely cancels the defect, but the
 silhouette IoU column is contaminated and has not been re-measured:
@@ -466,7 +466,7 @@ silhouette IoU column is contaminated and has not been re-measured:
 | 80  | -0.086 | 0.231 |
 
 **And it buys nothing measurable on either axis**
-(`scripts/eval_pose_consistency.py`, 28 ears, drift vs each model's own pose-zero
+(`Ear_3D_Lifter/scripts/eval_pose_consistency.py`, 28 ears, drift vs each model's own pose-zero
 landmarks lifted to 3D):
 
 | comparison, abs(angle)>=20 | yaw | pitch |
