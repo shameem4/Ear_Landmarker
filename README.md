@@ -6,6 +6,54 @@ Real-time 55-point ear landmark regression using a BlazeBlock backbone (FaceMesh
 
 **Test NME 0.029** (861 held-out samples) at 340K parameters. See [RESULTS.md](RESULTS.md) for the full v2 experiment log, including the seed-noise floor that several candidate improvements failed to clear.
 
+## Where this stands, 2026-10
+
+The landmarker is done and shipped. A sub-pixel bug in the geometric
+augmentation -- the image moved by whole pixels while the labels moved by
+fractions -- had been turning a harmless registration error into a **handedness
+bias**, because a constant x-offset is anti-equivariant under a mirror. Fixed,
+retrained to convergence (`fixed_conv_s42`), and the bias is gone: R-L
+antisymmetry **+17.05% (p=2.7e-19) -> +1.01% (p=0.46)**. Flip fusion is now on
+by default, the browser demo does it too at six-decimal parity with Python, and
+the ONNX export verifies itself against the Torch model on every build.
+
+**The detector in front of it is where the remaining recall lives, and a long
+investigation closed it off rather than opening it up.** The chain under test
+was "a better stage 1 finds more ears, so more ears get delivered", and all
+three links are now measured. Coverage improves a lot: a fine-tuned stage 1 cuts
+ears that no crop covered from 1301 to 530 of 15,359, and the union of two
+detectors' crops reaches 516. Delivered recall at matched precision does not
+move -- the best coverage arm is the **worst** matched-precision arm, losing
+4-7 pp. And BlazeEar's oracle-crop test says why: of 332 rescued ears under
+32 px, **one** clears the deployed gate, and 56.9% are not localised at all in
+a crop built to contain them. There is no box to re-score, so neither stage-1
+coverage nor stage-2 calibration reaches that population. **Coverage and
+convertibility are anti-correlated** -- 46% of the rescue sits in the band that
+converts at 0.3%. The limit there is input resolution: a 21.6-pixel ear at a
+256 px input does not produce a detection.
+
+What survives as a direction: the low-score tail of a face detector is **0.0%
+faces** by any face metric and still delivers ears, and destroying only its
+placement multiplies face-stage misses ninefold in misses (1.36x in coverage --
+the ratio framing was retracted). So **head-ness, not face-ness, is the stage-1
+objective this pipeline wants** -- bounded to small-head frames, worth almost
+nothing where heads fill the frame, and nothing at all below ~24 real pixels.
+
+**Also settled along the way:** three ground-truth bases existed and two were
+wrong (the YOLO export carries one box per image; 39.9% of master.csv rows are
+POSE pseudo-labels). Checkpoint selectors were ranking by a 4-decimal filename
+and systematically taking the worst of tied checkpoints. And the stage-2 gate
+diverged between repos -- we ship 0.70, BlazeEar 0.80 -- which turns out not to
+be a defect: the whole 0.70-0.80 range spans 0.60% of F1. The open question is
+not which constant is right but whether this product should weight precision
+over recall at all; see [Choosing the stage-2 gate](#choosing-the-stage-2-gate).
+
+A note on how these numbers were arrived at, since several are retractions of
+earlier ones: across one day's work eight wrong mechanisms were caught, and not
+one of them by reviewing the reasoning -- every one by a clash with an
+independent number. Figures withdrawn here are marked where they were asserted,
+not quietly replaced.
+
 ## Scope
 
 This repository detects the 55-point ear scheme in **2D**: the landmarker,
@@ -1564,6 +1612,85 @@ the figures are 0.599 here against their 0.752 -- a real but much smaller gap,
 and the residual is explained by their scoring localisation at IoU >= 0.5 where
 this measures IoU >= 0.3: a tighter localisation test keeps the better-fitting
 boxes, which score higher. **Quote a gate and an IoU with any such median.**
+
+### Choosing the stage-2 gate
+
+`inference.py` ships `DETECTOR_CONFIDENCE = 0.70`, inherited when this pipeline
+adopted BlazeEar v2 (54026c0) and never re-picked. BlazeEar ships 0.80 plain /
+0.85 fused, chosen on their own end-to-end sweep. **That divergence is not a
+defect:** swept here on 13,007 images / 15,359 human-source ears at IoU 0.30,
+the entire 0.70-0.80 range spans **0.60% of F1** (0.7668 at 0.70, 0.7693 at
+0.80, peaking at 0.7728 near 0.76). Neither constant is wrong and changing one
+to chase 0.6% is not worth a redeploy.
+
+**The real question is whether this product should weight precision above
+recall**, because that moves the answer a long way. Weighting precision twice
+recall (F0.5) puts the optimum at **0.86**, far outside the range either repo
+ships. Measured on 6,000 images / 7,075 ears:
+
+| gate | recall | precision | FP/image |
+|---|---|---|---|
+| 0.70 (shipped) | 79.02% | 74.77% | 0.315 |
+| 0.76 (F1 argmax) | 76.38% | 78.70% | 0.244 |
+| 0.80 (BlazeEar) | 72.93% | 81.61% | 0.194 |
+| 0.86 (F0.5 argmax) | 64.83% | 85.80% | 0.127 |
+
+**For weighting precision.** The two error types are not symmetric in what the
+user sees. A missed ear produces *nothing* -- a visible, self-announcing,
+forgivable failure. A false positive produces **55 landmarks confidently drawn
+on a cheek, hair or a background edge**, which is the failure that destroys
+trust in a demo and is indistinguishable from a real detection to anything
+downstream. Going 0.70 -> 0.86 cuts false positives per image from 0.315 to
+0.127, a **2.5x** reduction in wrong overlays. The asymmetry is worse for
+automated consumers than for humans: a false ear's landmarks become a garbage
+3D fit in Ear_3D_Lifter and **no gate catches "these points are on a cheek"**,
+so a false positive propagates silently while a false negative merely drops a
+sample. BlazeEar's related measurement sharpens this -- when crops were
+multiplied, false positives on the facial midline (nose, brow) rose 2.5x, and
+those are exactly the confusable non-ears that yield plausible-looking wrong
+landmarks rather than obvious garbage.
+
+**Against weighting precision, and this is the stronger half.** The recall cost
+is large and **it is not evenly distributed**:
+
+| band (px) | ears | 0.70 | 0.86 | absolute | **relative loss** |
+|---|---|---|---|---|---|
+| 0-32 | 952 | 33.51% | 18.17% | -15.34 pp | **-45.8%** |
+| 32-48 | 1029 | 71.23% | 52.48% | -18.76 pp | -26.3% |
+| 48-64 | 1053 | 80.91% | 65.62% | -15.29 pp | -18.9% |
+| 64-80 | 909 | 85.92% | 70.52% | -15.40 pp | -17.9% |
+| 80+ | 3132 | 92.78% | 81.16% | -11.62 pp | **-12.5%** |
+
+In absolute points the loss looks uniform, which is how it would be reported by
+default. In **relative** terms it is monotone and steep: raising the gate to
+0.86 discards **46% of the small ears it was finding against 12.5% of the large
+ones**, a 3.7x tilt. That is not a neutral trade -- it is a systematic bias
+against subjects whose ears are small in frame, which means children, distant
+or off-centre subjects, and profile views. A product that silently works worse
+on those is a worse product than one with more false positives, and the bias
+would not appear in any pooled metric.
+
+Two further arguments against. In a human-in-the-loop use -- annotation assist,
+onboarding new corpus images -- the costs **invert**: a false positive is
+rejected with one click, while a missing ear has to be noticed and chased, so
+there recall is the thing to buy. And the precision column overstates what
+passes: it is measured at **IoU 0.30**, a loose localisation bar, so some
+"true positives" are boxes poor enough to produce bad landmarks anyway.
+
+**Recommendation: do not pick one number.** The cost asymmetry is real but it is
+*consumer-dependent*, and the threshold is already a parameter rather than a
+constant. Keep 0.70 for interactive and human-in-the-loop use, where a false
+positive is cheap and visible, and pass a higher gate -- 0.80, or 0.86 if the
+consumer cannot detect a wrong fit -- where output is consumed automatically and
+a silent corruption costs more than a dropped sample. If a single value is
+wanted anyway, 0.76 is the F1 argmax and buys 0.071 fewer FP/image for 2.6 pp of
+recall against what ships today.
+
+**What to do before changing it either way:** look at the crops. Every figure
+here is detection-level, and none of it says whether the boxes gained between
+0.70 and 0.76 produce usable landmarks or merely usable IoU. Render both
+settings on the same frames and check, per the standing rule that the visual
+check comes before the statistic.
 
 ### Our stage-2 gate and BlazeEar's have diverged
 
