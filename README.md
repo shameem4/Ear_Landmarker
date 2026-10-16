@@ -35,6 +35,11 @@ Both repos then independently decided **not** to swap the better detector in,
 for the same reason: its gain sits in 8-16 px faces, exactly the band that
 cannot receive it. Condition for re-asking is recorded, not implicit -- fix
 stage-2 scoring so that band converts, and the gain is still there.
+Ear_3D_Lifter has since reached the same direction independently -- on renders,
+against 3D ground truth, the views a lower gate recovers are 2.6x worse on gross
+error for 11.9% more landmarks -- though with a consumer that votes across 25
+views rather than handing one detection to a user, which is the case where the
+answer could still differ.
 See [T4 reopened](#t4-reopened-a-better-stage-1-improves-coverage-and-delivers-nothing).
 
 **What survives as a direction:** a face detector's low-score tail is **0.0%
@@ -1791,6 +1796,48 @@ and sweep it on your own corpus. **The honest open question is the opposite
 one:** whether the gate should go *lower* than 0.70, which this corpus cannot
 answer until precision is measured against complete ear labels rather than
 one-per-image human rows.
+
+**An independent measurement of the same direction, in another domain.**
+Ear_3D_Lifter ran the gate pair on their renderer (2026-10-16; sun +1.2,
+`fixed_conv_s42/433`, 40 ears x 25 views, flip fusion and `detector_frame_tta`
+on, nothing differing but the gate), and reported the *error distribution* of
+the recovered views rather than only the yield:
+
+| gate | views kept | landmarks | paired p50 | >5 mm | >10 mm |
+|---|---|---|---|---|---|
+| 0.05 | 100.0% | 55,000 | 3.39 mm | 25.91% | 4.351% |
+| 0.70 | 89.4% | 49,170 | 3.33 mm | 24.38% | 3.716% |
+
+Splitting on what each gate kept: views kept by **both** are p50 3.33 mm with
+3.716% past 10 mm, while views kept **only at 0.05** are p50 4.11 mm with
+**9.708%** past 10 mm. So the recovered views are 1.23x worse at the median and
+**2.6x worse on gross error**, bought for 11.9% more landmarks. That is the T4
+finding again -- coverage does not convert -- reached on a different domain,
+with a different consumer, against 3D ground truth rather than 2D boxes.
+
+**The magnitude does not transfer, and they say so.** Their earlier figures on
+this comparison claimed 4.7x and 12.25% escapes; those were measured before
+three fixes on their side (a NaN gate that scored landmarks thrown off the head
+as successes, a winding bug that inverted normals on every right ear, and the
+sun move) and are void rather than merely stale. Most of that gap was the bugs,
+not the gate.
+
+**Why two pipelines can rationally disagree about the gate, and it is not the
+domain.** Their numbers above are **per view**, and they do not consume views
+individually: 25 of them go into a RANSAC vote that discards disagreeing rays by
+construction. A view 2.6x worse on gross error is a ray that loses the vote, so
+extra coverage is close to free for them and expensive here, where a detection
+goes straight to a user with nothing downstream to outvote it. **That is a
+difference in what sits downstream, not in renders rescuing what photographs
+cannot** -- and it is the first concrete consumer class for whom a gate *below*
+0.70 could pay, which is the open question above.
+
+**It is a mechanism, not a result.** Their triangulation numbers all come from a
+0.05 ray cache, and they have not rebuilt one at 0.70 to see whether the extra
+views help, hurt, or wash out after the vote. Until that exists, "RANSAC absorbs
+them" is believed and unshown, by their own statement. Nothing here should be
+changed on it; it is recorded because it predicts where the gate question
+reopens, and names the measurement that would settle it.
 
 **Shipped as a named consumer choice, not a constant.** Since the right answer
 depends on the consumer rather than on the model, `inference.py` names the

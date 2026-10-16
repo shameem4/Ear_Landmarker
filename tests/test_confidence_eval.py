@@ -16,7 +16,8 @@ they are pinned here:
 
 Also covers guard_run.sh rejecting a unit-less memory cap, since a bare number
 is read by systemd as BYTES and its instant OOM is indistinguishable from a
-genuine memory blowup.
+genuine memory blowup. That check lives in the shared wrap_work implementation
+that scripts/guard_run.sh execs, so those two tests skip where it is absent.
 """
 
 from __future__ import annotations
@@ -169,7 +170,16 @@ def test_selecting_whole_images_preserves_the_correlation(ec):
 
 # --- guard_run.sh units -------------------------------------------------------
 
+# scripts/guard_run.sh is a thin wrapper that execs a shared implementation in
+# wrap_work/, which is NOT version-controlled and sits outside this repo. So
+# these two tests depend on a file a fresh clone will not have: skipped when it
+# is absent, because a missing dependency is not a finding and an exit 127 here
+# would read as the unit check having broken.
 GUARD = ROOT / "scripts" / "guard_run.sh"
+IMPL = Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/wrap_work/tools/guard_run.sh")
+needs_impl = pytest.mark.skipif(
+    not IMPL.is_file(),
+    reason=f"shared guard_run implementation not present at {IMPL}")
 
 
 def _guard(mem: str):
@@ -178,6 +188,7 @@ def _guard(mem: str):
         capture_output=True, text=True, timeout=60)
 
 
+@needs_impl
 @pytest.mark.parametrize("mem", ["12", "28", "4"])
 def test_guard_run_rejects_a_unitless_memory_cap(mem):
     """A bare number is BYTES to systemd; the job dies before printing anything.
@@ -192,6 +203,7 @@ def test_guard_run_rejects_a_unitless_memory_cap(mem):
     assert f"{mem}G" in r.stderr, "the message should name the corrected value"
 
 
+@needs_impl
 @pytest.mark.parametrize("mem", ["12G", "500M", "infinity"])
 def test_guard_run_accepts_a_united_memory_cap(mem):
     r = _guard(mem)

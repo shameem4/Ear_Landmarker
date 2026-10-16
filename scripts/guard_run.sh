@@ -1,50 +1,22 @@
 #!/bin/bash
-# Run a job under a HARD memory ceiling and a wall clock, so a runaway kills
-# itself instead of the session.
+# Thin wrapper. The implementation -- and the reasoning behind each guard
+# (RLIMIT_AS is useless, MemoryHigh throttles instead of killing, timeout stays
+# outside the scope, <mem> must carry a unit) -- lives in ONE place:
 #
-#   guard_run.sh <mem> <secs> <logfile> <cmd...>    e.g. 12G 3600 x.log python a.py
+#   /mnt/14BE47C2BE479ADE/Code/ear_stuff/wrap_work/tools/guard_run.sh
 #
-# Exit: 0 ok | 124 wall-clock timeout | 137/143 killed at the memory cap
-#       (anything else is the job's own failure, not the guard)
+# Kept as a wrapper because three divergent copies is how a fix lands in one
+# project and leaves the others broken: on 2026-10-16 a unitless mem= made a
+# 28-byte cgroup, and only this project's copy was patched.
 #
-# TWO GUARDS THAT LOOK RIGHT AND ARE NOT:
-#   RLIMIT_AS is useless here. Imports alone reserve ~16 GB of VIRTUAL address
-#   space while RSS stays under 0.4 GB, so an address-space cap either fires on
-#   import or never fires. A 6 GB limit once killed all 60 jobs instantly.
-#   MemoryHigh throttles, it does not kill. With it set a runaway crawls at the
-#   ceiling until the wall clock fires, wasting the timeout and then blaming
-#   the clock. MemoryMax alone OOM-kills, in well under a second.
-#
-# TIMEOUT STAYS OUTSIDE THE SCOPE. Inside, the cgroup OOM kill takes out every
-# process in the scope -- `timeout` included -- and the exit code comes back
-# 124, blaming the clock for a memory kill. Outside, the causes stay apart.
-#
-# <mem> MUST CARRY A UNIT. systemd reads a bare number as BYTES, so `12` is a
-# 12-byte ceiling: the job is OOM-killed before it prints anything, the log holds
-# only this header, and the guard reports "KILLED (memory cap 12) -- session
-# safe", which reads exactly like a genuine blowup. That typo once cost a
-# diagnosis of whether systemd itself was broken. Rejected up front instead.
-set -uo pipefail
-MEM=${1:?mem e.g. 12G}; SECS=${2:?seconds}; LOG=${3:?logfile}; shift 3
-[ $# -ge 1 ] || { echo "guard_run: no command given" >&2; exit 2; }
-case $MEM in
-  *[!0-9]*) ;;   # has a non-digit, so it carries a unit (or is MemoryMax=infinity)
-  *) echo "guard_run: mem '$MEM' has no unit -- systemd would read it as $MEM BYTES" >&2
-     echo "guard_run: use '${MEM}G' (or ${MEM}M/${MEM}K) instead" >&2; exit 2 ;;
-esac
-mkdir -p "$(dirname "$LOG")"
-{ echo "### guard_run $(date -Is)"; echo "### mem=$MEM wall=${SECS}s"
-  echo "### cmd: $*"; } > "$LOG"
-timeout --signal=TERM --kill-after=20 "$SECS" \
-    systemd-run --user --scope -q \
-    -p MemoryMax="$MEM" -p MemorySwapMax=0 \
-    "$@" >>"$LOG" 2>&1
-rc=$?
-case $rc in
-  0)        echo "guard_run: OK" ;;
-  124)      echo "guard_run: TIMEOUT after ${SECS}s -- job killed, session safe" ;;
-  137|143)  echo "guard_run: KILLED (memory cap $MEM) -- session safe" ;;
-  *)        echo "guard_run: job exited $rc (its own failure, not the guard)" ;;
-esac
-echo "guard_run: log -> $LOG  (rc=$rc)"
-exit $rc
+# wrap_work is NOT version-controlled, so the implementation has no git history
+# to recover from. Hence the explicit check rather than a bare exec.
+set -u
+IMPL=/mnt/14BE47C2BE479ADE/Code/ear_stuff/wrap_work/tools/guard_run.sh
+if [ ! -x "$IMPL" ]; then
+    echo "guard_run: implementation missing or not executable:" >&2
+    echo "  $IMPL" >&2
+    echo "guard_run: wrap_work is not version-controlled -- restore it before running heavy jobs." >&2
+    exit 127
+fi
+exec "$IMPL" "$@"
