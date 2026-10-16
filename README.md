@@ -1584,6 +1584,38 @@ scoreable-in-principle. They are not. What survives is narrow: the 32-48 and
 something, and the information-limited floor below ~24 real pixels is an input
 resolution question rather than a stage-1 or stage-2 one.
 
+**That floor has since been tested against an independent representation and
+held.** The risk BlazeEar flagged in their own claim is the one that cost
+trainable_blazeface a day: "the data is the limit" and "my targets do not cover
+objects that small" have identical symptoms and opposite fixes, and this
+corpus's own anchor numbers invite the confusion -- 0-32 px best-anchor IoU
+median 0.425, below the 0.5 match threshold, against 56.9% of oracle-crop
+rescued ears producing no box. Two numbers close enough to be mistaken for each
+other. They handed the same crops to a fine-tuned YOLOv11 ear detector, which
+shares the human ground truth but no anchors, no target assignment and no
+training recipe: **no significant difference in any band** (0-24 px McNemar
+p=0.38, all bands p>=0.38), and the anchor-free referee misses 62.7% of the
+0-24 px band itself while running at 640 px where stage 2 sees 256. Its recorded
+prediction was that it should do materially better there; it did not. **The
+information limit is the reading that survives**, and it is no longer resting on
+one representation's weakness.
+
+Worth keeping for method: a 400-crop subsample first showed 27.3% against 9.1%
+the other way, decisively, and the full set reversed the sign. n=11 was noise,
+and it was the number that would have been quoted had it pointed the convenient
+way.
+
+**Both sides independently determined not to swap the upgraded face stage in.**
+The reasons agree: its gain is concentrated in 8-16 px faces (recall 0.078 ->
+0.402), which is exactly the band measured as unable to receive it, so the
+strongest thing on offer is delivery into the band that cannot score. And every
+constant denominated in face-box units would move, since the box-scale ratio is
+real and does not transfer between corpora (their 1.117, our 1.0998 [1.0936,
+1.1048], non-overlapping intervals). Cost is not the obstacle -- identical
+parameter count, 2.24 vs 2.26 ms, ONNX verified to 1e-7. **The condition for
+re-asking is recorded on both sides: fix stage-2 scoring so the 0-32 px band
+becomes convertible, and the gain is real and still sitting there.**
+
 Selection caveat, stated by BlazeEar against their own table: these are ears
 stock's crop failed to cover, which correlates with small and awkward. Their
 val_v2 band curve puts 0-32 recall near 4.9% against this 0.3%, and the gap is
@@ -1764,7 +1796,19 @@ are kept for re-running it -- `scripts/fp_audit.py` tiles false positives by
 score band, and `scripts/render_gates.py` draws each detection coloured by which
 gate would keep it.
 
-**Still unmeasured:** whether the boxes between 0.70 and 0.76 produce usable
+**Still unmeasured, and the gap is wider than the gate.** BlazeEar named an
+axis neither side has data on: **adjacent-frame IoU and no-face-frame rate** --
+temporal stability. Everything measured here is per-image, and this pipeline
+ships a real-time demo, so a gate or a detector that is marginally better per
+frame and flickers more is worse in the use that matters most. The same gap
+applies to the gate choice itself: nothing here says whether 0.70 and 0.76
+differ in frame-to-frame stability, and a tracker can hide a per-frame
+precision difference entirely or amplify it. BlazeEar has 25 conversational
+clips / 7,500 frames and measured their own tracker constants on them; that is
+the corpus this question wants, and it is not a measurement this repo can do
+alone.
+
+**Also still unmeasured:** whether the boxes between 0.70 and 0.76 produce usable
 landmarks. The audit answered what the false positives are, not whether marginal
 true positives are worth having, and that needs a landmark-quality measure
 rather than a detection one.
