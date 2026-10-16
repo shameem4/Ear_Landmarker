@@ -62,7 +62,24 @@ BlazeEar's shared `BoxTracker`, vendored -- replayed against the nearest-centre
 rule this repo used before, track switches fall **400 -> 342 (-14.5%**, better
 on 13 clips and worse on 5, Wilcoxon p=0.03, sign test p=0.10 -- real but
 modest, and significant by one test and not the other) with adjacent-frame IoU
-indistinguishable (+0.0006, p=0.39). **What is still unmeasured is the gate on
+indistinguishable (+0.0006, p=0.39). **Landmark jitter end to end is unchanged
+too** -- `scripts/clip_jitter.py`, median per-point frame-to-frame displacement
+1.2956 -> 1.3034 px, +0.6%, Wilcoxon p=0.58. Worth the detail: **15 of 25 clips
+are bit-identical**, because where no track switch occurs the two association
+rules produce the same associations and the same filter; only the 10 clips with
+switches differ at all, and those split 6 better / 4 worse. The largest single
+movement is against the change (M05, 2.63 -> 3.08 px, +16.8%) and the largest
+for it is W09 at -17.3%; excluding only the worst clip the mean is -1.29%, which
+is why the pooled figure is reported rather than that one.
+
+**So a -14.5% reduction in track switches did not convert into less visible
+jitter** -- the same shape as the rest of this project's findings, an upstream
+improvement that is real and does not reach the output. The existing
+`scripts/eval_jitter.py` cannot speak to any of this: it synthesises crop-window
+wobble from single images and contains no reference to the tracker, so it
+measures the landmarker in isolation and never exercises association.
+
+**What is still unmeasured is the gate on
 this axis:** nothing says whether 0.70 and 0.76 differ in frame-to-frame
 stability, so the gate conclusions remain per-image ones.
 
