@@ -587,25 +587,33 @@ same operation. The two results are orthogonal, not competing. Ear_3D_Lifter
 measures a frame-mirrored single pass beating this two-arm fusion on their
 gross-error gate, which is consistent with both.
 
-### Every Ear_3D_Lifter gate figure below is PROVISIONAL
+### The Ear_3D_Lifter figures below were re-measured; the orderings hold
 
-> All of them -- the mixed-handedness table, the arm-selector oracle, and the
-> `detector_frame_tta` recovery -- were measured on their renderer at a sun
-> direction of x=+0.3, which they have since changed to x=+1.2 after sweeping
-> it. That move is worth **-2.29 pp on 39 of 40 ears, p=2.0e-07**, taking their
-> baseline from 3.49% to about 1.6%. For scale, the entire
-> fusion-versus-replacement-versus-nothing spread on that gate is about 0.8 pp,
-> so **the lighting change is larger than every TTA effect put together.**
+> Every figure in this section was first measured on their renderer at a sun
+> direction of x=+0.3, which they then changed to x=+1.2 after sweeping it --
+> a move worth **-2.29 pp on 39 of 40 ears, p=2.0e-07**, larger than every TTA
+> effect in this section put together. They were carried as PROVISIONAL until
+> the 112-ear audit re-ran. **It has (2026-10-16, sun +1.2,
+> `fixed_conv_s42/433`), and every number below is the re-run.**
 >
-> The plausible way the orderings break: mirroring may buy less once the
-> occluding contour already has a strong edge, since weak-edge failure is what
-> mirroring was compensating for. If so the 43% recovery and the p=0.058
-> residual both need restating. The 112-ear audit is re-running at the new sun.
+> The prediction was that mirroring buys less once the occluding contour has a
+> strong edge, since weak-edge failure is what mirroring compensates for. That
+> is what happened, and it is visible in *which* numbers moved: the fusion gains
+> roughly halved, while the **detector** flag barely moved, +0.254 -> +0.224 pp.
+> Coherent rather than lucky -- better lighting repairs a weak edge, and does
+> nothing about which box the detector picks. Different routes, different
+> sensitivity to lighting.
 >
-> The structural claims should survive regardless, because they are not about
-> magnitude: a coordinate average is symmetric whatever the lighting, so
-> fusion's zero variance across presentations is a property rather than a
-> measurement. The *sizes* of every gap below are the provisional part.
+> **The structural claims survived exactly**, which is the part that was never
+> about magnitude: always-mirror is still a coin flip on a mixed corpus
+> (-0.001 pp, 51% of draws), and fusion still has **zero variance across draws**,
+> because a coordinate average is symmetric and is therefore the same arm
+> whichever way a view was presented.
+>
+> Two things did not survive and are not carried below. The **43% recovery**
+> figure is gone -- not restated, because the gap it was 43% *of* no longer
+> exists -- and so is the **p=0.058 residual**, now 0.000 pp at p=0.76. Both are
+> rewritten in place.
 >
 > **Nothing in this touches the photograph-domain results** -- the NME figures,
 > the detector recall, the bias measurements and the size-band analysis never
@@ -624,18 +632,35 @@ re-render, and the mirror is an exact pixel permutation. 112 ears x 25 views,
 
 | rule | mean | sd | 2.5% | 97.5% |
 |---|---|---|---|---|
-| as-presented | 3.221% | 0.048 | 3.134% | 3.317% |
-| always-mirror | 3.216% | 0.048 | 3.119% | 3.303% |
-| **fusion** | **2.719%** | **0.000** | 2.719% | 2.719% |
-| oracle (unreachable) | 1.871% | 0.000 | | |
+| as-presented | 1.451% | 0.033 | 1.391% | 1.514% |
+| always-mirror | 1.449% | 0.033 | 1.386% | 1.509% |
+| **fusion** | **1.290%** | **0.000** | 1.290% | 1.290% |
+| oracle (unreachable) | 0.788% | 0.000 | | |
 
-**The single-arm mirror is worth -0.005 pp and beats doing nothing on exactly
-50% of draws.** Its 0.53 pp gain on their single-presentation corpus is entirely
-a handedness artefact -- mirroring half the ears *into* the unfavourable
-presentation cancels the gain from the other half, exactly. **Fusion keeps its
-full gain and has zero variance across draws**, because a coordinate average is
-symmetric and is therefore literally the same arm whichever way a view was
-presented.
+For comparison, the same rules on the single-presentation corpus they actually
+render: no TTA **1.710%**, always-mirror **1.190%**, fusion **1.290%**, oracle
+**0.788%**.
+
+**The single-arm mirror is worth -0.001 pp and beats doing nothing on 51% of
+draws** -- a coin flip. Its 0.52 pp gain on their single-presentation corpus
+(1.710% -> 1.190%) is entirely a handedness artefact: mirroring half the ears
+*into* the unfavourable presentation cancels the gain from the other half,
+exactly. The arithmetic is visible in the table -- mixed as-presented 1.451%
+against a mean of the two single-presentation arms of 1.450% ((1.710+1.190)/2),
+agreeing to 0.001 pp, which is what "idealised independence" looks like when it
+holds.
+**Fusion keeps its full gain and has zero variance across draws**, because a
+coordinate average is symmetric and is therefore literally the same arm
+whichever way a view was presented -- 1.290% on both corpora, as the property
+requires.
+
+**One thing not to carry from the single-presentation column:** replacement
+(1.190%) now reads as the best single arm, ahead of fusion (1.290%). That is the
+flattery a single-presentation corpus always gives an asymmetric rule, and the
+mixed table above is exactly why it is not the recommendation -- once
+presentation varies it is worth -0.001 pp. Fusion remains the choice on
+robustness, against a metric that marginally prefers replacement. Ear_3D_Lifter
+flagged this themselves rather than letting the ordering stand.
 
 That licenses fusion as a default here and retires *replacement* as a candidate
 anywhere. It does not transfer the magnitude -- that is their render domain,
@@ -674,25 +699,33 @@ And the **oracle gap is large, real, and has no known route to it**:
 
 | | escape past 10 mm | |
 |---|---|---|
-| fusion | 2.719% | |
-| oracle per **view** | 2.118% | one decision per view |
-| oracle per **point** | 1.871% | 55 decisions per view |
-| **by detection confidence** | **3.192%** | the obvious selector |
+| fusion | 1.290% | |
+| oracle per **view** | 0.844% | one decision per view |
+| oracle per **point** | 0.788% | 55 decisions per view |
+| **by detection confidence** | **1.292%** | the obvious selector |
 
 Two things come out of that. Most of the gap survives being decided **once per
-view** -- 0.601 pp of 0.848 pp -- so a practical rule would not need 55
+view** -- 0.446 pp of 0.502 pp, or 89% -- so a practical rule would not need 55
 decisions, which is what the per-point oracle had implied. And **the obvious
-selector is worse than doing nothing**: picking the arm whose detection scored
-higher lands at 3.192%, worse than fusion, worse than always-mirror, and barely
-better than no TTA. It takes the mirrored arm on 75% of points, so it is
-measuring the detector's response to presentation rather than which arm placed
-the landmarks better. An older note in that project independently found
-confidence selecting the good arm 32.3% of the time, on different data and
-through different bugs, four months earlier.
+selector buys nothing**: picking the arm whose detection scored higher lands at
+1.292% against fusion's 1.290%, a wash, and worse than always-mirror's 1.190% on
+the same single-presentation corpus. It is measuring the detector's response to
+presentation rather than which arm placed the landmarks better. An older note in
+that project independently found confidence selecting the good arm 32.3% of the
+time, on different data and through different bugs, four months earlier; the
+75%-of-points figure that accompanied this at the old sun was not re-reported
+and is not carried.
+
+*(Ear_3D_Lifter described this selector as "worse than both arms it would choose
+between". Their own numbers do not read that way to me -- 1.292% sits between the
+as-presented and mirrored arms, 1.710% and 1.190% -- so the weaker claim above is
+what is recorded, and the discrepancy is theirs to resolve. The conclusion is
+unaffected either way: a selector that lands on fusion's number is not worth
+building.)*
 
 So the prize is recorded as real with no route to it, rather than as an
 opportunity -- because the attractive answer has now failed twice and the next
-person to see a 0.85 pp ceiling will reach for the same signal.
+person to see a 0.50 pp ceiling will reach for the same signal.
 
 `detector_frame_tta` stays off by default on cost grounds -- a second detector
 pass at ~68% of pipeline wall clock -- not on presentation grounds.
@@ -729,22 +762,36 @@ two-full-passes wrapper on their gross-error gate, 112 ears x 25 views:
 
 | configuration | escape past 10 mm |
 |---|---|
-| their frame fusion (two full passes) | 2.719% |
-| our fusion alone | 3.303% |
-| **our fusion + `detector_frame_tta`** | **3.049%** |
+| no TTA | 1.710% |
+| our fusion alone | 1.514% |
+| **our fusion + `detector_frame_tta`** | **1.290%** |
+| their frame fusion (two full passes) | 1.290% |
 
-The flag recovers **0.254 pp of the 0.584 pp gap, 43%**, p=1.3e-03, better on 66
-of 112 ears. What remains is **+0.331 pp at p=0.058** -- real in direction, too
-small to establish on 112 ears. That is exactly what the decline's reasoning
-predicts: the flag takes the detector route and leaves the ROI route on the
-table, and it would have been awkward for the account had the flag recovered
-everything or nothing.
+The flag is worth **+0.224 pp, p=2.4e-05, better on 64 of 112 ears** -- and it
+closes the gap to their two-pass wrapper **completely**: repo defaults plus the
+flag against their wrapper is **+0.000 pp at p=0.76**, indistinguishable.
+
+**The "43% of the gap" framing from the old sun is gone, not restated**, because
+the gap it was 43% *of* no longer exists: 0.584 pp became 0.000 pp. The
+**p=0.058 residual** -- the 0.331 pp that was left over, real in direction and
+too small to establish on 112 ears -- is likewise gone. So the flag is now
+quoted in absolute terms, which is the form that survived the sun change almost
+untouched (+0.254 -> +0.224 pp) while everything expressed as a *fraction of a
+gap* evaporated with the gap. A lesson about which framing to prefer: a
+proportion of a difference is only as durable as the difference.
+
+Note what this costs the decline's reasoning. The old account was that the flag
+takes the detector route and leaves the ROI route on the table, and the leftover
+residual was offered as confirmation. **There is no residual now**, so that
+confirmation is withdrawn -- the ROI route is not measurable on their renders at
+this sun. The decision to decline full frame-level TTA stands on cost, which was
+always the load-bearing reason, and no longer has the residual propping it up.
 
 So the line this paragraph used to end on -- that consumers whose ROI loop fires
 should keep their own frame-level wrapper -- turns out not to apply to the
-consumer it was written for. The ROI route is real on their renders; it is just
-not worth two full pipeline passes for 0.331 pp. They are retiring their wrapper
-in favour of the flag.
+consumer it was written for, and now for a stronger reason than when it was
+written: not "the ROI route is not worth two passes for 0.331 pp" but that two
+passes buy **nothing measurable** over the flag. They have retired their wrapper.
 
 **WebGPU was the obvious next lever and it is also rejected, on correctness
 before speed.** Tested by loading `ort.webgpu.min.js` in an isolated iframe and
