@@ -1221,6 +1221,95 @@ correct second detection scores as a false positive. Precision is a **lower
 bound**, and how loose a bound depends on whether one-ear-per-image is a
 labelling convention or a property of the images.
 
+### T4 reopened: a better stage 1 improves coverage and delivers nothing
+
+`trainable_blazeface` retracted the evidence T4 was closed on. Their six
+negative configurations all used a cell-based anchor encoder that assigned every
+ground-truth box to both grids; with a proper per-anchor assignment and an
+**ignore band** -- anchors that overlap a face but lose the top-k race leave the
+positive set *and* hard-negative mining, instead of training as background that
+mining then specifically hunts -- fine-tuning clears the gate this side set
+(0.934 at 16-32 px and 0.980 at 32+ px against thresholds of 0.854 and 0.966,
+recall 0.437 -> 0.501 at better precision).
+
+Their checkpoint loads into the stage-1 model this pipeline already builds:
+78 tensors, strict=True, zero mismatches. So it was scored directly, on all
+13,007 images / **15,359 human-source ears**, both arms in one pass so the
+denominator is identical and every ear is paired (McNemar on discordant pairs).
+Bands are the ground-truth ear box's max side in the *original* image, not
+size-in-crop, because an ear no crop covered has no size-in-crop -- and those
+are precisely the ears under test.
+
+**Coverage improves, unambiguously and threshold-independently.** Ears that no
+crop covered, out of 15,359:
+
+| stage 1 | face-stage misses | vs stock |
+|---|---|---|
+| stock | 1301 | -- |
+| tuned, as dropped in | 908 | -30% |
+| **stock crops UNION tuned crops** | **516** | **-60%** |
+
+**Delivered recall at matched precision does not.** Interpolating each arm's
+recall onto stock's precision at each of its operating points:
+
+| matched precision | stock recall | union | tuned (matched crop budget) |
+|---|---|---|---|
+| 87.28% | 60.65% | -2.44 | -- |
+| 84.01% | 68.24% | -1.68 | -4.97 |
+| 81.30% | 73.01% | -1.57 | -4.95 |
+| 78.52% | 76.08% | -0.94 | -3.98 |
+| 77.14% | 77.24% | -0.44 | -3.70 |
+| 74.52% | 78.96% | **+0.54** | -3.06 |
+
+The union's headline +4.81 pp at the shipped threshold (p=3.3e-188, gaining in
+every band, +16.79 pp at 0-32 px) is almost entirely a precision trade. At
+matched precision it is negative at every operating point except the two
+loosest, where it is +0.23 and +0.54 pp -- one seed, and smaller than the
+spread this corpus shows on far cruder changes.
+
+**Two constants were silently denominated in stock's units**, which is the
+transferable lesson and came from their side:
+
+* *Geometry.* Their boxes are linearly larger on the same face -- measured
+  **1.0998** on 2,486 paired faces on this corpus (bootstrap 95% CI
+  1.094-1.105), not the 1.117 they measured on theirs, whose value falls outside
+  our interval. `make_face_crops.py:66` sets `side = expand * max(box_w, box_h)`,
+  so `FACE_CROP_EXPAND = 1.5` silently becomes an effective 1.65. Their
+  prediction was that restoring 1.5/1.0998 = **1.364** would recover the loss.
+  It does not: at 1.364 *both* arms lose (stock 79.09% -> 77.52%, tuned 80.26%
+  -> 79.35%) because a smaller window loses ear coverage faster than it gains
+  in-crop ear size -- face-stage misses rise in every band. So the units
+  observation is right and the correction is wrong, and the 1.5 optimum is not
+  about effective scale relative to the face box. It did shrink the 80+ px
+  regression from -1.35 pp (p=1.1e-07) to -0.66 pp (p=0.033), so the
+  *large-ear* part of the loss is partly geometry; the small-ear gain is not.
+* *Score.* The same error on the axis neither side checked. The tuned model's
+  face scores are compressed to median **0.234** against stock's **0.710**, so
+  at the shared `FACE_CROP_THRESHOLD = 0.2` it hands stage 2 **6.16 crops per
+  image against stock's 1.84**. Matching the crop budget needs 0.28 -- and at
+  that budget the tuned arm loses in every band but 0-32 px.
+
+**The 0-32 px gain is the one config-invariant result**: +11.76 pp as dropped
+in, +10.33 pp at expand 1.364, +5.74 pp at a matched crop budget, +16.79 pp for
+the union, each at p<1e-08. A better stage 1 really does find small faces this
+one misses.
+
+**So T4 closes again, for a better reason, and it hands its lever to stage 2.**
+The coverage is now there and cannot be converted: 516 remaining face-stage
+misses against 1301, and the extra ears arrive as boxes the 0.70 threshold
+discards -- which is the same binding constraint already measured above, where
+90.2% of stage-2 misses are localised boxes scored around 0.40. Stage-1
+coverage is not the bottleneck; stage-2 calibration is, and it now gates a
+larger prize than when it was measured alone. **Revisit the union only after
+stage-2 scoring is fixed** -- at which point +16.79 pp of raw small-ear coverage
+is sitting unconverted, for the cost of a second detector pass.
+
+One correction accepted in the other direction: the min-16 training replication
+reported from this side *did* inherit their defective assignment -- it ran their
+`train_blazeface.py` with their defaults, so their dataloader and encoder. Only
+the scoring test, which consumed their weights alone, was unaffected. The
+distinction was theirs to insist on, not mine.
+
 ## Scope: scale-rebalancing stage 2
 
 The one piece of work this analysis supports. Written so it can be funded or

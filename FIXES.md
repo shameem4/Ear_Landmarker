@@ -241,7 +241,38 @@ I had both halves of this on the page -- the IoMin result and the 45.8% claim --
 and never put them together. The 45.8% came from dividing frames by boxes, which
 is a statement about counting, not about redundancy.
 
-### The face-box test ran. T4 is closed.
+### SUPERSEDED: "The face-box test ran. T4 is closed."
+
+**That closure rested on `trainable_blazeface`'s negative result, which they
+retracted.** All six of their configurations used a defective anchor assignment;
+with a per-anchor assignment plus an ignore band, fine-tuning clears this side's
+gate (0.934 at 16-32 px, 0.980 at 32+ px). Their checkpoint was then scored
+directly here, on all 13,007 images / 15,359 human-source ears, paired.
+
+**T4 closes again on a different and more useful finding: the coverage gain is
+real and cannot be converted.** Face-stage misses fall 1301 -> 908 as dropped
+in, and -> 516 for the union of both detectors' crops (-60%). But at matched
+precision the union is negative at every operating point except the two
+loosest (+0.23, +0.54 pp), and the tuned arm alone is -3 to -5 pp. The
++4.81 pp headline is a precision trade.
+
+Two constants were denominated in stock's units -- `FACE_CROP_EXPAND` (their
+boxes are linearly 1.0998x larger on this corpus, CI 1.094-1.105) and
+`FACE_CROP_THRESHOLD` (their scores sit at median 0.234 against stock's 0.710,
+so 0.2 hands stage 2 6.16 crops/image against 1.84). Recalibrating expand to
+1.364 makes *both* arms worse, so the units observation is right and that
+correction is wrong.
+
+**The lever moves to stage 2, and is now worth more.** The extra ears arrive as
+boxes the 0.70 threshold discards -- the same constraint as the 90.2%
+under-scoring result. Revisit the crop union only after stage-2 scoring is
+fixed, at which point +16.79 pp of raw 0-32 px coverage (the one
+configuration-invariant gain, p<1e-08 in all four configurations) is sitting
+unconverted for the price of a second detector pass.
+
+Full measurements and the matched-precision table: README, "T4 reopened".
+
+### Original closure, retained because the gate it set still stands
 
 **Fine-tuning stage 1 does not beat stock MediaPipe even in this corpus's
 favourable regime.** Gate was "hold 0.966 at 32+ px at matched precision"; it is
