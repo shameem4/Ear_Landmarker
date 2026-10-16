@@ -1,0 +1,41 @@
+### guard_run 2026-10-15T17:58:13-07:00
+### mem=32G wall=21600s
+### cmd: /home/shameem/.conda/envs/mocap/bin/python score_face_arms.py --limit 13007 --seed 1 --face-thresh-tuned 0.28 --thrs 0.86,0.84,0.82,0.80,0.78,0.76,0.74,0.72,0.70,0.60,0.50
+GT basis: 13007 images resolved, 0 image_paths not in yolo11_ears_human (0.0%)
+FACE_CROP_EXPAND: stock 1.5, tuned 1.5
+FACE_CROP_THRESHOLD: stock 0.2, tuned 0.28
+images 13007, ground-truth ears 15359   (seed 1)
+shipped stage-2 threshold 0.70, IoU>=0.30
+
+  band(px, source image)      n    stock    tuned    delta  facemiss_s  facemiss_t
+                    0-32   2091   34.48%   40.22%   +5.74         600         627
+                   32-48   2295   71.46%   68.41%   -3.05         245         305
+                   48-64   2259   80.74%   78.26%   -2.48         163         231
+                   64-80   1902   86.07%   83.18%   -2.89          90         138
+                     80+   6812   92.87%   89.87%   -2.99         203         422
+
+pooled recall  stock 79.09%   tuned 77.37%   delta -1.73 pp
+discordant pairs: stock-only 846, tuned-only 581
+McNemar (exact binomial on discordant pairs): p=2.411e-12
+
+per-band discordance (stock-only / tuned-only, exact p):
+      0-32   146 /  266   p=3.56e-09
+     32-48   180 /  110   p=4.7e-05
+     48-64   132 /   76   p=0.000126
+     64-80   103 /   48   p=8.95e-06
+       80+   285 /   81   p=9.64e-28
+
+ thresh |  stock recall     prec   FP/img |  tuned recall     prec   FP/img
+   0.86 |        64.83%   85.67%    0.128 |        62.53%   84.39%    0.137
+   0.84 |        68.24%   84.01%    0.153 |        65.90%   82.67%    0.163
+   0.82 |        70.96%   82.59%    0.177 |        68.60%   80.96%    0.191
+   0.80 |        73.01%   81.30%    0.198 |        70.83%   79.55%    0.215
+   0.78 |        74.71%   79.99%    0.221 |        72.54%   78.16%    0.239
+   0.76 |        76.08%   78.52%    0.246 |        73.98%   76.69%    0.265
+   0.74 |        77.24%   77.14%    0.270 |        75.30%   75.39%    0.290
+   0.72 |        78.12%   75.78%    0.295 |        76.25%   74.01%    0.316
+   0.70 |        78.96%   74.52%    0.319 |        77.21%   72.86%    0.340
+   0.60 |        81.96%   67.08%    0.475 |        80.17%   65.81%    0.492
+   0.50 |        83.82%   56.98%    0.747 |        81.96%   56.50%    0.745
+
+tuned-only rescues manifest: 581 -> /var/tmp/claude/ear_landmarker/2026-10-15-t4-tuned/gained_seed1_1.5_1.5_0.28.json

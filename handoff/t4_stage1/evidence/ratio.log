@@ -1,0 +1,13 @@
+### guard_run 2026-10-15T17:49:16-07:00
+### mem=24G wall=3600s
+### cmd: /home/shameem/.conda/envs/mocap/bin/python scale_ratio.py --limit 2000 --seed 7
+images 2000, stock faces 3684, tuned faces 12327, paired 2486
+
+max(w,h) ratio tuned/stock  -- the quantity the crop side uses
+  median 1.0998   mean 1.0834   p10 0.8700  p90 1.2528
+  bootstrap 95% CI on the median: [1.0936, 1.1048]
+area ratio   median 1.2025
+centre dy/h  median -0.0364
+
+their linear 1.117 -> expand 1.3429
+ours  1.0998 -> expand 1.3638

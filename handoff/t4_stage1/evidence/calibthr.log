@@ -1,0 +1,29 @@
+### guard_run 2026-10-15T17:57:49-07:00
+### mem=24G wall=3600s
+### cmd: /home/shameem/.conda/envs/mocap/bin/python calib_face_thresh.py --limit 2000 --seed 7
+images 2000
+stock @0.20: 1.842 faces/image   tuned @0.20: 6.163
+
+target crop budget = stock's 1.842 faces/image
+ tuned thr  faces/img
+      0.20      6.163
+      0.25      2.442
+      0.30      1.639
+      0.35      1.390
+      0.40      1.260
+      0.45      1.194
+      0.50      1.137
+      0.55      1.099
+      0.60      1.062
+      0.65      1.029
+      0.70      1.005
+      0.75      0.972
+      0.80      0.943
+      0.85      0.906
+      0.90      0.859
+      0.95      0.785
+
+matched threshold (first at or below target): 0.28  -> 1.833 faces/image
+
+score quantiles  stock: p10 0.232 med 0.710
+                 tuned: p10 0.205 med 0.234

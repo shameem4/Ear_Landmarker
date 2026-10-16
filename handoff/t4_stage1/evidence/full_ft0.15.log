@@ -1,0 +1,36 @@
+### guard_run 2026-10-15T18:18:44-07:00
+### mem=32G wall=21600s
+### cmd: /home/shameem/.conda/envs/mocap/bin/python score_face_arms.py --limit 13007 --seed 1 --face-thresh-tuned 0.15 --thrs 0.80,0.78,0.76,0.74,0.72,0.70
+GT basis: 13007 images resolved, 0 image_paths not in yolo11_ears_human (0.0%)
+FACE_CROP_EXPAND: stock 1.5, tuned 1.5
+FACE_CROP_THRESHOLD: stock 0.2, tuned 0.15
+images 13007, ground-truth ears 15359   (seed 1)
+shipped stage-2 threshold 0.70, IoU>=0.30
+
+  band(px, source image)      n    stock    tuned    delta  facemiss_s  facemiss_t
+                    0-32   2091   34.48%   47.54%  +13.06         600         246
+                   32-48   2295   71.46%   73.73%   +2.27         245          96
+                   48-64   2259   80.74%   82.87%   +2.12         163          80
+                   64-80   1902   86.07%   86.54%   +0.47          90          48
+                     80+   6812   92.87%   92.54%   -0.32         203         161
+
+pooled recall  stock 79.09%   tuned 81.44%   delta +2.34 pp
+discordant pairs: stock-only 514, tuned-only 874
+McNemar (exact binomial on discordant pairs): p=3.308e-22
+
+per-band discordance (stock-only / tuned-only, exact p):
+      0-32   105 /  378   p=3.28e-37
+     32-48   120 /  172   p=0.00278
+     48-64    71 /  119   p=0.000613
+     64-80    66 /   75   p=0.501
+       80+   152 /  130   p=0.211
+
+ thresh |  stock recall     prec   FP/img |  tuned recall     prec   FP/img
+   0.80 |        73.01%   81.30%    0.198 |        74.31%   76.34%    0.272
+   0.78 |        74.71%   79.99%    0.221 |        76.13%   74.26%    0.312
+   0.76 |        76.08%   78.52%    0.246 |        77.71%   72.12%    0.355
+   0.74 |        77.24%   77.14%    0.270 |        79.11%   70.00%    0.400
+   0.72 |        78.12%   75.78%    0.295 |        80.20%   67.90%    0.448
+   0.70 |        78.96%   74.52%    0.319 |        81.27%   65.85%    0.498
+
+tuned-only rescues manifest: 874 -> /var/tmp/claude/ear_landmarker/2026-10-15-t4-tuned/gained_seed1_1.5_1.5_0.15.json

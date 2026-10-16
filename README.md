@@ -1283,11 +1283,32 @@ transferable lesson and came from their side:
   about effective scale relative to the face box. It did shrink the 80+ px
   regression from -1.35 pp (p=1.1e-07) to -0.66 pp (p=0.033), so the
   *large-ear* part of the loss is partly geometry; the small-ear gain is not.
-* *Score.* The same error on the axis neither side checked. The tuned model's
-  face scores are compressed to median **0.234** against stock's **0.710**, so
-  at the shared `FACE_CROP_THRESHOLD = 0.2` it hands stage 2 **6.16 crops per
-  image against stock's 1.84**. Matching the crop budget needs 0.28 -- and at
-  that budget the tuned arm loses in every band but 0-32 px.
+* *Score.* The same error on the axis neither side checked, and it went the
+  other way. At the shared `FACE_CROP_THRESHOLD = 0.2` the tuned model hands
+  stage 2 **6.16 crops per image against stock's 1.84**, with an all-emission
+  score median of 0.234 against stock's 0.710. Reading that as compression and
+  concluding the model needed recalibrating was **wrong**: a median over all
+  emissions is a mixture statistic, and split by correctness their true
+  positives sit *higher* than stock's (0.683 vs 0.578) with *better* separation
+  (0.466 vs 0.330). But their conclusion -- raise the constant -- is also wrong
+  here, because sweeping it against delivered ear recall is monotone in the
+  opposite direction. Face-stage misses out of 15,359, by tuned face threshold:
+  **530** at 0.10, 631 at 0.15, 908 at 0.20, 1723 at 0.28, 1883 at 0.30, 2217
+  at 0.35, 2455 at 0.40 -- against stock's 1301. Pooled recall tracks it: +2.82
+  pp at 0.10 down to -4.66 pp at 0.40. **Their low-score tail is load-bearing**:
+  the detections their own face-precision metric counts as false positives are
+  disproportionately the crops containing the ears this pipeline needs, because
+  our objective does not care whether a crop is a true face, only whether it
+  contains an ear. Both readings were measuring the wrong quantity; the optimum
+  for a swapped detector cannot be derived from either model's own metrics and
+  has to be swept against the downstream objective.
+
+The best coverage arm is the worst matched-precision arm: tuned at face
+threshold 0.10 beats stock in *every* band on raw recall (+2.82 pp pooled,
+misses 1301 -> 530, matching the crop union at half the detector compute) and
+loses **4-7 pp** once precision is held fixed. **Nine configurations** -- two
+expand values, seven face thresholds, the crop union -- and the verdict does not
+move.
 
 **The 0-32 px gain is the one config-invariant result**: +11.76 pp as dropped
 in, +10.33 pp at expand 1.364, +5.74 pp at a matched crop budget, +16.79 pp for
