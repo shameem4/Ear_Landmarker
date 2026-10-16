@@ -11,8 +11,22 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 BLAZEEAR = ROOT.parent / "BlazeEar"
-PAIRS = [(ROOT / "vendor/box_tracker.py", BLAZEEAR / "utils/box_tracker.py"),
-         (ROOT / "docs/ear_tracker.js", BLAZEEAR / "docs/ear_tracker.js")]
+
+# EVERY file vendored from BlazeEar, not just the tracker. Add a new one here
+# when vendoring it: this list is the pin, so a file missing from it is a file
+# free to drift -- which is exactly how `blazeear_inference.js` fell a commit
+# behind unnoticed while the two pinned files held.
+#
+# Deliberately an explicit list rather than a matcher over shared basenames.
+# That was tried and over-reported: this repo's own index.html and README.md
+# share a name with BlazeEar's without being copies of them.
+PAIRS = [
+    (ROOT / "vendor/box_tracker.py", BLAZEEAR / "utils/box_tracker.py"),
+    (ROOT / "docs/ear_tracker.js", BLAZEEAR / "docs/ear_tracker.js"),
+    (ROOT / "docs/blazeear_inference.js", BLAZEEAR / "docs/blazeear_inference.js"),
+    (ROOT / "docs/BlazeEar_web.onnx", BLAZEEAR / "docs/BlazeEar_web.onnx"),
+    (ROOT / "docs/BlazeFace_web.onnx", BLAZEEAR / "docs/BlazeFace_web.onnx"),
+]
 
 
 def _sha(p):

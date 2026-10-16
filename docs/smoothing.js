@@ -185,17 +185,12 @@ export class EarTracker {
     constructor({ maxMissed = 5, matchIou = 0.3, confirmScore = 0.70,
                   continueScore = 0.70, minHits = 1,
                   landmark = {}, box = {} } = {}) {
-        // BoxTracker does `new this.smoother()` in JS (a constructor taking
-        // no arguments) while the Python module accepts any zero-arg factory.
-        // Bind this repo's box options by subclassing rather than passing a
-        // factory, which would work in Python and throw here.
-        const boxOpts = box;
-        class BoundBoxSmoother extends OneEuroBoxSmoother {
-            constructor() { super(boxOpts); }
-        }
+        // Same shape as the Python side: a zero-argument factory binding this
+        // repo's box options. JS accepted only a class until BlazeEar fixed
+        // the divergence this file originally worked around by subclassing.
         this._bt = new BoxTracker({
             confirmScore, continueScore, minHits, maxMisses: maxMissed,
-            matchIou, smoother: BoundBoxSmoother,
+            matchIou, smoother: () => new OneEuroBoxSmoother(box),
         });
         this._lm = new Map();
         this._landmarkOpts = landmark;

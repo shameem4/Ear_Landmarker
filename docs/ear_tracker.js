@@ -133,6 +133,33 @@ class EmaBoxSmoother {
     }
 }
 
+/**
+ * Build one smoother. Accepts a class OR a zero-argument factory, because
+ * Python's `self.smoother()` accepts both and this file used to accept only a
+ * class: `smoother: () => new OneEuroBoxSmoother({minCutoff: 2})` worked in
+ * Python and threw "this.smoother is not a constructor" here. Found by
+ * Ear_Landmarker, who worked around it by subclassing; the JSDoc said
+ * "factory" and the parity fixture did not cover it, so neither the docs nor
+ * the tests caught a real difference between the two languages.
+ *
+ * `new` is tried first because it handles a class and also a plain `function`
+ * factory, which returns its own object. Only an arrow function cannot be
+ * constructed, and the fallback is narrowed to exactly that error so a
+ * genuine throw inside a constructor still propagates instead of being
+ * retried as a call.
+ */
+function buildSmoother(factory) {
+    if (!factory) return null;
+    try {
+        return new factory();
+    } catch (err) {
+        if (err instanceof TypeError && /is not a constructor/.test(err.message)) {
+            return factory();
+        }
+        throw err;
+    }
+}
+
 function boxIou(a, b) {
     const x0 = Math.max(a.xmin, b.xmin);
     const y0 = Math.max(a.ymin, b.ymin);
@@ -158,8 +185,9 @@ class BoxTracker {
      *                 nearest-centre because the constants were measured with
      *                 it, and because it refuses a match that nearest-centre
      *                 accepts when box size changes sharply -- a turning head.
-     *   smoother      factory returning {smooth(box, t)}, one per track. Null
-     *                 emits the raw detection.
+     *   smoother      a class or a zero-argument factory returning
+     *                 {smooth(box, t)}, one instance per track; both forms
+     *                 work, matching Python. Null emits the raw detection.
      *   fps           used only to synthesise t when update() is called
      *                 without one. Null means t is passed through as given --
      *                 a guessed frame rate is a wrong dt, a wrong alpha, and a
@@ -244,7 +272,7 @@ class BoxTracker {
             if (d.confidence < this.confirmScore) continue;
             const rawBox = {xmin: d.xmin, ymin: d.ymin,
                             width: d.width, height: d.height};
-            const sm = this.smoother ? new this.smoother() : null;
+            const sm = buildSmoother(this.smoother);
             this.tracks.push({
                 id: this.nextId++,
                 rawBox,
@@ -283,7 +311,7 @@ class BoxTracker {
 // parity test is the thing that keeps this file honest.
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {BoxTracker, OneEuroBoxSmoother, EmaBoxSmoother,
-                      boxIou, TRACKER_DEFAULTS};
+                      boxIou, buildSmoother, TRACKER_DEFAULTS};
 }
 if (typeof globalThis !== 'undefined') {
     globalThis.BoxTracker = BoxTracker;
