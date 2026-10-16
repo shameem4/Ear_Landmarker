@@ -1415,13 +1415,36 @@ misleading one to headline.
 Coverage of ears by band, head scale = stock's largest face side / frame short
 side, null destroys placement only (4,000 images, 4,749 ears):
 
-| head scale | images | ears | tuned | stock | placement-destroyed | lift |
-|---|---|---|---|---|---|---|
-| 0.00-0.20 | 433 | 523 | 89.1% | 70.4% | 41.3% | **2.16x** |
-| 0.20-0.30 | 1085 | 1368 | 95.6% | 87.5% | 57.0% | 1.68x |
-| 0.30-0.45 | 1143 | 1340 | 97.6% | 95.2% | 72.5% | 1.35x |
-| 0.45+ | 1339 | 1518 | 99.6% | 98.4% | 93.2% | **1.07x** |
-| **all** | 4000 | 4749 | 96.7% | 91.3% | 71.2% | 1.36x |
+| head scale | ears | tuned | stock | null | lift | **lift ceiling (1/null)** | **gap** | headroom captured |
+|---|---|---|---|---|---|---|---|---|
+| 0.00-0.20 | 523 | 89.1% | 70.4% | 41.3% | 2.16x | 2.42x | **+47.8 pp** | 81.4% |
+| 0.20-0.30 | 1368 | 95.6% | 87.5% | 57.0% | 1.68x | 1.75x | +38.6 pp | 89.8% |
+| 0.30-0.45 | 1340 | 97.6% | 95.2% | 72.5% | 1.35x | 1.38x | +25.1 pp | 91.3% |
+| 0.45+ | 1518 | 99.6% | 98.4% | 93.2% | 1.07x | **1.07x** | **+6.4 pp** | 94.1% |
+| all | 4749 | 96.7% | 91.3% | 71.2% | 1.36x | 1.40x | +25.5 pp | 88.5% |
+
+**The lift column was a poor headline and BlazeEar is right that a reader cannot
+see why.** A coverage lift is bounded above by `1/null`, so the 0.45+ row could
+not have exceeded 1.07x whatever the detector did -- its apparent collapse is
+the ceiling collapsing, not the detector. The honest effect size is the
+**absolute gap**, and it widens monotonically as heads shrink: +6.4 pp on
+head-filling frames against **+47.8 pp** on small-head ones. That is the
+head-ness reading and it survives the correction.
+
+The headroom share goes the other way, mildly -- the detector captures 81.4% of
+the available headroom on small heads against 94.1% on large ones -- which is
+what "small heads are harder to detect" predicts and is not evidence for
+composition, since composition's contribution *is* the null being divided out.
+
+BlazeEar also reports that `trainable_blazeface`'s occupancy refinement
+supersedes face-size banding for this purpose: what saturates the null is size
+**times count**, so a small-head crowd frame can still carry a 52.5% null.
+Re-banded on occupancy their ordinary-crop lift sharpens from 5.15x to 8.13x
+against a 9.6% null with a 10.4x ceiling. **Band on occupancy and print the
+ceiling** if this is ever re-measured; the table above is banded on size alone.
+And their matched-power figure for the tail population is 2.26x against ordinary
+crops' 8.13x -- about a quarter as well-placed as a confident face box, measured
+on *stock's* tail rather than the tuned one, so it does not settle this version.
 
 **Both conclusions are needed.** On head-filling frames the lift is 1.07x
 against a 93.2% null -- there, placement genuinely carries almost nothing beyond
@@ -1452,6 +1475,53 @@ version of it. That is a different and better-supported direction than T4's
 ear-inclusive box, and it is still gated on stage 2, because a better head
 detector delivers more crops of exactly the small marginal heads stage 2
 under-scores.
+
+### Terminal result: the delivered population is unscoreable, so neither lever reaches it
+
+BlazeEar scored the 767 rescued ears under a **per-ear oracle crop** -- the
+nearest stock face box grown to the minimum expand that brings the ear inside,
+a deliberate ceiling no real stage 1 can beat. 41 had no detected face at all
+and dropped out.
+
+| band | n | localised (IoU>=0.5) | scored >= 0.80 | median score | ear px in crop |
+|---|---|---|---|---|---|
+| 0-32 | 332 | 43.1% | **0.3%** | 0.484 | 21.6 |
+| 32-48 | 145 | 61.4% | 6.9% | 0.547 | 34.1 |
+| 48-64 | 95 | 74.7% | 18.9% | 0.651 | 43.4 |
+| 64-80 | 58 | 72.4% | 24.1% | 0.699 | 50.0 |
+| 80+ | 96 | 87.5% | 31.2% | 0.702 | 60.5 |
+| **all** | 726 | 59.1% | **10.1%** | 0.614 | |
+
+**One ear of 332 in the 0-32 band clears the deployed gate under an oracle
+crop.** The whole rescue is worth about **73 scoreable ears**, and a real stage 1
+delivers fewer.
+
+**And the failure is localisation, not calibration**, which settles the fork this
+whole exchange turned on. **56.9% of the 0-32 band is not localised at all** at
+IoU >= 0.5 in a crop built to contain the ear -- there is no box to re-score, and
+score calibration cannot reach a detection that does not exist. For this
+population the bottleneck is neither stage-1 coverage nor stage-2 calibration: a
+21.6-pixel ear at a 256 px input does not produce a box.
+
+**Coverage and convertibility are anti-correlated**, and this should govern the
+roadmap. 46% of the rescued ears sit in 0-32 px converting at 0.3%; 12.5% sit in
+80+ converting at 31.2%. The coverage gain is concentrated exactly where stage 2
+cannot use it, and the ears that would convert are large ones the shipped crop
+was already finding. All three links of "better stage 1 -> more coverage -> more
+delivered ears" are now measured and it fails at the third.
+
+**So "revisit the union after stage-2 scoring is fixed" is withdrawn for the
+0-32 band.** It was my sequencing claim and it assumed the delivered ears were
+scoreable-in-principle. They are not. What survives is narrow: the 32-48 and
+48-64 bands convert at 6.9% and 18.9%, so a coverage gain there is worth
+something, and the information-limited floor below ~24 real pixels is an input
+resolution question rather than a stage-1 or stage-2 one.
+
+Selection caveat, stated by BlazeEar against their own table: these are ears
+stock's crop failed to cover, which correlates with small and awkward. Their
+val_v2 band curve puts 0-32 recall near 4.9% against this 0.3%, and the gap is
+that selection. So this is a statement about the rescued population, not about
+0-32 px ears generally.
 
 **So T4 closes again, for a better reason, and it hands its lever to stage 2.**
 The coverage is now there and cannot be converted: 516 remaining face-stage

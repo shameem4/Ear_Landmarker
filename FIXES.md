@@ -273,6 +273,24 @@ scoring is fixed, at which point +16.79 pp of raw 0-32 px coverage (the one
 configuration-invariant gain, p<1e-08 in all four configurations) is sitting
 unconverted for the price of a second detector pass.
 
+**RESOLVED AGAINST CALIBRATION, 2026-10-15.** BlazeEar scored the 767 rescued
+ears under a per-ear oracle crop (nearest stock face box grown to the minimum
+expand containing the ear -- a ceiling no real stage 1 beats): **1 of 332 ears
+in the 0-32 band clears the deployed gate**, the whole rescue is worth ~73
+scoreable ears, and **56.9% of the 0-32 band is not localised at all** at
+IoU>=0.5 in a crop built to contain it. There is no box to re-score, so neither
+stage-1 coverage nor stage-2 calibration reaches this population -- a
+21.6-pixel ear at a 256 px input does not produce a box. Coverage and
+convertibility are **anti-correlated**: 46% of the rescue sits in 0-32 px
+converting at 0.3%, 12.5% in 80+ converting at 31.2%. **"Revisit the union after
+stage-2 scoring is fixed" is withdrawn for the 0-32 band** -- that was my
+sequencing claim and it assumed the delivered ears were scoreable in principle.
+What survives: 32-48 and 48-64 convert at 6.9% and 18.9%, so coverage there is
+worth something, and the floor below ~24 real pixels is an input-resolution
+question. Selection caveat from BlazeEar against their own table: these are ears
+stock's crop missed, correlated with small and awkward, so it describes the
+rescued population rather than 0-32 px ears generally.
+
 **BlazeEar contests the size of that prize**, and it is accepted as a discount
 on the prize rather than the direction: their downward scale augmentation and
 per-prior mining ceiling were both null, and paired on the same ears they shift

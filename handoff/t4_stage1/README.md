@@ -352,6 +352,53 @@ detector ought to find. It is **also still gated on stage 2**: a better head
 detector delivers more crops of exactly the small marginal heads stage 2
 under-scores.
 
+### Terminal result: the delivered population is unscoreable, so neither lever reaches it
+
+BlazeEar scored the 767 rescued ears under a **per-ear oracle crop** -- the
+nearest stock face box grown to the minimum expand that brings the ear inside,
+a deliberate ceiling no real stage 1 can beat. 41 had no detected face at all
+and dropped out.
+
+| band | n | localised (IoU>=0.5) | scored >= 0.80 | median score | ear px in crop |
+|---|---|---|---|---|---|
+| 0-32 | 332 | 43.1% | **0.3%** | 0.484 | 21.6 |
+| 32-48 | 145 | 61.4% | 6.9% | 0.547 | 34.1 |
+| 48-64 | 95 | 74.7% | 18.9% | 0.651 | 43.4 |
+| 64-80 | 58 | 72.4% | 24.1% | 0.699 | 50.0 |
+| 80+ | 96 | 87.5% | 31.2% | 0.702 | 60.5 |
+| **all** | 726 | 59.1% | **10.1%** | 0.614 | |
+
+**One ear of 332 in the 0-32 band clears the deployed gate under an oracle
+crop.** The whole rescue is worth about **73 scoreable ears**, and a real stage 1
+delivers fewer.
+
+**And the failure is localisation, not calibration**, which settles the fork this
+whole exchange turned on. **56.9% of the 0-32 band is not localised at all** at
+IoU >= 0.5 in a crop built to contain the ear -- there is no box to re-score, and
+score calibration cannot reach a detection that does not exist. For this
+population the bottleneck is neither stage-1 coverage nor stage-2 calibration: a
+21.6-pixel ear at a 256 px input does not produce a box.
+
+**Coverage and convertibility are anti-correlated**, and this should govern the
+roadmap. 46% of the rescued ears sit in 0-32 px converting at 0.3%; 12.5% sit in
+80+ converting at 31.2%. The coverage gain is concentrated exactly where stage 2
+cannot use it, and the ears that would convert are large ones the shipped crop
+was already finding. All three links of "better stage 1 -> more coverage -> more
+delivered ears" are now measured and it fails at the third.
+
+**So "revisit the union after stage-2 scoring is fixed" is withdrawn for the
+0-32 band.** It was my sequencing claim and it assumed the delivered ears were
+scoreable-in-principle. They are not. What survives is narrow: the 32-48 and
+48-64 bands convert at 6.9% and 18.9%, so a coverage gain there is worth
+something, and the information-limited floor below ~24 real pixels is an input
+resolution question rather than a stage-1 or stage-2 one.
+
+Selection caveat, stated by BlazeEar against their own table: these are ears
+stock's crop failed to cover, which correlates with small and awkward. Their
+val_v2 band curve puts 0-32 recall near 4.9% against this 0.3%, and the gap is
+that selection. So this is a statement about the rescued population, not about
+0-32 px ears generally.
+
 ## What this hands to BlazeEar
 
 **The lever moves to stage 2 and is now worth more than when it was measured
