@@ -8,61 +8,70 @@ Real-time 55-point ear landmark regression using a BlazeBlock backbone (FaceMesh
 
 ## Where this stands, 2026-10
 
-The landmarker is done and shipped. A sub-pixel bug in the geometric
+**The landmarker is done and shipped.** A sub-pixel bug in the geometric
 augmentation -- the image moved by whole pixels while the labels moved by
-fractions -- had been turning a harmless registration error into a **handedness
-bias**, because a constant x-offset is anti-equivariant under a mirror. Fixed,
-retrained to convergence (`fixed_conv_s42`), and the bias is gone: R-L
-antisymmetry **+17.05% (p=2.7e-19) -> +1.01% (p=0.46)**. Flip fusion is now on
-by default, the browser demo does it too at six-decimal parity with Python, and
-the ONNX export verifies itself against the Torch model on every build.
+fractions -- was turning a harmless registration error into a **handedness
+bias**, because a constant x-offset is anti-equivariant under a mirror. Fixed
+and retrained to convergence (`fixed_conv_s42`): R-L antisymmetry **+17.05%
+(p=2.7e-19) -> +1.01% (p=0.46)**. Flip fusion is on by default, the browser
+demo matches Python to six decimals, and the ONNX export verifies itself on
+every build.
 
 **The detector in front of it is where the remaining recall lives, and a long
-investigation closed it off rather than opening it up.** The chain under test
-was "a better stage 1 finds more ears, so more ears get delivered", and all
-three links are now measured. Coverage improves a lot: a fine-tuned stage 1 cuts
-ears that no crop covered from 1301 to 530 of 15,359, and the union of two
-detectors' crops reaches 516. Delivered recall at matched precision does not
-move -- the best coverage arm is the **worst** matched-precision arm, losing
-4-7 pp. And BlazeEar's oracle-crop test says why: of 332 rescued ears under
-32 px, **one** clears the deployed gate, and 56.9% are not localised at all in
-a crop built to contain them. There is no box to re-score, so neither stage-1
-coverage nor stage-2 calibration reaches that population. **Coverage and
-convertibility are anti-correlated** -- 46% of the rescue sits in the band that
-converts at 0.3%. The limit there is input resolution: a 21.6-pixel ear at a
-256 px input does not produce a detection.
+investigation closed that off rather than opening it up.** The chain under test
+was "a better stage 1 finds more ears, so more ears get delivered". All three
+links are now measured and it fails at the third. Coverage improves a lot --
+ears that no crop covered fall from 1301 to 530 of 15,359, and 516 for a union
+of two detectors. Delivered recall at matched precision does not move; the best
+coverage arm is the *worst* matched-precision arm. Under a per-ear oracle crop,
+**1 of 332 rescued ears under 32 px clears the gate and 56.9% produce no box at
+all** -- there is nothing to re-score, so neither stage-1 coverage nor stage-2
+calibration reaches that population. **Coverage and convertibility are
+anti-correlated:** 46% of the rescue sits in the band that converts at 0.3%.
+The limit is input resolution, and that reading survived an independent test --
+the same crops given to a detector sharing the ground truth but no anchors, no
+target assignment and no recipe show no difference in any band (p>=0.38).
+Both repos then independently decided **not** to swap the better detector in,
+for the same reason: its gain sits in 8-16 px faces, exactly the band that
+cannot receive it. Condition for re-asking is recorded, not implicit -- fix
+stage-2 scoring so that band converts, and the gain is still there.
+See [T4 reopened](#t4-reopened-a-better-stage-1-improves-coverage-and-delivers-nothing).
 
-What survives as a direction: the low-score tail of a face detector is **0.0%
+**What survives as a direction:** a face detector's low-score tail is **0.0%
 faces** by any face metric and still delivers ears, and destroying only its
-placement multiplies face-stage misses ninefold in misses (1.36x in coverage --
-the ratio framing was retracted). So **head-ness, not face-ness, is the stage-1
-objective this pipeline wants** -- bounded to small-head frames, worth almost
-nothing where heads fill the frame, and nothing at all below ~24 real pixels.
+placement costs nine-fold in misses (1.36x in coverage -- the ratio framing was
+retracted). So **head-ness, not face-ness, is the stage-1 objective this
+pipeline wants** -- bounded to small-head frames, worth almost nothing where
+heads fill the frame, nothing at all below ~24 real pixels.
 
-**Also settled along the way:** three ground-truth bases existed and two were
-wrong (the YOLO export carries one box per image; 39.9% of master.csv rows are
-POSE pseudo-labels). Checkpoint selectors were ranking by a 4-decimal filename
-and systematically taking the worst of tied checkpoints. And the stage-2 gate
-diverged between repos -- we ship 0.70, BlazeEar 0.80 -- which turns out not to
-be a defect: the whole 0.70-0.80 range spans 0.60% of F1. The question that
-looked live -- whether to weight precision over recall -- turned out to rest on
-a false premise: rendering the false positives showed **64 of 64 were real ears
-the ground truth had not labelled**, so a higher gate removes correct output
-rather than wrong output. Keep 0.70; see
+**Also settled:** three ground-truth bases existed and two were wrong; checkpoint
+selectors were ranking by a 4-decimal filename and taking the worst of ties; and
+the stage-2 gate diverging between repos (0.70 here, 0.80 there) is not a defect
+-- the whole range spans 0.60% of F1. The question that looked live, whether to
+weight precision, rested on a false premise: rendering the false positives showed
+**64 of 64 were real ears the ground truth had not labelled**, so a higher gate
+removes correct output. Keep 0.70; see
 [Choosing the stage-2 gate](#choosing-the-stage-2-gate).
 
-A note on how these numbers were arrived at, since several are retractions of
-earlier ones. Nine wrong mechanisms were caught in a day's work and **not one by
-reviewing the reasoning.** Eight fell to a clash with an independent number --
-the standing rule here is to name, for any result, the other number it must
-agree with. The ninth fell to something else and is the reason the visual check
-is a standing directive rather than a nicety: the argument for a
-precision-weighted gate was coherent, its measurements were all correct, and it
-died the first time the crops were rendered, because **the statistic was not
-measuring what it was being read as measuring** -- "false positives" were
-overwhelmingly correct detections of unlabelled ears. No amount of checking the
-arithmetic would have found that. Figures withdrawn here are marked where they
-were asserted, not quietly replaced.
+**The largest unmeasured axis is temporal, and neither repo has it.** Every
+number here is per-image and this ships a real-time demo, so a gate that is
+better per frame and flickers more is worse where it matters. Adjacent-frame IoU
+and no-face-frame rate are unmeasured for every arm and every gate. **Nothing
+above should be read as settled for video.**
+
+**On method, since several figures here are retractions.** Nine wrong mechanisms
+were caught in a day and **not one by reviewing the reasoning** -- eight by a
+clash with an independent number, which is why the standing rule is to name the
+other number a result must agree with. The ninth is why the visual check is a
+standing directive: the argument for a precision-weighted gate was coherent and
+its measurements were all correct, and it died the first time the crops were
+rendered, because **the statistic was not measuring what it was read as
+measuring**. A tenth hazard was checked and cleared rather than caught --
+comparing against another session's weights, a matching tensor hash certifies
+the preprocessing and says nothing about the call site, so **a control has to
+reach the output being compared, not the input being prepared**, and must match
+on everything except the thing under test. Figures withdrawn are marked where
+they were asserted, not quietly replaced.
 
 ## Scope
 
