@@ -44,9 +44,12 @@ wrong (the YOLO export carries one box per image; 39.9% of master.csv rows are
 POSE pseudo-labels). Checkpoint selectors were ranking by a 4-decimal filename
 and systematically taking the worst of tied checkpoints. And the stage-2 gate
 diverged between repos -- we ship 0.70, BlazeEar 0.80 -- which turns out not to
-be a defect: the whole 0.70-0.80 range spans 0.60% of F1. The open question is
-not which constant is right but whether this product should weight precision
-over recall at all; see [Choosing the stage-2 gate](#choosing-the-stage-2-gate).
+be a defect: the whole 0.70-0.80 range spans 0.60% of F1. The question that
+looked live -- whether to weight precision over recall -- turned out to rest on
+a false premise: rendering the false positives showed **64 of 64 were real ears
+the ground truth had not labelled**, so a higher gate removes correct output
+rather than wrong output. Keep 0.70; see
+[Choosing the stage-2 gate](#choosing-the-stage-2-gate).
 
 A note on how these numbers were arrived at, since several are retractions of
 earlier ones: across one day's work eight wrong mechanisms were caught, and not
@@ -1635,23 +1638,45 @@ ships. Measured on 6,000 images / 7,075 ears:
 | 0.80 (BlazeEar) | 72.93% | 81.61% | 0.194 |
 | 0.86 (F0.5 argmax) | 64.83% | 85.80% | 0.127 |
 
-**For weighting precision.** The two error types are not symmetric in what the
-user sees. A missed ear produces *nothing* -- a visible, self-announcing,
-forgivable failure. A false positive produces **55 landmarks confidently drawn
-on a cheek, hair or a background edge**, which is the failure that destroys
-trust in a demo and is indistinguishable from a real detection to anything
-downstream. Going 0.70 -> 0.86 cuts false positives per image from 0.315 to
-0.127, a **2.5x** reduction in wrong overlays. The asymmetry is worse for
-automated consumers than for humans: a false ear's landmarks become a garbage
-3D fit in Ear_3D_Lifter and **no gate catches "these points are on a cheek"**,
-so a false positive propagates silently while a false negative merely drops a
-sample. BlazeEar's related measurement sharpens this -- when crops were
-multiplied, false positives on the facial midline (nose, brow) rose 2.5x, and
-those are exactly the confusable non-ears that yield plausible-looking wrong
-landmarks rather than obvious garbage.
+**The precision argument was made here and then refuted by looking.** It ran:
+the error types are asymmetric, because a miss produces nothing while a false
+positive produces 55 landmarks confidently drawn on a cheek -- which a human
+discounts instantly and an automated consumer cannot detect at all, so it
+propagates silently into a 3D lift rather than dropping a sample. On that view
+0.70 -> 0.86 cutting FP/image from 0.315 to 0.127 is a 2.5x reduction in wrong
+overlays and worth real recall.
 
-**Against weighting precision, and this is the stronger half.** The recall cost
-is large and **it is not evenly distributed**:
+**Every figure behind that is detection-level, so the crops were rendered and
+examined** (`scripts/fp_audit.py`, 64 sampled false positives across both score
+bands, 2026-10-15). **64 of 64 are real ears with good landmark fits** --
+second ears on frontal faces that master.csv's human rows do not label. Not one
+is a cheek, hair or background. Genuine non-ear detections do exist but are a
+small minority; one jacket/face box at 0.71 turned up in a separate pass.
+
+![False positives at or above 0.86](docs/img/gate_false_positives.jpg)
+
+*The 32 highest-scoring "false positives" — every one of which survives the
+strictest gate, and every one of which is an ear.*
+
+**So the premise is false and three things follow.**
+
+1. **The precision column measures label incompleteness as much as error.**
+   "FP/image 0.315 -> 0.127" is mostly correct detections being discarded.
+   BlazeEar bounded this as "precision may be mildly pessimistic" when they
+   established that one-ear-per-image is not a convention; on inspection it is
+   not mild.
+2. **The bias is not uniform across gates, and it points the opposite way to
+   the original argument.** A lower gate emits more unlabelled-ear detections
+   and is therefore penalised harder, so correcting the labelling would move
+   the optimum **down**. The F1 argmax (0.76) and the F0.5 argmax (0.86) both
+   inherit the broken precision term and neither should be treated as an
+   optimum.
+3. **A higher gate buys fewer detections, not better ones.** It discards real
+   ears on both sides of the ledger: the low-confidence ones it drops, and the
+   unlabelled ones it was being credited for "removing".
+
+**What survives is the recall cost**, which is scored against labelled ears
+only and is therefore unaffected:
 
 | band (px) | ears | 0.70 | 0.86 | absolute | **relative loss** |
 |---|---|---|---|---|---|
@@ -1662,33 +1687,43 @@ is large and **it is not evenly distributed**:
 | 80+ | 3132 | 92.78% | 81.16% | -11.62 pp | **-12.5%** |
 
 In absolute points the loss looks uniform, which is how it would be reported by
-default. In **relative** terms it is monotone and steep: raising the gate to
-0.86 discards **46% of the small ears it was finding against 12.5% of the large
-ones**, a 3.7x tilt. That is not a neutral trade -- it is a systematic bias
-against subjects whose ears are small in frame, which means children, distant
-or off-centre subjects, and profile views. A product that silently works worse
-on those is a worse product than one with more false positives, and the bias
-would not appear in any pooled metric.
+default. In **relative** terms it is monotone and steep: 0.86 discards **46% of
+the small ears it was finding against 12.5% of the large ones**, a 3.7x tilt.
+That is a systematic bias against subjects whose ears are small in frame --
+children, distant or off-centre subjects, profile views -- and it is invisible
+in any pooled metric.
 
-Two further arguments against. In a human-in-the-loop use -- annotation assist,
-onboarding new corpus images -- the costs **invert**: a false positive is
-rejected with one click, while a missing ear has to be noticed and chased, so
-there recall is the thing to buy. And the precision column overstates what
-passes: it is measured at **IoU 0.30**, a loose localisation bar, so some
-"true positives" are boxes poor enough to produce bad landmarks anyway.
+Two further arguments against a high gate. For human-in-the-loop use --
+annotation assist, corpus onboarding -- the costs **invert**: a spurious box is
+one click to reject, a missing ear has to be noticed and chased. And precision
+is measured at IoU 0.30, a loose bar, so some "true positives" are boxes poor
+enough to produce bad landmarks anyway.
+
+**Conclusion: keep 0.70, and do not raise the gate on quality grounds**, because
+nothing measured here supports that. Raise it only for a reason of your own --
+throughput, review cost, a downstream stage that cannot take duplicate ears --
+and sweep it on your own corpus. **The honest open question is the opposite
+one:** whether the gate should go *lower* than 0.70, which this corpus cannot
+answer until precision is measured against complete ear labels rather than
+one-per-image human rows.
 
 **Shipped as a named consumer choice, not a constant.** Since the right answer
 depends on the consumer rather than on the model, `inference.py` names the
 consumer instead of asking a caller to guess a number:
 
-| profile | gate | for |
+| profile | gate | what it does |
 |---|---|---|
-| `interactive` *(default)* | 0.70 | a human looks at the output; also annotation assist and corpus onboarding, where the costs invert outright |
-| `balanced` | 0.76 | no stated preference (F1 argmax) |
-| `automated` | 0.86 | output consumed without review, where a wrong fit cannot be detected downstream |
+| `interactive` *(default)* | 0.70 | keeps the most ears. The only gate with evidence behind it |
+| `fewer` | 0.76 | a mild reduction in detection count |
+| `fewest` | 0.86 | a large reduction: -14.2 pp recall, -45.8% of the under-32px band |
+
+The names describe **detection count, not accuracy**, because the FP audit above
+showed a higher gate removes real ears rather than wrong ones. There is no
+`automated` profile for that reason -- the argument that would have justified
+one did not survive looking at the crops.
 
 ```bash
-python inference.py image photo.jpg --profile automated
+python inference.py image photo.jpg --profile fewest
 ```
 
 `--profile` and `--confidence` are mutually exclusive and argparse refuses the

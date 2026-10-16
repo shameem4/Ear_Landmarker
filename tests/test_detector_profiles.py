@@ -22,12 +22,19 @@ def test_names_resolve_to_their_gate(name, gate):
     assert resolve_confidence(name) == gate
 
 
-def test_profiles_are_ordered_by_precision():
-    # interactive < balanced < automated, because that ordering IS the claim:
-    # a consumer that cannot see a wrong fit pays recall to avoid one.
+def test_profiles_are_ordered_by_how_few_detections_they_emit():
+    # The ordering is about detection COUNT, not quality: an FP audit found 64
+    # of 64 sampled false positives were real unlabelled ears, so a higher gate
+    # buys fewer detections rather than better ones.
     assert (DETECTOR_PROFILES["interactive"]
-            < DETECTOR_PROFILES["balanced"]
-            < DETECTOR_PROFILES["automated"])
+            < DETECTOR_PROFILES["fewer"]
+            < DETECTOR_PROFILES["fewest"])
+
+
+def test_default_is_the_most_permissive_profile():
+    # Nothing supports a higher gate on quality grounds, so the default must
+    # not be one of the recall-sacrificing settings.
+    assert DETECTOR_PROFILES[DETECTOR_PROFILE_DEFAULT] == min(DETECTOR_PROFILES.values())
 
 
 def test_float_passes_through():
@@ -86,10 +93,10 @@ def test_cli_takes_a_profile_or_a_number_but_not_both():
     import io
 
     with contextlib.redirect_stderr(io.StringIO()), pytest.raises(SystemExit):
-        _parse(["image", "x.jpg", "--profile", "automated", "--confidence", "0.8"])
+        _parse(["image", "x.jpg", "--profile", "fewest", "--confidence", "0.8"])
 
-    named = _parse(["image", "x.jpg", "--profile", "automated"])
-    assert named.profile == "automated" and named.confidence is None
+    named = _parse(["image", "x.jpg", "--profile", "fewest"])
+    assert named.profile == "fewest" and named.confidence is None
 
     numeric = _parse(["image", "x.jpg", "--confidence", "0.8"])
     assert numeric.confidence == 0.8 and numeric.profile is None

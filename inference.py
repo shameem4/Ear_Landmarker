@@ -36,43 +36,63 @@ ROI_EXPAND = 1.3  # expand detected bbox by 30% for context
 NMS_IOU_THRESH = 0.3  # suppress duplicate detections on same ear
 NMS_IOMIN_THRESH = 0.35  # also suppress when overlap covers this much of the SMALLER box
 # The right detector gate is not a property of the model, it is a property of
-# WHO CONSUMES the output, because the two error types have opposite costs for
-# different consumers:
-#   * a false positive is 55 landmarks drawn confidently on a cheek or a
-#     background edge. A human sees that instantly and discounts it; an
-#     automated consumer cannot, because nothing downstream can detect a
-#     confident fit on the wrong thing, so it propagates silently (e.g. into a
-#     3D lift) and corrupts the result rather than dropping it.
-#   * a miss produces nothing. Obvious to a human, who re-runs or adjusts;
-#     merely a dropped sample to a batch job.
-# So name the consumer rather than guessing a number. Measured 2026-10-15 on
-# 13,007 images / 15,359 human-source ears at IoU 0.30, plus a 6,000-image band
-# pass; see README, "Choosing the stage-2 gate".
+# who consumes the output -- but NOT for the reason first written here, and the
+# correction matters enough to record in full.
 #
-#   gate  recall  precision  FP/image
-#   0.70  79.02%    74.77%     0.315   <- F1 is flat 0.70-0.80 (0.60% of F1),
-#   0.76  76.38%    78.70%     0.244      so 0.76 is the F1 argmax but the
-#   0.86  64.83%    85.80%     0.127      whole range is within noise of it.
-#                                         0.86 is the F0.5 (precision-weighted)
-#                                         argmax.
+# The original argument was that a false positive is "55 landmarks drawn
+# confidently on a cheek", invisible to an automated consumer and therefore
+# worth paying recall to avoid. **That premise is empirically false on this
+# corpus.** Cropping and looking at 64 sampled false positives across both
+# score bands (2026-10-15, scripts/fp_audit.py): 64 of 64 are REAL EARS with
+# good landmark fits -- second ears on frontal faces that master.csv's human
+# rows do not label. Not one was a cheek, hair or background. A handful of
+# genuine non-ear detections do exist (one jacket/face box seen at 0.71 in a
+# separate pass) but they are a small minority.
 #
-# Raising the gate is NOT a neutral trade. 0.70 -> 0.86 discards 45.8% of the
-# ears it was finding under 32 px against 12.5% of those over 80 px -- uniform
-# in absolute points, 3.7x tilted in relative terms -- so a high gate biases
-# against small-in-frame ears: children, distant subjects, profile views. That
-# tilt is invisible in any pooled metric, so re-measure per band, not pooled,
-# before re-pointing any name below.
+# Three consequences:
+#   1. The precision column measures LABEL INCOMPLETENESS as much as error, so
+#      "FP/image 0.315 -> 0.127" is mostly correct detections being discarded.
+#   2. The bias is not uniform across gates -- a lower gate emits more
+#      unlabelled-ear detections, so it is penalised harder. Correcting it
+#      would move the optimum DOWN, not up. The F1 argmax (0.76) and the F0.5
+#      argmax (0.86) both inherit this and should not be treated as optima.
+#   3. A higher gate therefore buys FEWER DETECTIONS, not better ones. It
+#      discards real ears on both sides of the ledger: the ones it drops as
+#      low-confidence, and the ones it was being credited for "removing".
+#
+# So the profiles below are a choice about HOW MANY detections you want, not
+# how accurate they are. Raise the gate only if you have your own reason --
+# throughput, review cost, a downstream stage that cannot take duplicates --
+# and sweep it on your own corpus, because nothing here supports a higher gate
+# on quality grounds.
+#
+# Recall cost, measured on 6,000 images / 7,075 ears (README, "Choosing the
+# stage-2 gate"), and this part is unaffected by the labelling bias because it
+# is scored against labelled ears only:
+#
+#   gate  recall   | 0-32 px band      80+ px band
+#   0.70  79.02%   | 33.51%            92.78%
+#   0.76  76.38%   | 29.83% (-11.0%)   90.96% ( -2.0%)
+#   0.86  64.83%   | 18.17% (-45.8%)   81.16% (-12.5%)
+#
+# Raising the gate is NOT a neutral trade: it costs small ears ~3.7x harder in
+# relative terms, so a high gate biases against small-in-frame subjects --
+# children, distant and profile views. That tilt is invisible in any pooled
+# metric, so re-measure PER BAND before re-pointing a name.
 DETECTOR_PROFILES = {
-    # A human looks at the output. False positives are cheap and visible,
-    # misses are the expensive error. Also the right choice for annotation
-    # assist and corpus onboarding, where the costs invert outright: a false
-    # positive is one click to reject, a missing ear has to be noticed first.
+    # Shipped default and the only gate with evidence behind it. Keeps the most
+    # ears, including the small ones the higher gates drop disproportionately.
+    # Right for anything a human looks at, and for annotation assist and corpus
+    # onboarding, where a spurious box is one click to reject while a missing
+    # ear has to be noticed first.
     "interactive": 0.70,
-    # No stated preference. F1 argmax.
-    "balanced": 0.76,
-    # Output is consumed without review. A wrong fit cannot be detected
-    # downstream, so pay recall to avoid silent corruption.
-    "automated": 0.86,
+    # A mild reduction in detection count. Was the F1 argmax; that label is
+    # withdrawn, since F1 here inherits the broken precision term.
+    "fewer": 0.76,
+    # A large reduction in detection count, at -14.2 pp of recall and -45.8%
+    # of the under-32px band. Only for a consumer with its own reason to want
+    # fewer boxes. NOT a quality setting.
+    "fewest": 0.86,
 }
 DETECTOR_PROFILE_DEFAULT = "interactive"
 
