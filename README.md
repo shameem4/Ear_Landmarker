@@ -1436,15 +1436,24 @@ the available headroom on small heads against 94.1% on large ones -- which is
 what "small heads are harder to detect" predicts and is not evidence for
 composition, since composition's contribution *is* the null being divided out.
 
-BlazeEar also reports that `trainable_blazeface`'s occupancy refinement
-supersedes face-size banding for this purpose: what saturates the null is size
-**times count**, so a small-head crowd frame can still carry a 52.5% null.
-Re-banded on occupancy their ordinary-crop lift sharpens from 5.15x to 8.13x
-against a 9.6% null with a 10.4x ceiling. **Band on occupancy and print the
-ceiling** if this is ever re-measured; the table above is banded on size alone.
-And their matched-power figure for the tail population is 2.26x against ordinary
-crops' 8.13x -- about a quarter as well-placed as a confident face box, measured
-on *stock's* tail rather than the tuned one, so it does not settle this version.
+**Two corrections went into that table and they fixed different things**, which
+is worth keeping straight because the weaker one is the more quotable.
+`trainable_blazeface` supplied the **axis**: what saturates the null is size
+**times count**, not size, so a small-head crowd frame can still carry a 52.5%
+null -- re-banded on occupancy, BlazeEar's ordinary-crop lift sharpens from
+5.15x to 8.13x against a 9.6% null. BlazeEar supplied the **statistic**: the
+ceiling is `1/null`, an exact number printable per row, which supersedes
+`trainable_blazeface`'s own rule of thumb that a null above roughly 50% means no
+power. Their words, recorded at their request: the refinement improved the
+banding axis, the ceiling fixed the statistic, and theirs was the lesser of the
+two. **Band on occupancy and print the ceiling** if this is re-measured; the
+table above is banded on size alone.
+
+BlazeEar's matched-power figure for the tail population is **2.26x** against
+ordinary crops' 8.13x -- about a quarter as well-placed as a confident face box,
+measured on *stock's* tail rather than the tuned one, so it does not settle this
+version. That number belongs next to the phrase "implicit head detector", which
+sounds stronger than a quarter of a confident face box.
 
 **Both conclusions are needed.** On head-filling frames the lift is 1.07x
 against a 93.2% null -- there, placement genuinely carries almost nothing beyond

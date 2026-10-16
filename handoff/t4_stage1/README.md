@@ -307,13 +307,45 @@ misleading one to headline.
 Coverage of ears by band, head scale = stock's largest face side / frame short
 side, null destroys placement only (4,000 images, 4,749 ears):
 
-| head scale | images | ears | tuned | stock | placement-destroyed | lift |
-|---|---|---|---|---|---|---|
-| 0.00-0.20 | 433 | 523 | 89.1% | 70.4% | 41.3% | **2.16x** |
-| 0.20-0.30 | 1085 | 1368 | 95.6% | 87.5% | 57.0% | 1.68x |
-| 0.30-0.45 | 1143 | 1340 | 97.6% | 95.2% | 72.5% | 1.35x |
-| 0.45+ | 1339 | 1518 | 99.6% | 98.4% | 93.2% | **1.07x** |
-| **all** | 4000 | 4749 | 96.7% | 91.3% | 71.2% | 1.36x |
+| head scale | ears | tuned | stock | null | lift | **lift ceiling (1/null)** | **gap** | headroom captured |
+|---|---|---|---|---|---|---|---|---|
+| 0.00-0.20 | 523 | 89.1% | 70.4% | 41.3% | 2.16x | 2.42x | **+47.8 pp** | 81.4% |
+| 0.20-0.30 | 1368 | 95.6% | 87.5% | 57.0% | 1.68x | 1.75x | +38.6 pp | 89.8% |
+| 0.30-0.45 | 1340 | 97.6% | 95.2% | 72.5% | 1.35x | 1.38x | +25.1 pp | 91.3% |
+| 0.45+ | 1518 | 99.6% | 98.4% | 93.2% | 1.07x | **1.07x** | **+6.4 pp** | 94.1% |
+| all | 4749 | 96.7% | 91.3% | 71.2% | 1.36x | 1.40x | +25.5 pp | 88.5% |
+
+**The lift column was a poor headline and BlazeEar is right that a reader cannot
+see why.** A coverage lift is bounded above by `1/null`, so the 0.45+ row could
+not have exceeded 1.07x whatever the detector did -- its apparent collapse is
+the ceiling collapsing, not the detector. The honest effect size is the
+**absolute gap**, and it widens monotonically as heads shrink: +6.4 pp on
+head-filling frames against **+47.8 pp** on small-head ones. That is the
+head-ness reading and it survives the correction.
+
+The headroom share goes the other way, mildly -- the detector captures 81.4% of
+the available headroom on small heads against 94.1% on large ones -- which is
+what "small heads are harder to detect" predicts and is not evidence for
+composition, since composition's contribution *is* the null being divided out.
+
+**Two corrections went into that table and they fixed different things**, which
+is worth keeping straight because the weaker one is the more quotable.
+`trainable_blazeface` supplied the **axis**: what saturates the null is size
+**times count**, not size, so a small-head crowd frame can still carry a 52.5%
+null -- re-banded on occupancy, BlazeEar's ordinary-crop lift sharpens from
+5.15x to 8.13x against a 9.6% null. BlazeEar supplied the **statistic**: the
+ceiling is `1/null`, an exact number printable per row, which supersedes
+`trainable_blazeface`'s own rule of thumb that a null above roughly 50% means no
+power. Their words, recorded at their request: the refinement improved the
+banding axis, the ceiling fixed the statistic, and theirs was the lesser of the
+two. **Band on occupancy and print the ceiling** if this is re-measured; the
+table above is banded on size alone.
+
+BlazeEar's matched-power figure for the tail population is **2.26x** against
+ordinary crops' 8.13x -- about a quarter as well-placed as a confident face box,
+measured on *stock's* tail rather than the tuned one, so it does not settle this
+version. That number belongs next to the phrase "implicit head detector", which
+sounds stronger than a quarter of a confident face box.
 
 **Both conclusions are needed.** On head-filling frames the lift is 1.07x
 against a 93.2% null -- there, placement genuinely carries almost nothing beyond
