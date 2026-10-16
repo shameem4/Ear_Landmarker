@@ -1349,6 +1349,21 @@ multiplies face-stage misses by nine. So placement is strongly informative, and
 "it is just volume" dies with it: 35 random windows per image recover a third of
 the ears, the same 35 placed by the model recover 82%.
 
+**Scope limit on all of this, raised by `trainable_blazeface` and it stands.**
+On head-filling frames "lands on a head" and "lands on image content" are nearly
+the same event, so a tail that merely avoids empty background would ablate like
+head-seeking. Their discriminator -- re-run the ablation where heads occupy
+least of the frame -- **cannot be run here with power: only 70 of 6,000 frames
+have their largest face under 30% of the short side.** This corpus has no
+low-head-fraction regime. On those 70 frames / 90 ears the direction holds and
+strengthens (tuned 2 face-stage misses against 47 for placement-destroyed), but
+at that n it is consistent with head-ness rather than evidence for it. On their
+own corpus -- WIDER-style, median face 13.4 px -- the same band is
+*anti*-correlated with faces, which they are careful to say cannot test an
+ear-labelled claim, since a box on hair or the back of a head is head-ness by
+our measure and a miss by theirs. **So "head-ness" versus "frame composition"
+is unresolved, and it matters before a training target is written, not after.**
+
 **The tail is neither a shotgun nor a face detector. On this corpus it behaves as
 an implicit head detector** -- boxes no face metric will credit, landing reliably
 on ear-bearing regions. Which makes head-ness, not face-ness, the stage-1
@@ -1360,13 +1375,76 @@ under-scores.
 
 **So T4 closes again, for a better reason, and it hands its lever to stage 2.**
 The coverage is now there and cannot be converted: 516 remaining face-stage
-misses against 1301, and the extra ears arrive as boxes the 0.70 threshold
-discards -- which is the same binding constraint already measured above, where
-90.2% of stage-2 misses are localised boxes scored around 0.40. Stage-1
-coverage is not the bottleneck; stage-2 calibration is, and it now gates a
-larger prize than when it was measured alone. **Revisit the union only after
-stage-2 scoring is fixed** -- at which point +16.79 pp of raw small-ear coverage
-is sitting unconverted, for the cost of a second detector pass.
+misses against 1301, and the extra ears arrive as boxes the gate discards --
+the same binding constraint measured above. **Revisit the union only after
+stage-2 scoring is fixed.** How much that is worth is contested; see "The prize
+behind stage-2 calibration is contested" below, where BlazeEar's null results
+argue the newly-fed band is information-limited rather than calibration-limited.
+
+**WITHDRAWN: "90.2% of stage-2 misses are localised boxes scored around 0.40".**
+Both numbers came from the collapsed YOLO-export basis that was later retracted,
+and carrying them forward was an error of mine that reached two other sessions'
+notes. The localised *share* was re-measured on the correct basis long ago
+(93.1%, then 92.8% at n=3790); the score *median* never was. Re-measured now,
+3,500 images / 4,136 ears / 3,809 delivered inside a crop, human-source basis:
+
+| gate | stage-2 misses | localised | share | median | p25 | p75 |
+|---|---|---|---|---|---|---|
+| **0.70** (our `DETECTOR_CONFIDENCE`) | 553 | 515 | **93.1%** | **0.453** | 0.305 | 0.600 |
+| 0.80 (BlazeEar's `DETECTION_SCORE_THRESHOLD`) | 809 | 771 | 95.3% | **0.599** | 0.379 | 0.734 |
+| 0.85 (BlazeEar's TTA gate) | 1070 | 1032 | 96.4% | **0.701** | 0.454 | 0.800 |
+
+So the correct pair at our gate is **93.1% and 0.453**, not 90.2% and 0.404.
+
+**And the median is gate-dependent by construction**, which reconciles a figure
+that looked like a contradiction. A miss at a 0.70 gate cannot include a box
+scoring 0.75; a miss at 0.80 can. So any "median score of misses" is
+meaningless without its gate, and comparing 0.404-at-0.70 against BlazeEar's
+0.752-at-0.80 was comparing two different populations. At a matched 0.80 gate
+the figures are 0.599 here against their 0.752 -- a real but much smaller gap,
+and the residual is explained by their scoring localisation at IoU >= 0.5 where
+this measures IoU >= 0.3: a tighter localisation test keeps the better-fitting
+boxes, which score higher. **Quote a gate and an IoU with any such median.**
+
+### Our stage-2 gate and BlazeEar's have diverged
+
+`inference.py` ships `DETECTOR_CONFIDENCE = 0.70`, inherited when this pipeline
+adopted BlazeEar v2 (54026c0). BlazeEar has since re-picked its own on an
+end-to-end sweep of val_v2's 2,414 ears and ships **0.80 plain / 0.85 fused**,
+reporting F1 argmax 0.7273 at 0.80 against 0.7081 at 0.70, and 0.7497 fused at
+0.85 against 0.6886. They also report 0.70 being live for two hours and reverted
+because it tripled fused false positives per image, 0.152 to 0.488.
+
+**That makes our 0.70 a candidate defect rather than a choice**, and it is
+untested here: their sweep is on their corpus with their gate semantics. Not
+changed on their say-so -- it needs the same end-to-end sweep on this side
+before moving, and every arms table in this file is internally consistent at
+0.70 and therefore unaffected either way.
+
+### The prize behind stage-2 calibration is contested
+
+BlazeEar argues the band a head detector would newly feed is
+**information-limited, not calibration-limited**, with the direct tests run:
+the median ear inside a crop is 24 real pixels and 70.9% are under 32; widening
+the downward scale augmentation to 0.35-1.25 aimed at exactly that band was
+null (three ears became six at n=123 while the 64-80 px mode lost 1.2 pp on 758
+ears, reverted); a per-prior negative-mining ceiling was also null; and paired
+on the same ears both levers produce a uniform downward confidence shift of
+0.005-0.009 across **all** ears (p=1.7e-17) with no small-ear-specific
+component (+0.0004, p=0.81).
+
+**Accepted as a discount on the prize, not on the direction.** Their reading is
+that "stage 2 under-scores small ears" describes where a uniform shift crosses a
+gate rather than a small-ear mechanism, and nothing here contradicts that. The
+band table from the re-measurement above does show a size gradient in
+localised-miss scores -- median 0.415 at 0-32 px against 0.514 at 80+ at the
+0.70 gate, 0.493 against 0.717 at 0.80 -- but **that cannot be read as evidence
+against them**, because conditioning on *being a miss* selects differently in
+each band: at 80+ px misses are rare and so are the hard tail of that band,
+while at 0-32 px they are common. It is a question worth a designed test, not a
+counter-measurement.
+
+
 
 One correction accepted in the other direction: the min-16 training replication
 reported from this side *did* inherit their defective assignment -- it ran their

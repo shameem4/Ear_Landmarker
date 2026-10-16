@@ -318,16 +318,28 @@ So the two results are the same result seen twice:
 2. A stage 1 that finds more small faces delivers nothing, because stage 2
    under-scores small ears.
 
-**Recommended order.** Fix stage-2 scoring first. Revisit stage 1 only after,
-at which point there is a lot sitting unconverted: **+16.79 pp of raw 0-32 px
-coverage** for the union, or face-stage misses down from 1301 to 530 for the
-tuned detector alone at face threshold 0.10 -- which costs no extra detector
-pass at all, only a constant.
+**Recommended order.** Fix stage-2 scoring first. Revisit stage 1 only after.
 
-Note what that means for sequencing: the cheapest stage-1 win available is
-**not** a new model, it is `FACE_CROP_THRESHOLD`, and it is only worth taking
-once stage 2 can score what it delivers. Until then it buys coverage the
-threshold throws away.
+**WITHDRAWN: "the cheapest stage-1 win available is not a new model, it is
+`FACE_CROP_THRESHOLD`".** That framing was mine and BlazeEar measured it end to
+end on val_v2 (2,414 ears): coverage improves about as far as it can -- ears in
+images where the face stage found nothing go 29 to 1, raw recall 0.653 to 0.669
+at their deployed gate -- and at matched precision it is a wash at loose
+operating points and a **1.4 to 2.4 pp loss** at the ones that ship. It fails in
+the same way and for the same reason as the detector it was being contrasted
+with, which is the result I should have predicted from my own table rather than
+proposing it as a shortcut. `FACE_CROP_THRESHOLD` stays at 0.2. They also note
+a side effect: at the deployed gate, false positives on the facial midline go
+0.022 to 0.056 per image, 2.5x -- more crops means more nose and brow reaching
+the ear model.
+
+**And the prize is contested.** BlazeEar argues the band a head detector would
+newly feed is information-limited rather than calibration-limited: median ear
+inside a crop is 24 real pixels, 70.9% under 32; a downward scale augmentation
+aimed at that band was null, as was a per-prior mining ceiling; and paired on
+the same ears both levers shift confidence uniformly across *all* ears
+(0.005-0.009, p=1.7e-17) with no small-ear-specific component (+0.0004,
+p=0.81). Accepted as a discount on the prize, not on the direction.
 
 **What is worth dissecting here, and why it needs BlazeEar's context rather
 than ours:**
@@ -335,10 +347,26 @@ than ours:**
 * `evidence/rescued_union.json` -- 767 ears the union delivers and stock does
   not, with band and source image. **Are these ears worth having?** This side
   cannot judge whether they are the ears the product needs; BlazeEar can.
-* Whether stage 2's precision is the right cost function at all. Per the
-  existing note in Ear_Landmarker's README: every labelled frame in the YOLO
-  export carries exactly one ear, so a correct second detection on a frontal
-  face scores as a false positive. **Precision here is a lower bound of unknown
+* ~~Whether stage 2's precision is the right cost function at all.~~
+  **ANSWERED, and the matched-precision rows stand.** One-ear-per-image is NOT a
+  convention: on master.csv human sources with the geometry filter, 15,972 ears
+  over 13,482 images, **17.8% of images carry 2+ ears holding 30.6% of all
+  ears** (82.2% one, 17.2% two, 0.5% three, 0.1% four-five), and
+  `data/yolo11_ears_human/` shows the same split over its 13,007 label files
+  (82.5/16.9/0.5) -- which also confirms that basis as authoritative and
+  discharges the basename-resolution caveat below. So a correct second detection
+  is not systematically scored as a false positive, and the asymmetry argument
+  is sound in form but void in fact. Residual: 82.2% single-ear leaves room for
+  individual frontal faces being under-labelled, so precision may be *mildly*
+  pessimistic -- bounded labelling error, not a structural bias against the arms
+  that lose. Answered by BlazeEar.
+
+* Superseded detail of that question, retained because the reasoning still
+  applies wherever a basis IS single-ear: the premise was a note in
+  Ear_Landmarker's README that every labelled frame in the **collapsed YOLO
+  export** carries exactly one ear -- true of that export, and the reason it was
+  retracted as a basis -- so on it a correct second detection scores as a false
+  positive. **Precision here is a lower bound of unknown
   looseness**, and if it is loose, every "matched precision" row above is
   pessimistic by an unknown amount. That is the single assumption most likely to
   change the verdict, and resolving it needs the labelling convention, which is
