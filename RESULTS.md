@@ -2555,3 +2555,101 @@ error, never points by their own error. Selecting points on the correlated
 variable truncates it and drives rho toward 0 as a pure artefact -- which would
 have reproduced the render null on photograph data and "confirmed" the wrong
 conclusion. Both behaviours are pinned in `tests/test_confidence_eval.py`.
+
+## v3 labels: a 3.5x tighter noise floor, and -23% normal error, 2026-10-19
+
+The v3 corpus is a vetted, hand-adjusted re-annotation: images screened and
+contours moved to hug the structure. 6,099 ears, a strict subset of an earlier
+6,340 (241 dropped, 0 added). Against the old labels the points moved a mean of
+**1.12 px at 192** (p90 2.69), 19.6% untouched, and the canal at point 39
+**exactly unchanged** -- only contour points moved, which is what the stated
+intent predicts.
+
+**Splits hold ear IDENTITY apart, not rows.** The v3 ids overlap `data/manual`,
+and 456 of the old test split's 1,054 ears are among them, so the obvious
+designs both leak: training on all of v3 and scoring on `data/manual/test.csv`
+puts 43% of that test set in training, while a random v3 split hands the
+BASELINE ears it trained on, because 3,561 v3 ids sit in the old TRAIN split.
+`scripts/ingest_manual_v3.py` therefore draws the test split only from v3 ids
+absent from `data/manual/train.csv`, and asserts it. Train 4,538 / val 561 /
+test 1,000.
+
+**The relabelling moves the target further than the model's own error**, so
+absolute scores are not comparable across label sets: `fixed_conv_s42`,
+unchanged, scores 0.00822 on the old labels and 0.01032 on the new ones,
++25.5%, against a per-point error of about 0.0082.
+
+### The noise floor fell from ~1.0% to 0.28%
+
+Three seeds of one configuration on v3 labels (fp16, GPU):
+
+| | total error, px at 192 |
+|---|---|
+| seed 42 | 1.6001 |
+| seed 1 | 1.6088 |
+| seed 2 | 1.6069 |
+| **mean** | **1.6053 +/- 0.0046** |
+
+**0.28% relative, against ~1.0% on the old corpus.** That is arguably worth more
+than the accuracy gain: it is the resolution limit on every future claim, and
+changes that were previously unmeasurable are now detectable.
+
+### v3 trades normal error for tangential
+
+Against `fixed_conv_s42` on the same leak-free split, 1,000 ears:
+
+| | baseline | v3 (mean of 3 seeds) | |
+|---|---|---|---|
+| total | 1.757 | **1.605** | **-8.6%** |
+| normal | 1.276 | **0.980** | **-23.2%** |
+| tangential | 1.208 | 1.265 | +4.8% |
+
+Normal is distance OFF the contour; tangential is position ALONG it, where
+annotators legitimately disagree. The tangential SHARE rises 47.2% -> 62.5%.
+
+**Confirmed independently, without ground truth.** `scripts/eval_edge_response.py`
+scores how strongly the outer contour lies on real image structure, judging the
+GT on the same footing:
+
+| | edge response |
+|---|---|
+| ground truth | 4.5617 |
+| v3 | 4.3324 |
+| baseline | 4.0702 |
+
+v3 is +0.2623 over the baseline, t=+11.14, p=3.0e-27, higher on 67.5% of ears,
+with the GT highest of the three. So the normal-direction gain is real contour
+placement and not agreement with a convention.
+
+### bf16 does not just add noise, it stalls training
+
+Precision is not a detail here. Same data, same seed 42, only the device
+differing:
+
+| | best epoch | total error |
+|---|---|---|
+| CPU, bf16-mixed | 97 (early stop 147) | 1.891 |
+| GPU, fp16 | **473** | **1.600** (-15.4%) |
+
+Lightning silently substitutes `bf16-mixed` on CPU because fp16 AMP is
+unsupported there, and patience then expires on a model that stopped improving
+for precision reasons rather than convergence. Every CPU measurement in this
+investigation was taken on an under-trained model and was revised by this.
+
+It does **not** explain the tangential share: 62.2% on bf16 against 62.5% on
+fp16, with precision moving both components almost equally (-15.8% normal,
+-15.2% tangential). The tangential characteristic is a property of the data,
+not of the arithmetic.
+
+### What did not work
+
+**Re-spacing the predicted points at equal arc length makes it far worse** --
+tangential +152.5%, normal +16.1%, worst on the rim at +248%. The v3 points are
+more REGULARLY spaced than the old corpus (gap CV 0.1392 -> 0.1222, -12.2% on
+every strip) but regular is not uniform: they sit at anatomically anchored
+positions, and forcing uniformity destroys the contour. This rules out the
+whole family of post-hoc re-parameterisation fixes.
+
+`scripts/eval_gt_free.py` is DEAD: it needs `BlazeEar/data/yolo11_ears`, which
+no longer exists, and reports nan for every model rather than failing. Use
+`scripts/eval_edge_response.py`.
