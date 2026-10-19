@@ -15,7 +15,9 @@ bias**, because a constant x-offset is anti-equivariant under a mirror. Fixed
 and retrained to convergence (`fixed_conv_s42`): R-L antisymmetry **+17.05%
 (p=2.7e-19) -> +1.01% (p=0.46)**. Flip fusion is on by default, the browser
 demo matches Python to six decimals, and the ONNX export verifies itself on
-every build.
+every build. The full investigation -- including the retractions it produced
+and one conclusion whose evidence it later withdrew -- is in
+[FLIP_REVIEW.md](FLIP_REVIEW.md).
 
 **The detector in front of it is where the remaining recall lives, and a long
 investigation closed that off rather than opening it up.** The chain under test

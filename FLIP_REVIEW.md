@@ -234,6 +234,25 @@ the +8.53% or any measurement in this document taken on photographs.
 
 ## On a flip-consistency training penalty
 
+> **EDITOR'S NOTE, 2026-10-19 — this section's conclusion no longer stands on
+> its stated evidence.** The decomposition below ("only 0.63 of the 2.95 points
+> is bias… the remaining 2.32 is ensembling") is the whole quantitative case
+> against the penalty, and it is retracted later in this same document, under
+> *Fusion's value collapses once the defect is fixed — and my decomposition was
+> wrong*: replacement never removed the anti-equivariant offset, so the
+> "ensembling share" was offset-cancellation under another name. That section
+> was written later and this one was never revisited.
+>
+> What survives here is the qualitative objection — the penalty admits a
+> degenerate direction, since a constant predictor is perfectly equivariant, and
+> it costs a retrain — plus the framing argument in the next paragraph, which
+> was and remains correct. What does **not** survive is the claim that an
+> equivariant model "forfeits the 2.32": that number is void, and the split
+> between bias removal and ensembling is now unmeasured.
+>
+> So treat the penalty as **open on evidence, not rejected.** The text below is
+> left unaltered because this is a dated review; only this note is new.
+
 Ear_3D_Lifter asked whether `||m(x) - mirror(m(mirror(x)))||` during training
 would be better than fusion at inference, on the grounds that my own framing —
 a soft constraint through samples cannot constrain the learned function — is
