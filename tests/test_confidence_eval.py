@@ -207,7 +207,27 @@ def test_guard_run_rejects_a_unitless_memory_cap(mem):
 
 
 @needs_impl
-@pytest.mark.parametrize("mem", ["12G", "500M", "infinity"])
+@pytest.mark.parametrize("mem", ["12G", "500M"])
 def test_guard_run_accepts_a_united_memory_cap(mem):
     r = _guard(mem)
     assert r.returncode == 0, f"{mem!r} should be accepted: {r.stderr}"
+
+
+@needs_impl
+def test_guard_run_treats_infinity_as_a_size_not_a_typo():
+    """`infinity` must pass the SIZE check, whatever admission control then says.
+
+    Asserting that `infinity` runs tests the machine, not the validator: it
+    clamps to the whole ceiling by definition, so admission control refuses it
+    (exit 75) whenever any other guarded job holds memory. This test went red
+    exactly that way, with another project's training job holding 25.7 GB --
+    an intermittent failure that says nothing about the code under test.
+
+    What must hold is narrower and always true: `infinity` is a legal size, so
+    it never comes back as the malformed-input code.
+    """
+    r = _guard("infinity")
+    assert r.returncode in (0, 75), (
+        f"expected run (0) or admission refusal (75), got "
+        f"{r.returncode}: {r.stderr}")
+    assert "not a size" not in r.stderr and "has no unit" not in r.stderr

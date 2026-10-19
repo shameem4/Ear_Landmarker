@@ -107,6 +107,16 @@ def main() -> None:
     parser.add_argument("--run-name", type=str, default="EarLandmarker",
                         help="Names the checkpoint/log subdirectory, so concurrent "
                              "experiments do not overwrite each other")
+    parser.add_argument("--accelerator", type=str, default="auto",
+                        choices=["auto", "gpu", "cpu"],
+                        help="Where to train. 'cpu' is ~4x slower per epoch "
+                             "here (28.1s vs 6.95s on 4,753 rows) because the "
+                             "model is only 340K parameters and dataloading "
+                             "dominates -- usable when the GPU is busy. NOTE "
+                             "that Lightning cannot do fp16 on CPU and "
+                             "silently substitutes bf16-mixed, so a CPU run is "
+                             "NOT numerically comparable to a GPU one; keep "
+                             "both arms of a comparison on the same device.")
     args = parser.parse_args()
 
     ckpt_dir = PROJECT / "runs" / "checkpoints" / args.run_name
@@ -244,7 +254,7 @@ def main() -> None:
     # Trainer
     trainer = pl.Trainer(
         max_epochs=args.epochs,
-        accelerator="auto",
+        accelerator=args.accelerator,
         devices=1,
         precision="16-mixed",
         callbacks=[checkpoint_cb, lr_monitor, early_stop],

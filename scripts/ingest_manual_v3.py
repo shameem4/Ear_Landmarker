@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import random
 from pathlib import Path
 
@@ -157,12 +158,29 @@ def main() -> None:
               (("manifest", None), ("train", train), ("val", val), ("test", test))}
 
     # Images are symlinked, not copied: 750 MB, and the source is the record.
+    #
+    # Rebuilt rather than topped up, because the source set SHRINKS. The v3
+    # corpus went 6,340 -> 6,099 when filtering tightened, and a link left
+    # behind for a dropped ear dangles. Worse, `Path.exists()` FOLLOWS the
+    # link, so a dangling one reads as absent and `symlink_to` then raises
+    # FileExistsError -- the second run of this script would have crashed
+    # rather than updated. `lexists` asks about the link itself.
+    want = set(stems)
+    pruned = 0
+    for dst in (OUT / "images").iterdir():
+        if dst.stem not in want:
+            dst.unlink()
+            pruned += 1
     linked = 0
     for s in stems:
         dst = OUT / "images" / f"{s}.png"
-        if not dst.exists():
-            dst.symlink_to(SRC / f"{s}.png")
-            linked += 1
+        src = SRC / f"{s}.png"
+        if dst.is_symlink() and dst.readlink() == src:
+            continue                      # already correct
+        if os.path.lexists(dst):
+            dst.unlink()                  # stale or dangling
+        dst.symlink_to(src)
+        linked += 1
 
     print(f"\nwrote {OUT}")
     for k in ("manifest", "train", "val", "test"):
