@@ -18,6 +18,17 @@
 # data/manual/ from new_manual_data/.
 /new_manual_data/
 /data/manual/
+# The v3 cherry-picked re-annotation and its ingested form. Same commissioned
+# data and the same licence position as new_manual_data above, so the same rule
+# applies -- it arrived at the repo ROOT rather than under data/, where nothing
+# was matching it at all, on a PUBLIC repo. Wildcarded by variant because
+# data/depth3d/ alone once let data/depth3d_v5 into a commit, and both spellings
+# because a root-anchored rule stops applying when referenced from a
+# subdirectory. Rebuild the ingested form with scripts/ingest_manual_v3.py.
+/v3_manual_data/
+v3_manual_data/
+/data/v3_manual*/
+data/v3_manual*/
 
 # article authoring -- drafting artifacts, not part of the model repo
 /generate_article.py
