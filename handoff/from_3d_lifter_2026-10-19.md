@@ -72,19 +72,17 @@ Use the `mocap` env, from `Ear_3D_Lifter`:
     "$CODE_UTILITIES/guard_run.sh" 6G 7200 LOG \
       /home/shameem/.conda/envs/mocap/bin/python scripts/validate_pipeline.py \
       runs/e2e_<name> 2 16 <worker> <n_workers>
+    # prefix with EAR3D_CKPT=<run or .ckpt path> to score a candidate
 
 - Seed `2` gives the 16 held-out heads at the same rotations as the baseline.
-- **The checkpoint can't be chosen from the 3D side.** `Pipeline` always
-  calls `find_best_checkpoint()`, which uses `SHIPPED_RUN`, and the `run` /
-  `ckpt` settings in `ear3d/config.py` are not wired to it.
-  - So a candidate is scored by pointing `SHIPPED_RUN` at its run (keep the
-    edit local until it wins).
-  - A proper override, such as an env var, would be a small 3D-side change;
-    ask for it.
+- **Choose the checkpoint with `EAR3D_CKPT`**, set to a `.ckpt` path or a
+  run name. No edit to this repo is needed. Without it, the 3D side follows
+  `SHIPPED_RUN`.
+- Every result records the checkpoint it used, as `ckpt` in each npz.
 - Each head writes `pred_{L,R}` and `gt_{L,R}_lm3d_v11`, in the rotated input
   frame.
 
-**Baseline to beat, `runs/e2e_heldout_lmw`:**
+**Baseline to beat, `runs/e2e_heldout_lmw`** (`fixed_conv_s42/EarLandmarker_433`):
 - median per-ear 1.574 mm;
 - p95 2.46 mm;
 - helix (0–34) 1.88 mm, the rest 1.14 mm;

@@ -2835,3 +2835,62 @@ W=0.25 was launched and stopped mid-run; the minimum is bracketed at or below
 **NOT YET REPLICATED.** Every point above is a single seed. -2.36% is 8x the
 0.28% seed floor, but that floor measures run-to-run spread at fixed config,
 not how an intervention varies across initialisations.
+
+## Grown corpus x flip penalty: a complete 2x2, and the effects are additive
+*2026-10-20*
+
+`v3_manual_data` grew 6,099 -> 8,512 pairs by **pure addition**: 6,099 kept,
+2,413 added, 0 dropped, and labels byte-identical on all 1,000 test ears (max
+change 0.00000000, checked before relying on it). So `ingest_manual_v3.py`
+gained `--preserve-test`, which reuses the existing test CSV and refuses if any
+previous test ear is missing or has leaked into `data/manual/train.csv`.
+Train/val/test went 4,538/563/1,000 -> **6,686/826/1,000**, test CSV `diff`
+IDENTICAL. Everything already measured on that split stays comparable.
+
+Two arms were run, not one, because the corpus grew AND the recipe changed:
+without the control, "more data" and "the penalty" are confounded.
+
+All four cells scored by one script on the same rows, raw model (not through
+`predict()`, whose flip fusion makes equivariance 0 by construction), best
+checkpoint by **stored `current_score`**, Wilcoxon paired per image:
+
+      run               rows   fc   equivar  err px  normal  tangen
+      v3 small ctl      4538  0.0   1.09802   1.804   0.982   1.266
+      v3 small fc05     4538  0.5   0.39614   1.768   0.979   1.223
+      v3 GROWN ctl      6686  0.0   1.12011   1.750   0.944   1.232
+      v3 GROWN fc05     6686  0.5   0.31402   1.709   0.944   1.183
+
+**The two levers act on different error components.**
+
+  - DATA (+47% rows, penalty off both sides): err **-2.97%** (p=9.6e-08),
+    normal **-3.89%** (p=2.3e-18), tangential -2.71%. Equivariance **+2.0%**,
+    i.e. slightly worse.
+  - PENALTY at 6,686 rows: err **-2.38%** (p=4.3e-05), tangential **-3.94%**
+    (p=1.3e-05), normal **+0.04%** (p=0.47, nothing). Equivariance **-72.0%**.
+
+So data buys *normal* accuracy and the penalty buys *tangential* accuracy, and
+neither substitutes for the other. The penalty's effect is slightly LARGER on
+the grown corpus (-2.38% vs -1.97%), not smaller, so more data does not absorb
+it.
+
+**Additivity**: data -0.054 px, penalty -0.036 px, sum -0.089 px, observed
+**-0.095 px**, interaction -0.006 px. Within noise of exactly additive.
+Combined: **-5.28% error** (p=7.5e-20), -6.55% tangential, -71.4%
+equivariance, against the same-seed small-corpus control.
+
+**More data does not make a model equivariant** (+2.0%), while the penalty
+cuts self-disagreement by 72%. That is the mechanism stated plainly:
+equivariance is a property the loss must constrain. Flip augmentation
+symmetrises the distribution, not the function, and sampling more of the
+distribution cannot fix it either.
+
+### Caveats, unchanged
+- **Single seed.** Every cell is seed 42. -5.28% is far above the 0.28%
+  run-to-run floor, but that floor is spread at fixed config, not an
+  intervention's variance across initialisations. Replication at seeds 1 and 2
+  is still outstanding, and the interaction term especially is one seed.
+- Absolute px here are lower than figures quoted elsewhere for the same runs
+  because this scorer reads the raw model; flip-fused numbers are better still.
+  Within this table everything is like-for-like.
+- Scorer kept at `/var/tmp/claude/ear_landmarker/2026-10-19-v3/score_2x2.py`
+  (sha256 e2b564a3...).

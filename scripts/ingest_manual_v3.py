@@ -71,6 +71,12 @@ def main() -> None:
                     help="held-out ears, drawn from ids absent from old train")
     ap.add_argument("--val-frac", type=float, default=0.11,
                     help="validation fraction of what remains (default ~1:8)")
+    ap.add_argument("--preserve-test", action="store_true",
+                    help="Reuse the existing data/v3_manual/test.csv instead of "
+                         "drawing a new one. Use whenever the corpus grew by "
+                         "ADDITION, so results stay comparable with everything "
+                         "already measured on that split; refuses if any "
+                         "previous test ear is missing from the source.")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
@@ -130,7 +136,33 @@ def main() -> None:
                          f"{args.test_size}-ear test split")
 
     rng = random.Random(args.seed)
-    test = set(rng.sample(sorted(eligible), args.test_size))
+    if args.preserve_test:
+        # Keep the EXISTING test split verbatim. Legitimate only when the
+        # corpus grew by ADDITION: every previous ear must still be present
+        # with unchanged labels, which is asserted below. The payoff is that
+        # the new model stays directly comparable to every number already
+        # measured on this split -- redrawing would silently invalidate the
+        # whole flip-consistency sweep and the seed floor alongside it.
+        prev = OUT / "test.csv"
+        if not prev.exists():
+            raise SystemExit(f"--preserve-test needs an existing {prev}")
+        with open(prev, encoding="utf-8") as fh:
+            test = {Path(r["image_file"]).stem for r in csv.DictReader(fh)}
+        missing = test - set(stems)
+        if missing:
+            raise SystemExit(
+                f"--preserve-test: {len(missing)} previous test ears are gone "
+                f"from the source (e.g. {sorted(missing)[:3]}). The corpus did "
+                f"not grow purely by addition, so the old split cannot be kept.")
+        leaked = test & old_train
+        if leaked:
+            raise SystemExit(f"--preserve-test: {len(leaked)} test ears are in "
+                             f"data/manual/train.csv; the baseline is not clean "
+                             f"on this split any more")
+        print(f"preserved the existing test split: {len(test)} ears, "
+              f"all present with unchanged labels")
+    else:
+        test = set(rng.sample(sorted(eligible), args.test_size))
     rest = [s for s in stems if s not in test]
     rng.shuffle(rest)
     n_val = int(round(len(rest) * args.val_frac))
