@@ -3054,3 +3054,64 @@ which generation places them better. Ridge response measures which convention a
 model follows, and the three follow different ones -- which is the same reason
 NME was unusable across generations. A convention-neutral interior metric is
 still missing, and the rim results do not transfer to these 35 points.
+
+## The rim under the same polarity test -- and why a ridge filter is wrong here
+*2026-10-20*
+
+The interior result (valley down, crest up by a matching amount = convention
+shift) raised the obvious question for the rim, whose +0.50 win was measured
+with Sobel gradient MAGNITUDE. Three fields on points 0-19, n=400 per domain,
+plus a null the interior did not need: RANDOM ON-HULL, points spread along the
+GT convex-hull boundary, so "any plausible outline" scores there and a model
+only earns credit above it.
+
+      field          on-hull  in-hull     GT   iBUG   shipped  latest   latest-shipped
+      v3 crops
+        sobel |grad|   3.744    1.773   4.799  4.390   4.347   4.801   +0.455 (85.0%)
+        sato_valley    1.811    1.492   2.259  2.388   2.435   2.297   -0.138 (33.5%)
+        sato_CREST     1.482    1.956   1.259  1.359   1.358   1.309   -0.048 (ns)
+      manual crops
+        sobel |grad|   2.762    1.563   3.359  3.294   3.506   4.135   +0.629 (88.2%)
+        sato_valley    1.830    1.375   2.259  2.260   2.245   2.058   -0.187 (38.0%)
+        sato_CREST     1.293    1.654   1.200  1.181   1.208   1.212   +0.004 (ns)
+
+The headline survives its proper null: Sobel +0.455 / +0.629 over shipped
+(p=3e-46, 1e-57) and **+1.06 / +1.37 over the on-hull boundary**, so it is not
+merely tracing a plausible outline.
+
+But sato-VALLEY again says the latest model got worse, and this time CREST does
+NOT compensate -- so the interior's explanation does not transfer and the drop
+needed its own test.
+
+### The scale sweep, with no model in it
+
+Take the GROUND TRUTH rim and scale it about its own centroid:
+
+      scale   sato_valley  vs 1.00    sobel   vs 1.00      (v3 crops)
+      0.94       1.178      -1.082    3.226    -1.573
+      0.97       1.524      -0.736    4.238    -0.561
+      1.00       2.259      +0.000    4.799    +0.000   <- Sobel PEAKS here
+      1.03       3.044      +0.785    3.662    -1.137
+      1.06       3.081      +0.822    2.581    -2.218   <- valley peaks HERE
+
+**Sobel is maximised exactly at the true contour. Sato-valley is maximised 3-6%
+OUTSIDE it.** The rim is a step edge, not a ridge; a dark-valley filter there
+locks onto the shadow crevice between ear and head, which lies outside the
+helix. Such a filter necessarily scores a tighter contour lower, and would rank
+a 3-6% oversized contour as the best of all -- it is the wrong instrument for a
+silhouette, demonstrably and not by assertion.
+
+The latest model's rim was independently measured as 2.6% / 5.8% smaller in
+area (= 1.3% / 2.9% linear). Pure shrink of that size predicts a valley drop of
+roughly -0.32 / -0.58; the observed drops are **-0.138 / -0.187**, i.e. the
+latest model loses LESS valley response than its tightness alone would cost.
+So even on the unsuitable instrument it is doing better than its geometry
+predicts.
+
+### Status of the exterior
+
+Three instruments now agree on the rim: Sobel edge response (+0.50/+0.51 on
+87%/86% of ears, above the on-hull null), flip equivariance (3.5x), and the
+overshoot control (contour is tighter, not wider). The one dissenting
+instrument has been shown to peak outside the true boundary, with the model
+removed from the test. The exterior result stands.
