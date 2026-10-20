@@ -60,6 +60,14 @@ class AugmentationParams:
     # the range real captures use. No other augmentation covers foreshortening.
     perspective_deg: float = 0.0
     perspective_prob: float = 0.5
+    # Image-quality degradation: blur, resolution loss, sensor noise, JPEG.
+    # Off by default. The v3 corpus was curated toward sharp, high-resolution,
+    # lightly compressed crops (median sharpness 54% above data/manual), which
+    # removed the soft and blocky images that had been acting as implicit
+    # augmentation -- and the v3 models then measured 60-68% jitterier than
+    # shipped under blur and JPEG. Nothing else in this list models image
+    # quality; colour jitter covers brightness/contrast only.
+    degrade_prob: float = 0.0
 
 
 class EarLandmarkDataset(Dataset):
@@ -141,6 +149,12 @@ class EarLandmarkDataset(Dataset):
         if self.augmentation:
             image, landmarks, _ = self._geo_augment(image, landmarks)
 
+        # Image-quality degradation (photometric/resolution only, so labels are
+        # untouched). After geometry so it composes with every warp.
+        if self.augmentation and self.augmentation.degrade_prob > 0 \
+                and random.random() < self.augmentation.degrade_prob:
+            image = self._degrade(image)
+
         # PIL -> tensor [0, 1]
         tensor_img = TF.to_tensor(image)
 
@@ -172,6 +186,43 @@ class EarLandmarkDataset(Dataset):
             # loss-trajectory screen needs and what a final residual cannot give.
             "idx": torch.tensor(global_idx, dtype=torch.long),
         }
+
+    @staticmethod
+    def _degrade(image: Image.Image) -> Image.Image:
+        """Camera-pipeline order: optics/resolution -> sensor noise -> codec.
+
+        Each stage fires independently with p=0.5, at least one always, so a
+        degraded sample is never a no-op. Ranges are at the 192 px working
+        size: blur sigma 0.4-1.6 px, downscale to 30-75% then back up
+        (bilinear), noise std 0.004-0.03 of full scale, JPEG quality 30-90.
+        Python's `random` drives every choice (numpy is seeded from it), so
+        the existing per-worker seeding makes this reproducible.
+        """
+        from PIL import ImageFilter
+        import io
+        stages = [random.random() < 0.5 for _ in range(4)]
+        if not any(stages):
+            stages[random.randrange(4)] = True
+        blur, down, noise, jpeg = stages
+        w, h = image.size
+        if blur:
+            image = image.filter(ImageFilter.GaussianBlur(random.uniform(0.4, 1.6)))
+        if down:
+            f = random.uniform(0.30, 0.75)
+            small = image.resize((max(8, round(w * f)), max(8, round(h * f))),
+                                 Image.BILINEAR)
+            image = small.resize((w, h), Image.BILINEAR)
+        if noise:
+            rng = np.random.default_rng(random.getrandbits(32))
+            a = np.asarray(image, dtype=np.float32) / 255.0
+            a = a + rng.normal(0.0, random.uniform(0.004, 0.03), a.shape)
+            image = Image.fromarray((np.clip(a, 0, 1) * 255 + 0.5).astype(np.uint8))
+        if jpeg:
+            buf = io.BytesIO()
+            image.save(buf, "JPEG", quality=random.randint(30, 90))
+            buf.seek(0)
+            image = Image.open(buf).convert("RGB")
+        return image
 
     def _geo_augment(
         self, image: Image.Image, landmarks: torch.Tensor,

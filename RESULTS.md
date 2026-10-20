@@ -3179,3 +3179,32 @@ A stability arm is a fix only if ALL hold against v3g_fc05_s42:
      0.28% floor (paired), and rim edge response does not fall.
   3. Geometric/photometric jitter (the trained family) is reported as
      SECONDARY and cannot carry the claim on its own.
+
+## Why the latest model jitters, and the degradation augmentation
+*2026-10-20*
+
+Training augmentation covers rotation (+/-15 deg), bbox jitter (+/-10%) and
+colour (+/-30%), and NOTHING for image quality. The held-out jitter regression
+lines up with exactly that: rotation +9%, wobble +37%, blur +68%, JPEG +60%.
+
+Shipped had the same augmentation and did not regress, because its corpus
+supplied the missing degradation implicitly. v3 curation removed it:
+
+      train split           median src px   sharpness p10/p50   JPEG-blocky
+      data/manual (shipped)       220            21 / 128          15.2%
+      data/v3_manual (latest)     267            39 / 197           9.5%
+      data/preprocessed (test)    256             8 /  61          57.9%
+
+Cleaner labels on sharper images was the right corpus decision; it needs the
+degradation put back as augmentation. `--degrade-prob` adds blur, downscale-
+upscale, sensor noise and JPEG in camera-pipeline order, photometric only.
+Synthetic sharpness p10/p25/p50 lands at 11/20/49 against the real off-domain
+8/16/41 -- calibrated on ONE image statistic of the test domain, never on its
+labels or jitter, noted as a mild leak.
+
+**Pre-registered for these arms** (the stability-penalty criteria above carry
+over, with one change). Once training sees blur and JPEG, those stop being
+held out. The primary held-out tests become MOTION blur (directional, never
+trained), rotation, and the NATURAL degradation of data/preprocessed itself.
+Accuracy on the preserved split stays binding. Trained-family jitter (Gaussian
+blur, JPEG, wobble) is reported, but secondary.

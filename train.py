@@ -175,6 +175,10 @@ def main() -> None:
                              "self-disagrees by ~60%% of its own error. Costs a "
                              "second forward pass per step. A constant predictor "
                              "is perfectly equivariant, so keep the weight small.")
+    parser.add_argument("--degrade-prob", type=float, default=0.0,
+                        help="Probability of image-quality degradation per "
+                             "training sample (blur, downscale, noise, JPEG; "
+                             "photometric only). 0 = off.")
     parser.add_argument("--stability-consistency", type=float, default=0.0,
                         help="Weight of a penalty on disagreement between the "
                              "prediction and the mapped-back prediction on a "
@@ -215,6 +219,7 @@ def main() -> None:
         bbox_jitter=0.1,
         bbox_jitter_prob=0.5,
         perspective_deg=args.perspective_deg,
+        degrade_prob=args.degrade_prob,
     )
 
     data_dir = (PROJECT / args.data_dir) if args.data_dir else DATA_DIR
