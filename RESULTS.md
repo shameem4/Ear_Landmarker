@@ -2653,3 +2653,107 @@ whole family of post-hoc re-parameterisation fixes.
 `scripts/eval_gt_free.py` is DEAD: it needs `BlazeEar/data/yolo11_ears`, which
 no longer exists, and reports nan for every model rather than failing. Use
 `scripts/eval_edge_response.py`.
+
+### The tangential component is inherited, not introduced, 2026-10-19
+
+Five interventions failed to move tangential error. A sixth measurement
+explains why, by decomposing the RELABELLING itself rather than the models.
+
+`new_manual_data/` (10,535 annotations, the source `data/manual` was built
+from) and `v3_manual_data/` (6,099) share 4,279 ears. The crops differ, so each
+ear's old labelling was Procrustes-aligned onto its new one -- translate,
+rotate, uniform scale -- leaving only how the annotation changed, and that
+residual split along the new contour. 3,000 ears, residual as a fraction of the
+ear diagonal:
+
+| | residual |
+|---|---|
+| normal, on/off the contour | **0.0065** |
+| tangential, along the contour | 0.0019 |
+| tangential share | **7.7%** |
+
+**The adjustment was almost purely normal.** Per strip the tangential share is
+4.6-10.4% on every contour strip, and the two exceptions confirm the mechanism
+rather than breaking it: canal 39 at 50.9% and crus 50-54 at 27.6% are the
+points with little or no contour to hug, so their small residual has no
+preferred direction.
+
+So v3's tangential positions are **inherited from the manual convention**. The
++5% tangential gap against the baseline is not something the re-annotation
+introduced, and there is no cleaner along-contour signal to learn -- which is
+why `--tangential-weight 2.0` moved tangential by nothing measurable while
+costing normal error significantly.
+
+### Five tangential interventions, all negative
+
+Against `v3_gpu_s42` (same data, same seed, one variable each), after
+re-scoring with stored-score checkpoint selection:
+
+| intervention | normal | tangential | verdict |
+|---|---|---|---|
+| EMA 0.999 | -0.16% (ns) | -1.02% (ns) | no effect |
+| `--tangential-weight 2.0` | **+1.68% (p=3.5e-04)** | -1.94% (ns) | costs normal, buys nothing |
+| arc-length re-spacing | +16.1% | **+152.5%** | catastrophic |
+| top-3 weight averaging | -0.1 to -1.0% | -0.1 to -2.3% | no effect |
+| inference `tau` sweep | optimal at 1.0 | optimal at 1.0 | lever spent |
+| 3-seed ensemble | -5.8% | **-10.2%** | works, at 3x inference |
+
+EMA and checkpoint averaging fail for the same structural reason: both operate
+WITHIN one training trajectory, while the variance is between random
+initialisations. Seeds disagree with each other by 0.943 px tangentially while
+sitting 1.271 px from the label, so only a genuine multi-init ensemble reaches
+it.
+
+**A flag that silently did nothing.** `--tangential-weight` was routed by
+`if tangential_weight >= 1.0`, so any value ABOVE 1.0 fell through to plain
+isotropic Wing loss. The flag parsed, logged into hparams, and changed nothing.
+Fixed to `== 1.0`. Had this not been caught, the up-weighting arm would have
+returned a confident null.
+
+### The -23.2% normal gain is WITHDRAWN as a placement claim
+
+Scored away from home -- `data/manual/test_clean_for_v3.csv`, 770 ears clean
+for both models -- the sign flips:
+
+| | normal | tangential |
+|---|---|---|
+| HOME (v3 labels/crops) | **-23.2%** (p=2.7e-162) | +4.8% |
+| AWAY (manual labels/crops) | **+49.4%** (p=1.8e-55) | +20.8% |
+
+Each model wins on its own convention. **NME cannot adjudicate between two
+label conventions in either direction**, and the home figure was convention
+agreement, not better placement.
+
+**What survives is the GT-free result**, which holds in BOTH domains:
+
+| edge response | GT | v3 | baseline |
+|---|---|---|---|
+| home, v3 crops | 4.5617 | 4.5249 | 4.0698 |
+| away, manual crops | 3.2245 | **3.8354** | 3.3053 |
+
+v3 is +0.530 over the baseline away from home (p=7.0e-90, higher on 86.8% of
+ears) and **scores above the manual ground truth itself** there, while the
+baseline sits level with it. The baseline matches manual GT because it learned
+manual GT; v3 beats it because manual GT is not on the structure.
+
+### The noise floor, checked like-for-like
+
+The earlier 0.28% was compared against a figure from a different corpus, metric
+and sample count. Re-measured properly -- same architecture, same loss, three
+seeds each, each corpus on its own test split:
+
+| | pooled NME | relative spread |
+|---|---|---|
+| old corpus (`manual_occ`, n=1054) | 0.01446 +/- 0.00014 | **0.99%** |
+| new corpus (`v3_gpu`, n=1000) | 0.00942 +/- 0.00003 | **0.30%** |
+
+**3.3x tighter.** The old corpus independently reproduces ~1%, matching the
+1.06% RESULTS.md records from `data/preprocessed` -- two corpora, two sample
+counts, same floor, so that figure is a property of the old labels rather than
+of one benchmark.
+
+**A defect in the measuring, found by audit.** The ad-hoc scoring scripts
+selected checkpoints by parsing `nme=` out of the filename, which is the
+tie-breaking bug this repo already documents: 3 of 5 runs got a different
+checkpoint than stored-score selection. Everything above was re-scored
+correctly; the conclusions held but the numbers moved.

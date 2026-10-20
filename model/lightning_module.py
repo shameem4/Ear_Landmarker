@@ -87,8 +87,14 @@ class EarLandmarkerModule(pl.LightningModule):
         self._traj: list = []
 
         # tangential_weight < 1 discounts residual along the GT contour, where most
-        # of the label noise lives. 1.0 reproduces plain isotropic Wing loss.
-        if tangential_weight >= 1.0 and spacing_weight <= 0.0:
+        # of the label noise lives; > 1 up-weights it, which is wanted when the
+        # labels are clean enough that position along the contour is signal
+        # rather than noise. 1.0 exactly reproduces plain isotropic Wing loss.
+        #
+        # The test was `>= 1.0`, which silently routed ANY up-weighting to plain
+        # WingLoss -- `--tangential-weight 2.0` ran as 1.0 and the flag did
+        # nothing, with nothing in the log to say so.
+        if tangential_weight == 1.0 and spacing_weight <= 0.0:
             self.criterion = WingLoss(w=wing_w, epsilon=wing_epsilon)
         else:
             self.criterion = TangentialWeightedWingLoss(
