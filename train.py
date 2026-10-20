@@ -175,6 +175,15 @@ def main() -> None:
                              "self-disagrees by ~60%% of its own error. Costs a "
                              "second forward pass per step. A constant predictor "
                              "is perfectly equivariant, so keep the weight small.")
+    parser.add_argument("--stability-consistency", type=float, default=0.0,
+                        help="Weight of a penalty on disagreement between the "
+                             "prediction and the mapped-back prediction on a "
+                             "randomly shifted/scaled/brightened copy (training "
+                             "only). Targets frame-to-frame jitter. 0 = off.")
+    parser.add_argument("--stab-shift", type=float, default=0.02)
+    parser.add_argument("--stab-scale", type=float, default=0.04)
+    parser.add_argument("--stab-bright", type=float, default=0.06)
+    parser.add_argument("--stab-noise", type=float, default=0.02)
     parser.add_argument("--ema-decay", type=float, default=0.0,
                         help="Exponential moving average of the weights, 0 = off. "
                              "0.999 is a reasonable start. Reduces run-to-run "
@@ -294,6 +303,9 @@ def main() -> None:
         tangential_weight=args.tangential_weight,
         spacing_weight=args.spacing_weight,
         flip_consistency=args.flip_consistency,
+        stability_consistency=args.stability_consistency,
+        stab_shift=args.stab_shift, stab_scale=args.stab_scale,
+        stab_bright=args.stab_bright, stab_noise=args.stab_noise,
         point_trajectory_dir=args.point_trajectory_dir,
     )
 

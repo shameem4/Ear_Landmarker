@@ -13,6 +13,59 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from model.ear_landmarker import EarLandmarker, EarLandmarkerHeatmap
 from model.losses import WingLoss, TangentialWeightedWingLoss, _contour_frames
+import torch.nn.functional as F
+
+
+def wobble(images: torch.Tensor, max_shift: float, max_scale: float,
+           bright: float, noise: float, generator: torch.Generator | None = None):
+    """Perturb a batch the way a live detector and camera do between frames.
+
+    Geometric: per-sample isotropic scale s in [1-max_scale, 1+max_scale] and
+    shift (dx, dy) in [-max_shift, max_shift], both as fractions of the crop.
+    Photometric: brightness factor in [1-bright, 1+bright] and Gaussian pixel
+    noise of std `noise`, applied in [0, 1] intensity space. Assumes the
+    dataset's default normalisation to [-1, 1] (mean = std = 0.5).
+
+    Returns the perturbed batch and (s, dx, dy) for `unwobble`. Sampling uses
+    affine_grid with align_corners=False, whose pixel centres are (i+0.5)/W --
+    the same convention as the heatmap decoder, so the inverse below is exact
+    in continuous [0, 1] coordinates. Out-of-crop samples read 0 in the
+    normalised tensor, i.e. mid-grey, matching the inference pad.
+    """
+    b = images.shape[0]
+    dev, dt = images.device, images.dtype
+    def u(lo, hi):
+        return lo + (hi - lo) * torch.rand(b, device=dev, dtype=dt, generator=generator)
+    s = u(1 - max_scale, 1 + max_scale)
+    dx = u(-max_shift, max_shift)
+    dy = u(-max_shift, max_shift)
+    # affine_grid maps OUTPUT normalised coords to INPUT ones: in = s*out + 2*d
+    theta = torch.zeros(b, 2, 3, device=dev, dtype=dt)
+    theta[:, 0, 0] = s; theta[:, 1, 1] = s
+    theta[:, 0, 2] = 2 * dx; theta[:, 1, 2] = 2 * dy
+    grid = F.affine_grid(theta, list(images.shape), align_corners=False)
+    out = F.grid_sample(images, grid, mode="bilinear", padding_mode="zeros",
+                        align_corners=False)
+    if bright > 0 or noise > 0:
+        x01 = (out + 1) / 2
+        x01 = x01 * u(1 - bright, 1 + bright).view(b, 1, 1, 1)
+        if noise > 0:
+            x01 = x01 + noise * torch.randn(x01.shape, device=dev, dtype=dt,
+                                            generator=generator)
+        out = x01.clamp(0, 1) * 2 - 1
+    return out, (s, dx, dy)
+
+
+def unwobble(points: torch.Tensor, params) -> torch.Tensor:
+    """Map (B, K, 2) [0,1] predictions made on a wobbled crop back to the
+    original crop. In [0,1] units affine_grid samples input u_in = s*u_out +
+    (1-s)/2 + d, so a prediction u_out on the wobbled image is the original
+    point at that u_in."""
+    s, dx, dy = params
+    out = points.clone()
+    out[:, :, 0] = s[:, None] * points[:, :, 0] + (1 - s[:, None]) / 2 + dx[:, None]
+    out[:, :, 1] = s[:, None] * points[:, :, 1] + (1 - s[:, None]) / 2 + dy[:, None]
+    return out
 
 # (name, start_idx, end_idx) -- linestrip groups, end exclusive
 LANDMARK_REGIONS = [
@@ -57,6 +110,11 @@ class EarLandmarkerModule(pl.LightningModule):
         tangential_weight: float = 1.0,
         spacing_weight: float = 0.0,
         flip_consistency: float = 0.0,
+        stability_consistency: float = 0.0,
+        stab_shift: float = 0.02,
+        stab_scale: float = 0.04,
+        stab_bright: float = 0.06,
+        stab_noise: float = 0.02,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -156,6 +214,35 @@ class EarLandmarkerModule(pl.LightningModule):
             else:
                 d = d.mean()
             loss = loss + self.hparams["flip_consistency"] * d
+
+        # STABILITY-CONSISTENCY PENALTY, off unless stability_consistency > 0,
+        # and training only.
+        #
+        # The same argument as the flip penalty, for the perturbations a live
+        # pipeline actually produces between frames: detector box wobble
+        # (shift/scale) and sensor brightness/noise. The geometric part is
+        # already in the training distribution via bbox jitter, yet the
+        # flip-consistency model measured 34% jitterier than shipped off-domain
+        # under flip fusion, because augmentation symmetrises the distribution
+        # and nothing in the loss compares m(x) with the mapped-back m(T(x)).
+        # Ranges are deliberately WIDER than scripts/eval_jitter.py's
+        # (+/-0.94% shift, +/-2% scale, +/-3% brightness, 0.01 noise) so the
+        # penalty is not fitted to the exact test perturbation.
+        #
+        # Degenerate direction, as for the flip penalty: a constant predictor
+        # is perfectly stable, so the weight must stay small.
+        if self.training and self.hparams.get("stability_consistency", 0.0) > 0:
+            hp = self.hparams
+            wob, prm = wobble(images, hp["stab_shift"], hp["stab_scale"],
+                              hp["stab_bright"], hp["stab_noise"])
+            back = unwobble(self.model(wob).view(-1, hp.num_landmarks, 2), prm)
+            p2 = preds.view(-1, hp.num_landmarks, 2)
+            d = torch.norm(p2 - back, dim=-1)
+            if visible is not None:
+                d = (d * visible).sum() / visible.sum().clamp_min(1.0)
+            else:
+                d = d.mean()
+            loss = loss + hp["stability_consistency"] * d
 
         # Per-point NME (Normalized Mean Error) as fraction of [0,1] range.
         # Averaged over visible points only, so it matches what was supervised.
