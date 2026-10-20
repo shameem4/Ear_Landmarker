@@ -2905,3 +2905,73 @@ Every conclusion survived; shifts were 0.1-0.4 pp and no sign or ordering
 changed. The lesson is narrower than the bug: knowing about a trap does not
 help if you re-implement it instead of calling the one function in the repo
 that already handles it.
+
+## Validating the latest model WITHOUT ground truth
+*2026-10-20*
+
+The label convention moved between iBUG-era, commissioned and v3 data, so NME
+across generations measures the convention, not accuracy. Three instruments
+that never read a label, each on 1,000+ ears, in every crop domain available.
+
+### 1. Edge response under the rim (points 0-19)
+
+Does the contour lie on real intensity structure? Per-image normalised. Each
+corpus's own GT scored on the same footing, as a reference, not a target.
+
+      domain          GT      iBUG-era   shipped   latest    latest-shipped
+      v3 crops      4.5617     4.1053    4.0698    4.5654    +0.496 (87.0%)
+      manual crops  3.4641     3.4313    3.5412    4.0554    +0.514 (86.4%)
+
+Both p < 1e-120. The win holds **away from home**: on manual crops the latest
+model beats the shipped one on 86.4% of ears and beats *manual's own ground
+truth* by +0.591 on 84.4% of ears. On v3 crops it matches v3's GT (+0.004,
+p=0.26) -- it has reached the label's own quality there.
+
+**The control this needed.** Edge response rewards a contour that OVERSHOOTS
+onto a hairline or jaw edge, which is the cheap way to win it. So rim extent
+was measured in the same crops:
+
+      domain         shipped area   latest area   latest larger on
+      v3 crops           6996         6812  (-2.6%)      23.9%
+      manual crops       8664         8163  (-5.8%)      19.6%
+
+The latest contour is **smaller and shorter**, not larger, in both domains
+(p=0.0 each), and no model puts any point outside the crop. A tighter contour
+scoring higher edge response is the opposite of overshoot, so that explanation
+is refuted rather than merely unmentioned.
+
+### 2. Flip equivariance, raw model (px at 192)
+
+      domain          iBUG-era   shipped   latest
+      v3 crops         2.4306    1.1850    0.3117
+      manual crops     3.1984    1.6111    0.4628
+
+A monotone 3.8x / 3.5x improvement across generations. No label involved.
+
+### 3. Jitter under perturbation (no GT at all)
+
+Geometric spread, px at 192, lower better:
+
+      domain              iBUG-era   shipped   latest
+      data/v3_manual        0.424     0.252     0.199   latest best
+      data/manual           0.617     0.360     0.342   latest best
+      data/preprocessed     0.574     0.504     0.587   latest WORST
+
+**The one place the latest model loses.** `data/preprocessed` is 64% iBUG, a
+domain it has never seen, and there it is 16% jitterier than shipped and
+slightly worse than the iBUG-era model. Note `scripts/eval_jitter.py` defaults
+to exactly that corpus, so the default invocation reports the single domain
+where the result is unfavourable -- worth knowing before quoting it either way.
+
+### What this does and does not establish
+
+Established: the latest model places the **rim** on real structure better than
+both predecessors, in both domains, by a margin that survives the overshoot
+control; it is far more self-consistent under mirroring; and it is the steadiest
+under perturbation except on iBUG-style images.
+
+NOT established: **points 20-54 are unvalidated by all of this.** Antihelix,
+concha and crus sit on soft ridges with no reliable gradient, so no instrument
+here scores them. Spacing regularity was deliberately excluded as circular,
+since the flip-consistency penalty was selected partly on tangential error.
+And the iBUG-domain jitter regression is real, not explained.
