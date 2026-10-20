@@ -3208,3 +3208,18 @@ held out. The primary held-out tests become MOTION blur (directional, never
 trained), rotation, and the NATURAL degradation of data/preprocessed itself.
 Accuracy on the preserved split stays binding. Trained-family jitter (Gaussian
 blur, JPEG, wobble) is reported, but secondary.
+
+### Jitter floor, measured (three seeds of the grown-corpus control)
+
+Fused, data/preprocessed, n=300, same frames for every model:
+
+      perturbation   shipped  ctl s42  ctl s1  ctl s2   seed spread   ctl vs shipped
+      geom x1         0.409    0.524   0.549   0.553       5.5%          +33%
+      ROT +/-2deg     0.374    0.414   0.413   0.409       1.3%          +10%
+      BLUR            0.206    0.318   0.307   0.309       3.5%          +51%
+      JPEG            0.279    0.415   0.437   0.447       7.3%          +56%
+
+The regression replicates across seeds at 6-15x the seed-to-seed spread, so it
+is a property of the v3 recipe, not seed luck. The floor also sets the bar for
+the degradation and stability arms: an improvement must clear ~5-7% (geom,
+JPEG) or ~1-4% (rotation, blur) to count, and those arms are single-seed.
