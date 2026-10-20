@@ -2757,3 +2757,81 @@ selected checkpoints by parsing `nme=` out of the filename, which is the
 tie-breaking bug this repo already documents: 3 of 5 runs got a different
 checkpoint than stored-score selection. Everything above was re-scored
 correctly; the conclusions held but the numbers moved.
+
+### Flip consistency: what mirror augmentation does not fix, 2026-10-20
+
+Flip augmentation has been on at p=0.5 throughout. It symmetrises the training
+DISTRIBUTION; it does not symmetrise the learned FUNCTION, because nothing in
+the loss compares `m(x)` with `unmirror(m(mirror(x)))`. Measured on the raw
+model, that self-disagreement is **~60% of the model's own total error** -- and
+it is there in the shipped baseline too:
+
+| run | self-disagreement | as % of its own error |
+|---|---|---|
+| `fixed_conv_s42` | 0.00754 | 59.7% |
+| `v3_gpu_s42` | 0.00691 | 60.4% |
+| `v3_gpu_s1` | 0.00749 | 65.0% |
+| `v3_gpu_s2` | 0.00759 | 66.0% |
+
+This is why flip fusion pays its 2x inference cost at all.
+
+**A MEASUREMENT TRAP WORTH RECORDING.** `LandmarkPredictor.predict()` has
+`FLIP_FUSION_DEFAULT = True`, so measuring equivariance THROUGH it returns
+~0 by construction -- fusion averages both arms, so it is exactly equivariant
+whatever the model does. An early version of this measurement did that and
+concluded the model was chirality-blind at 0.0006 px. Measure the raw
+`module.model`, not the predictor.
+
+### The sweep: a cliff between 0.5 and 0.75
+
+`--flip-consistency W` adds `W * ||m(x) - unmirror(m(mirror(x)))||` to the loss.
+All runs seed 42, same data, same recipe, ~500 epochs, scored on the leak-free
+1,000-ear split:
+
+| W | equivariance | % of err | error px | normal | tangential | fusion gain |
+|---|---|---|---|---|---|---|
+| 0.00 | 0.00691 | 60.4% | 2.197 | 1.200 | 1.539 | -4.88% |
+| **0.50** | 0.00252 | 22.6% | **2.146** | **1.193** | **1.479** | -0.76% |
+| 0.75 | 0.00058 | 5.0% | 2.225 | 1.215 | 1.556 | -0.06% |
+| 1.00 | 0.00005 | 0.4% | 2.285 | 1.221 | 1.622 | 0.00% |
+| 2.00 | 0.00008 | 0.7% | 2.296 | 1.234 | 1.626 | +0.02% |
+
+**W=0.5 is the operating point**: -63.5% equivariance error, **-2.36% total
+error (p=1.8e-04)**, -3.87% tangential. It is the only weight that beats the
+control, and the only thing in this investigation that moved tangential at all
+-- EMA (ns), `--tangential-weight 2.0` (ns, and cost normal error), arc-length
+re-spacing (+152%) and the inference `tau` sweep (already optimal) all failed.
+
+**It also retires flip fusion.** Fusion's benefit collapses -4.88% -> -0.76%, so
+a consistent model at 1x inference lands within 0.76% of its own fused version,
+where the control needs 2x to close 4.88%. That is the operational win
+FLIP_REVIEW.md anticipated from retraining.
+
+**Above 0.5 the penalty wins and accuracy loses.** The loss admits a degenerate
+direction -- a constant predictor is perfectly equivariant -- and W>=0.75 starts
+buying symmetry with real accuracy: +1.23% at 0.75, +3.98% at 1.00, +4.51% at
+2.00. Equivariance saturates around 0.4-0.7% of own error and stops responding,
+so past the cliff there is nothing further to buy.
+
+### Three failed models of this curve
+
+Recorded because each failed the same way -- assuming smoother, faster-settling
+behaviour than the system has:
+
+- **exponential fit** on equivariance predicted 0.0009 at W=1.0; actual 0.00005,
+  18x more symmetric. It saturates rather than decaying.
+- **parabolic fit** on error put the minimum at W~0.75; 0.75 is already on the
+  losing side. The minimum is at or below 0.5.
+- **80-epoch probes** to locate the cliff cheaply FAILED THEIR OWN CONTROL: at
+  80 epochs W=0.5 reads 41.1% equivariance against its converged 22.6%, and the
+  probe shows a smooth descent (53.7 / 41.1 / 28.4% at 0.25 / 0.5 / 0.75) with
+  no saturation anywhere. Equivariance settles LATE, so a short run cannot see
+  the thing that distinguishes the regimes. The probe control is why this was
+  caught rather than published.
+
+W=0.25 was launched and stopped mid-run; the minimum is bracketed at or below
+0.5 either way.
+
+**NOT YET REPLICATED.** Every point above is a single seed. -2.36% is 8x the
+0.28% seed floor, but that floor measures run-to-run spread at fixed config,
+not how an intervention varies across initialisations.

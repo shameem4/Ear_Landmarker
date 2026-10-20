@@ -167,6 +167,14 @@ def main() -> None:
     parser.add_argument("--run-name", type=str, default="EarLandmarker",
                         help="Names the checkpoint/log subdirectory, so concurrent "
                              "experiments do not overwrite each other")
+    parser.add_argument("--flip-consistency", type=float, default=0.0,
+                        help="Penalise ||m(x) - unmirror(m(mirror(x)))|| during "
+                             "training, 0 = off. Flip AUGMENTATION is already on "
+                             "and symmetrises the training distribution; it does "
+                             "not symmetrise the learned function, which here "
+                             "self-disagrees by ~60%% of its own error. Costs a "
+                             "second forward pass per step. A constant predictor "
+                             "is perfectly equivariant, so keep the weight small.")
     parser.add_argument("--ema-decay", type=float, default=0.0,
                         help="Exponential moving average of the weights, 0 = off. "
                              "0.999 is a reasonable start. Reduces run-to-run "
@@ -285,6 +293,7 @@ def main() -> None:
         tau=args.tau,
         tangential_weight=args.tangential_weight,
         spacing_weight=args.spacing_weight,
+        flip_consistency=args.flip_consistency,
         point_trajectory_dir=args.point_trajectory_dir,
     )
 

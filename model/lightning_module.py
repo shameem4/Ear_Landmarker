@@ -56,6 +56,7 @@ class EarLandmarkerModule(pl.LightningModule):
         point_trajectory_dir: str | None = None,
         tangential_weight: float = 1.0,
         spacing_weight: float = 0.0,
+        flip_consistency: float = 0.0,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -122,6 +123,39 @@ class EarLandmarkerModule(pl.LightningModule):
         preds = self.model(images)
 
         loss = self.criterion(preds, targets, visible)
+
+        # FLIP-CONSISTENCY PENALTY, off unless flip_consistency > 0.
+        #
+        # Why it is a different lever from the flip augmentation that is already
+        # on: augmentation at p=0.5 symmetrises the training DISTRIBUTION, so
+        # both orientations are seen. It does not symmetrise the learned
+        # FUNCTION, because nothing in the loss compares m(x) with
+        # unmirror(m(mirror(x))). Measured on this corpus, that self-
+        # disagreement is ~60% of the model's own total error (0.00691 against
+        # 0.01144 for v3_gpu_s42), which is why flip fusion still pays its 2x
+        # inference cost.
+        #
+        # The penalty is on the FUNCTION, per sample, so it constrains exactly
+        # what augmentation leaves alone. Mirroring is done on the normalised
+        # tensor and undone as 1 - x, matching inference.py's convention
+        # exactly -- the decoder's x grid is (i+0.5)/w and the flip carries NO
+        # index permutation, so point i is the same anatomical point in both
+        # arms.
+        #
+        # It carries a degenerate direction -- a constant predictor is
+        # perfectly equivariant -- so the weight must stay small enough that
+        # the supervised term dominates.
+        if self.hparams.get("flip_consistency", 0.0) > 0:
+            mirrored = self.model(torch.flip(images, dims=[3]))
+            m2 = mirrored.view(-1, self.hparams.num_landmarks, 2).clone()
+            m2[:, :, 0] = 1.0 - m2[:, :, 0]
+            p2 = preds.view(-1, self.hparams.num_landmarks, 2)
+            d = torch.norm(p2 - m2, dim=-1)
+            if visible is not None:
+                d = (d * visible).sum() / visible.sum().clamp_min(1.0)
+            else:
+                d = d.mean()
+            loss = loss + self.hparams["flip_consistency"] * d
 
         # Per-point NME (Normalized Mean Error) as fraction of [0,1] range.
         # Averaged over visible points only, so it matches what was supervised.
