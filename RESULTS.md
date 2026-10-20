@@ -2998,3 +2998,59 @@ concha and crus sit on soft ridges with no reliable gradient, so no instrument
 here scores them. Spacing regularity was deliberately excluded as circular,
 since the flip-consistency penalty was selected partly on tangential error.
 And the iBUG-domain jitter regression is real, not explained.
+
+## Interior points (20-54): ridges say "real structure", not "better"
+*2026-10-20*
+
+Three files from the accepted_viewer (`anatomy_contours.py`, `enhanced_edges.py`,
+`retrace_contours.py`) were checked for closing the interior-validation gap.
+Verdict: the EVIDENCE FIELD in `enhanced_edges.py` is reusable, the TRACERS are
+not, for a reason that decides the measurement.
+
+`anatomy_contours.trace()` runs a Viterbi normal-offset search that MOVES the
+contour onto the best nearby evidence (+/-0.15 of ear extent) before reporting
+`supported_fraction`; `retrace_contours.repair()` then A*-searches new paths
+across unsupported gaps. Scoring models through those measures the TRACER: each
+model's contour is pulled onto the same ridge first, so the scores converge and
+the comparison is destroyed. They are CORRECTORS, and the standing rule is that
+independent instruments flag, never correct. So the field was reused -- CLAHE on
+luminance, multiscale, Hessian principal curvature for dark grooves -- and the
+response was sampled at EACH MODEL'S OWN PREDICTED POINTS.
+
+With a matched in-hull random control per image (ridge response is high
+everywhere on a textured ear, so the margin over random is the only finding):
+
+**Every model's interior points sit on real structure.** Sato-valley response,
+latest minus RANDOM: antihelix +0.59, tragus +0.80, concha +0.68, crus +1.21 on
+v3 crops (all p < 1e-22), and +0.47/+0.61/+0.70/+1.05 on manual crops. The
+interior landmarks are not arbitrary.
+
+**But the instrument cannot RANK the models, and the control proves why.**
+Against shipped, the latest model scores LOWER on dark-valley response -- which
+read alone says it got worse:
+
+      strip          sato_VALLEY (latest-shipped)   sato_CREST (latest-shipped)
+      antihelix           -0.258  p=2.1e-27              +0.424  p=8.6e-38
+      concha              -0.107  p=1.6e-09              +0.291  p=1.4e-24
+      tragus              -0.049  p=0.20                 -0.005  p=0.25
+      crus                -0.050  p=0.17                 +0.020  p=0.03
+
+The two polarities move in OPPOSITE directions by matching amounts. The latest
+model has not left the structure; it sits on the antihelix CREST where the
+previous one sat in the GROOVE. That is the v3 relabelling ("landmarks adjusted
+to hug the contours better") faithfully learned: on v3 crops the latest model's
+crest response on the antihelix is 1.784 against v3's own GT at 1.796 -- it has
+matched the convention it was trained on, to within 0.7%. The same pattern holds
+in the manual domain, so it is the model's behaviour, not the crop.
+
+Had the valley filter been run alone, this would have been reported as the
+latest model degrading on the antihelix at p=1e-27. It is a polarity shift.
+
+### So the interior remains UNRANKED
+
+What is established: interior points sit on genuine image structure, far above
+an in-hull random control, for all three generations. What is NOT established:
+which generation places them better. Ridge response measures which convention a
+model follows, and the three follow different ones -- which is the same reason
+NME was unusable across generations. A convention-neutral interior metric is
+still missing, and the rim results do not transfer to these 35 points.
