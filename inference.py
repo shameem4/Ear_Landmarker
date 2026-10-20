@@ -457,6 +457,14 @@ def unmirror_boxes(detections: np.ndarray, width: int) -> np.ndarray:
     return out
 
 
+# Sample the ROI window at unit spacing centred on (cx, cy) instead of rounding
+# its origin to an integer. OFF by default: it changes the crop every consumer
+# of this module sees, including the 3D side, so it wants an A/B before it
+# becomes the default. See square_roi_crop for why the integer path cannot be
+# made flip-equivariant. Override with EAR_SUBPIXEL_ROI=1.
+SUBPIXEL_ROI_CROP = os.environ.get("EAR_SUBPIXEL_ROI", "0") not in ("0", "", "false", "False")
+
+
 def square_roi_crop(frame_rgb: np.ndarray, cx: float, cy: float, side: float,
                     pad_value: int = 128):
     """Crop a SQUARE ROI centred on (cx, cy), padding outside the frame.
@@ -473,12 +481,56 @@ def square_roi_crop(frame_rgb: np.ndarray, cx: float, cy: float, side: float,
     to the model like padding it was trained through.
 
     Returns (crop, x1, y1) where (x1, y1) is the ROI origin in frame
-    coordinates -- possibly negative -- or None if the ROI is unusable.
+    coordinates -- possibly negative -- or None if the ROI is unusable. With
+    SUBPIXEL_ROI_CROP the origin is a float; the caller only ever adds it to
+    landmark coordinates, so that costs nothing.
+
+    THE INTEGER PATH IS NOT FLIP-EQUIVARIANT, which FLIP_REVIEW.md recorded and
+    nothing fixed. `int(round(cx - side/2))` on an as-is frame and
+    `int(round(W - cx - side/2))` on its mirror agree only when the fractional
+    parts cooperate, so the rounding itself is anti-equivariant. Measured
+    through the deployed path on fixtures, running a frame and its mirror and
+    un-mirroring the result disagrees by a mean of **1.038 px**, max 2.583 --
+    against a model whose total error is about 1.6 px. The ROI refinement loop
+    is not the cause (1.038 with it on, 1.058 off).
+
+    No measurement taken through `EarLandmarkDataset` can see any of this: that
+    path resizes a stored crop and never calls this function.
+
+    SUBPIXEL_ROI_CROP samples the window at unit spacing centred on (cx, cy)
+    instead of rounding its origin:
+
+        x_i = cx + (i - (n-1)/2),   i = 0 .. n-1
+
+    which is exactly symmetric under the mirror x -> W-1-x, because
+    W-1-x_i = x_{n-1-i} identically. Rounding the CENTRE with an even side does
+    not work -- the mirror map leaves a systematic one-pixel offset -- so an
+    integer window cannot be made mirror-symmetric in general; the grid has to
+    be float.
     """
     h, w = frame_rgb.shape[:2]
     n = int(round(side))
     if n < 16:
         return None
+
+    if SUBPIXEL_ROI_CROP:
+        # Float origin, unit spacing, symmetric about the centre.
+        x1f = cx - (n - 1) / 2.0
+        y1f = cy - (n - 1) / 2.0
+        # Same usability guard as the integer path, in float terms.
+        if (min(w, x1f + n) - max(0.0, x1f) < 8
+                or min(h, y1f + n) - max(0.0, y1f) < 8):
+            return None
+        # cv2.remap wants two contiguous CV_32FC1 maps; adding a Python float
+        # to a float32 arange promotes to float64, which it rejects.
+        col = (x1f + np.arange(n)).astype(np.float32)
+        row = (y1f + np.arange(n)).astype(np.float32)
+        xs = np.ascontiguousarray(np.broadcast_to(col[None, :], (n, n)))
+        ys = np.ascontiguousarray(np.broadcast_to(row[:, None], (n, n)))
+        crop = cv2.remap(frame_rgb, xs, ys, cv2.INTER_LINEAR,
+                         borderMode=cv2.BORDER_CONSTANT,
+                         borderValue=(pad_value, pad_value, pad_value))
+        return crop, x1f, y1f
 
     x1 = int(round(cx - side / 2))
     y1 = int(round(cy - side / 2))

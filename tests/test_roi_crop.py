@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from inference import square_roi_crop  # noqa: E402
+from inference import square_roi_crop, SUBPIXEL_ROI_CROP  # noqa: E402
 
 PAD = 128
 
@@ -35,19 +35,61 @@ def test_crop_is_always_square(cx, cy):
     assert crop.shape[0] == crop.shape[1] == 60
 
 
+def _expected_origin(c: float, side: float) -> float:
+    """Where the ROI origin should land, for whichever crop path is active.
+
+    The two paths differ by exactly half a pixel, and the sub-pixel one is the
+    better-centred of the two. `cx - side/2` places the pixel EDGES
+    symmetrically about cx, which leaves the pixel CENTRES off by 0.5; the
+    sub-pixel path uses `cx - (n-1)/2`, centring the grid of sampled centres on
+    cx. That is also what makes it exactly mirror-symmetric, since
+    W-1-x_i = x_{n-1-i} only holds for the centred grid.
+    """
+    n = int(round(side))
+    return c - (n - 1) / 2.0 if SUBPIXEL_ROI_CROP else int(round(c - side / 2))
+
+
 def test_outside_frame_is_grey_padded_not_clamped():
     crop, x1, y1 = square_roi_crop(frame(), 10, 10, 60)
-    assert (x1, y1) == (-20, -20), "origin should stay outside the frame, not clamp to 0"
+    assert (x1, y1) == (_expected_origin(10, 60), _expected_origin(10, 60)), \
+        "origin should stay outside the frame, not clamp to 0"
     # the top-left quadrant lies outside the image and must be fill
-    assert np.all(crop[:20, :20] == PAD)
+    assert np.all(crop[:19, :19] == PAD)
     # the part that overlaps the image must be image content, not fill
-    assert np.all(crop[20:, 20:] == 200)
+    assert np.all(crop[21:, 21:] == 200)
 
 
 def test_fully_interior_crop_has_no_padding():
     crop, x1, y1 = square_roi_crop(frame(), 100, 50, 60)
-    assert (x1, y1) == (70, 20)
+    assert (x1, y1) == (_expected_origin(100, 60), _expected_origin(50, 60))
     assert not np.any(crop == PAD), "interior crop should contain no fill"
+
+
+def test_subpixel_crop_is_exactly_flip_equivariant():
+    """The property the sub-pixel path exists for.
+
+    Cropping a frame and cropping its mirror must give mirrored crops. The
+    integer path misses this because `round(cx - s/2)` and
+    `round(W - cx - s/2)` agree only when the fractional parts cooperate.
+    Skipped unless the flag is on, since the integer path is expected to fail
+    it -- that failure is the defect, documented in FLIP_REVIEW.md.
+    """
+    if not SUBPIXEL_ROI_CROP:
+        pytest.skip("integer path is knowingly not flip-equivariant")
+    rng = np.random.default_rng(0)
+    f = rng.integers(0, 255, (100, 200, 3), dtype=np.uint8)
+    W = f.shape[1]
+    for cx in (37.3, 80.0, 123.6, 150.5):
+        a, _, _ = square_roi_crop(f, cx, 50.0, 60)
+        b, _, _ = square_roi_crop(np.ascontiguousarray(f[:, ::-1]),
+                                  W - 1 - cx, 50.0, 60)
+        d = np.abs(a.astype(int) - b[:, ::-1].astype(int))
+        # Equal to within one uint8 level: the sampled POSITIONS mirror
+        # exactly (W-1-x_i = x_{n-1-i}), so all that remains is bilinear
+        # output quantisation, and it is exactly 0 wherever the samples land
+        # on integer columns. The integer path is off by whole pixels here,
+        # not by one level.
+        assert d.max() <= 1, f"not mirror-symmetric at cx={cx}: max {d.max()}"
 
 
 def test_landmark_mapping_round_trips_through_a_padded_crop():
