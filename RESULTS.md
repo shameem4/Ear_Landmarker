@@ -3115,3 +3115,67 @@ Three instruments now agree on the rim: Sobel edge response (+0.50/+0.51 on
 overshoot control (contour is tighter, not wider). The one dissenting
 instrument has been shown to peak outside the true boundary, with the model
 removed from the test. The exterior result stands.
+
+## Cynic audit: the jitter evaluation and --stability-consistency
+*2026-10-20, written while the stability runs train, before any result exists*
+
+### What survived
+
+- **Not a perturbation-size artefact.** Fused off-domain geometric jitter, fc05
+  vs shipped: +32% at 0.5x the eval wobble, +37% at 1x, +45% at 2x, all
+  p < 1e-17 (paired Wilcoxon, n=300). The control is a flat +28% at every size.
+- **Not edge truncation.** The eval's 1.18x zoom puts points near the crop edge
+  for 4.68% of shipped's points and 1.2-1.4% of the v3 models', so truncation
+  would favour v3, not explain its excess.
+- **The penalty is on a sensible scale.** At the converged fc05 model it is
+  14% (w=0.5) / 29% (w=1.0) of the supervised wing loss; the flip penalty is
+  5.5%. Neither negligible nor dominant -- though w=1.0 is large enough that
+  the constant-predictor direction is a live risk.
+
+### What did not survive -- corrections to claims already made
+
+1. **"34% jitterier in deployment" overstated.** Measured: under flip fusion,
+   BEFORE the demo's confidence-weighted One Euro filter, on iBUG/FFHQ stills,
+   with a wobble size never matched to the real detector. Correct statement:
+   34% jitterier on that synthetic proxy. User-visible jitter is unmeasured.
+2. **"~80% from the v3 DATA" overstated.** The control differs from shipped in
+   data, crop framing and recipe at once, and both are single-seed. Correct
+   statement: most of the excess is present without the flip penalty.
+3. **No jitter floor exists.** A +28% gap between two different models has no
+   reference for model-to-model spread at a fixed recipe. ctl_s1/ctl_s2 will
+   supply one; until then no jitter difference is established, including any
+   the penalty produces.
+
+### The finding that matters most: the penalty targets the wrong failure
+
+Held-out perturbations the penalty does NOT train on, fused, preprocessed:
+
+      perturbation    shipped   v3g ctl   v3g fc05   fc05 vs shipped
+      geom x1          0.409     0.524     0.558      +37%  p=1e-23
+      ROT +/-2deg      0.374     0.414     0.407       +9%  p=1e-02
+      BLUR             0.206     0.318     0.344      +68%  p=8e-21
+      JPEG             0.279     0.415     0.447      +60%  p=1e-32
+
+The regression is LARGEST under blur and JPEG -- image-quality degradation --
+and the penalty's photometric part models only brightness and Gaussian noise.
+Training already applies +/-10% bbox jitter, ~10x the eval's wobble, so the
+geometric family is the best-covered one, not the gap. A geometric jitter
+improvement from the running arms is therefore close to guaranteed and is
+weak evidence; it was trained on the test family.
+
+### Other penalty concerns, not fixed (noted)
+- Symmetric gradient: the clean prediction is pulled toward the degraded one,
+  not only the reverse. A stop-gradient on the clean arm is the alternative.
+- The extra forward updates BatchNorm running statistics on wobbled inputs
+  (as the flip penalty's does).
+- Wobble pads mid-grey at the borders; a live re-crop shows real content.
+
+### PRE-REGISTERED criteria for the stability arms (fixed now)
+
+A stability arm is a fix only if ALL hold against v3g_fc05_s42:
+  1. PRIMARY: fused off-domain jitter on the HELD-OUT families (rotation,
+     blur, JPEG) improves, beyond the ctl s1/s2/s42 spread.
+  2. Accuracy on the preserved 1,000-ear split does not get worse beyond the
+     0.28% floor (paired), and rim edge response does not fall.
+  3. Geometric/photometric jitter (the trained family) is reported as
+     SECONDARY and cannot carry the claim on its own.
