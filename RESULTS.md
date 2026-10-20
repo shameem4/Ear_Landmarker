@@ -2963,6 +2963,29 @@ slightly worse than the iBUG-era model. Note `scripts/eval_jitter.py` defaults
 to exactly that corpus, so the default invocation reports the single domain
 where the result is unfavourable -- worth knowing before quoting it either way.
 
+### Edge response on the unseen iBUG domain -- the jitter loss does NOT generalise
+
+`data/preprocessed` (64% iBUG/FFHQ, n=861) is off-domain for BOTH shipped and
+latest, since both train on commissioned crops. Running instruments 1 and 2
+there settles what the jitter table alone could not:
+
+      model       edge response   vs shipped        equivariance
+      GT             3.1521            -                 -
+      iBUG-era       3.0191   +0.024 (p=0.19)         3.0554
+      shipped        2.9952        0.0                 2.4838
+      latest         3.7156   +0.720 (89.1%, p=3e-119) 0.7381
+
+On its WORST domain the latest model has its LARGEST placement win: +0.72 over
+shipped on 89.1% of ears, and above that corpus's own GT by +0.56 on 77.2%.
+Equivariance is 3.4x better than shipped there.
+
+So "it does badly on unseen data" is wrong. What is true is narrower: on
+iBUG-style imagery it places the rim better than anything else measured while
+being 16% JITTERIER under perturbation. Jitter measures sensitivity, not
+correctness -- a model can be stably wrong, which is what the iBUG-era model
+is on this corpus (steadiest of the three, and the worst placed). The two
+findings do not conflict; they are different properties.
+
 ### What this does and does not establish
 
 Established: the latest model places the **rim** on real structure better than
