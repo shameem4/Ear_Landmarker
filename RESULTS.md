@@ -2855,30 +2855,30 @@ All four cells scored by one script on the same rows, raw model (not through
 checkpoint by **stored `current_score`**, Wilcoxon paired per image:
 
       run               rows   fc   equivar  err px  normal  tangen
-      v3 small ctl      4538  0.0   1.09802   1.804   0.982   1.266
-      v3 small fc05     4538  0.5   0.39614   1.768   0.979   1.223
+      v3 small ctl      4538  0.0   1.08799   1.802   0.980   1.265
+      v3 small fc05     4538  0.5   0.39498   1.759   0.974   1.217
       v3 GROWN ctl      6686  0.0   1.12011   1.750   0.944   1.232
-      v3 GROWN fc05     6686  0.5   0.31402   1.709   0.944   1.183
+      v3 GROWN fc05     6686  0.5   0.31167   1.707   0.945   1.180
 
 **The two levers act on different error components.**
 
-  - DATA (+47% rows, penalty off both sides): err **-2.97%** (p=9.6e-08),
-    normal **-3.89%** (p=2.3e-18), tangential -2.71%. Equivariance **+2.0%**,
+  - DATA (+47% rows, penalty off both sides): err **-2.84%** (p=2.1e-07),
+    normal **-3.62%** (p=2.1e-16), tangential -2.64%. Equivariance **+3.0%**,
     i.e. slightly worse.
-  - PENALTY at 6,686 rows: err **-2.38%** (p=4.3e-05), tangential **-3.94%**
-    (p=1.3e-05), normal **+0.04%** (p=0.47, nothing). Equivariance **-72.0%**.
+  - PENALTY at 6,686 rows: err **-2.48%** (p=5.0e-05), tangential **-4.22%**
+    (p=8.5e-06), normal **+0.15%** (p=0.27, nothing). Equivariance **-72.2%**.
 
 So data buys *normal* accuracy and the penalty buys *tangential* accuracy, and
 neither substitutes for the other. The penalty's effect is slightly LARGER on
-the grown corpus (-2.38% vs -1.97%), not smaller, so more data does not absorb
+the grown corpus (-2.48% vs -2.34%), not smaller, so more data does not absorb
 it.
 
-**Additivity**: data -0.054 px, penalty -0.036 px, sum -0.089 px, observed
-**-0.095 px**, interaction -0.006 px. Within noise of exactly additive.
-Combined: **-5.28% error** (p=7.5e-20), -6.55% tangential, -71.4%
+**Additivity**: data -0.051 px, penalty -0.042 px, sum -0.093 px, observed
+**-0.095 px**, interaction -0.001 px. Within noise of exactly additive.
+Combined: **-5.26% error** (p=5.7e-20), -6.75% tangential, -71.4%
 equivariance, against the same-seed small-corpus control.
 
-**More data does not make a model equivariant** (+2.0%), while the penalty
+**More data does not make a model equivariant** (+3.0%), while the penalty
 cuts self-disagreement by 72%. That is the mechanism stated plainly:
 equivariance is a property the loss must constrain. Flip augmentation
 symmetrises the distribution, not the function, and sampling more of the
@@ -2892,5 +2892,16 @@ distribution cannot fix it either.
 - Absolute px here are lower than figures quoted elsewhere for the same runs
   because this scorer reads the raw model; flip-fused numbers are better still.
   Within this table everything is like-for-like.
-- Scorer kept at `/var/tmp/claude/ear_landmarker/2026-10-19-v3/score_2x2.py`
-  (sha256 e2b564a3...).
+- Scorer kept at `/var/tmp/claude/ear_landmarker/2026-10-19-v3/score_2x2.py`.
+
+**CORRECTION, same day.** The first version of this table scored the WRONG
+CHECKPOINT in 3 of 4 cells. The scorer read `ck["current_score"]` at the top
+level; that key does not exist, because the monitored score lives under
+`ck["callbacks"][<ModelCheckpoint>]["current_score"]`. Every candidate
+therefore scored +inf and `min()` fell back to glob order -- the documented tie
+bug, reproduced inside the script whose own docstring claimed to avoid it. The
+numbers above are the corrected ones, from `checkpoint_utils.best_checkpoint`.
+Every conclusion survived; shifts were 0.1-0.4 pp and no sign or ordering
+changed. The lesson is narrower than the bug: knowing about a trap does not
+help if you re-implement it instead of calling the one function in the repo
+that already handles it.
