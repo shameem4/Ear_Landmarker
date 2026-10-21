@@ -3456,3 +3456,30 @@ further.
 A hundredth to a tenth of a pixel, against an accuracy error 6.8x larger than
 shipped's whole jitter. The large percentages throughout this investigation
 were ratios of very small numbers.
+
+## Paused, 2026-10-20 -- state for the next default
+
+Work stopped by decision: more images are being onboarded, and the next
+default ships after that. Where things stand:
+
+- **Best candidate recipe:** grown v3 corpus + `--flip-consistency 0.5`
+  (`v3g_fc05_s42`). In-domain -5.26% error vs the small-corpus control;
+  rim placement better than shipped on three GT-free instruments in every
+  domain; 3.5x more flip-equivariant.
+- **Jitter:** a real, seed-replicated regression vs shipped off-domain, but
+  sub-pixel in absolute terms (+0.01-0.10 px). Mostly framing near occupancy
+  1.0 plus a collectionA/B-specific tail with no single cause. Not JPEG.
+- **Tried and rejected:** degradation augmentation (fixed only Gaussian blur,
+  cost 1.54% accuracy). Never run: stability-consistency weights (stopped at
+  epoch 37), degrade-consistency penalty (in `git stash`).
+- **Unscored:** `--occupancy-range 0.60 0.98` (`v3g_fc05_occ_s42`), stopped at
+  epoch ~215 of 500. Its criteria are pre-registered above; re-run on the
+  onboarded corpus if framing robustness is wanted.
+- **Not replicated:** flip-consistency at grown size is seed 42 only (seeds 1
+  and 2 of the control finished; the fc05 seeds were stopped). Replicate on
+  the onboarded corpus before shipping.
+- **Demo:** `docs/` still serves shipped (`fixed_conv_s42`). To ship a
+  checkpoint: `python export_onnx.py --checkpoint <ckpt> --output
+  docs/EarLandmarker_web.onnx`, and update `SHIPPED_RUN` in inference.py.
+- **Onboarding note:** re-ingest with `--preserve-test` if the corpus grows by
+  addition, so every number above stays comparable.
