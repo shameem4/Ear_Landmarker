@@ -2062,7 +2062,7 @@ rebalancing hard-negative mining per scale. Those are `trainable_blazeface`-
 and BlazeEar-side changes; none of them live here.
 
 **How to evaluate it**, which is the part this repo can supply: the harness at
-`/var/tmp/claude/ear_landmarker/2026-10-15-face-nms/scale_curve.py`, human
+`scripts/eval_scale_curve.py`, human
 ground-truth basis, 3500 images / 3790 ears delivered in crop. Primary metric is
 recall@IoU 0.3 **per size band at matched FP/image**, never pooled -- 0-32 and
 32-48 reported separately, because 18.2% against 58.0% is a 40-point cliff that

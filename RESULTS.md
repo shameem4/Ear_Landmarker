@@ -2892,7 +2892,7 @@ distribution cannot fix it either.
 - Absolute px here are lower than figures quoted elsewhere for the same runs
   because this scorer reads the raw model; flip-fused numbers are better still.
   Within this table everything is like-for-like.
-- Scorer kept at `/var/tmp/claude/ear_landmarker/2026-10-19-v3/score_2x2.py`.
+- Scorer: `scripts/score_2x2.py`.
 
 **CORRECTION, same day.** The first version of this table scored the WRONG
 CHECKPOINT in 3 of 4 cells. The scorer read `ck["current_score"]` at the top

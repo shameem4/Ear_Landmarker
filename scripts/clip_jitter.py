@@ -19,9 +19,13 @@ from pathlib import Path
 import numpy as np, cv2, torch
 ROOT=Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/Ear_Landmarker")
 sys.path.insert(0,str(ROOT))
-spec=importlib.util.spec_from_file_location(
-    "old_smoothing","/var/tmp/claude/ear_landmarker/2026-10-15-tracker/old_smoothing.py")
-oldmod=importlib.util.module_from_spec(spec); spec.loader.exec_module(oldmod)
+# The OLD tracker is model/smoothing.py as of a02e14e (byte-identical to the
+# scratch copy this used to load). Read from git history, not a file, so the
+# baseline cannot drift or vanish.
+import subprocess, types
+oldmod=types.ModuleType("old_smoothing")
+exec(compile(subprocess.check_output(["git","-C",str(ROOT),"show","a02e14e:model/smoothing.py"]),
+             "a02e14e:model/smoothing.py","exec"), oldmod.__dict__)
 import model.smoothing as newmod
 from inference import EarLandmarkerPipeline, BLAZEEAR_DIR, DETECTOR_WEIGHTS, find_best_checkpoint
 
