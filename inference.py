@@ -154,6 +154,10 @@ DETECTOR_WEIGHTS = "model_weights/BlazeEar_best_256px.pth"
 # crop, predict, measure the extent, and re-crop so the ear sits at the
 # occupancy the model was trained on. This is the ROI-from-landmarks refinement
 # MediaPipe uses for face and hand tracking.
+# CROSS-REPO CONTRACT: Ear_3D_Lifter frames its renders to this occupancy
+# (ear3d config target_occupancy 0.75) and learns its view table at it. If a
+# shipped model trains at a different occupancy, tell them to retarget and
+# rebuild the table -- framing without a matching table cost +0.136 mm.
 TRAIN_OCCUPANCY = 0.777   # ear extent / crop side. Was measured over the 5,870-sample
                           # iBUG-derived corpus; the shipped model trains on data/manual,
                           # which ingest_manual.py targets at the same mean (achieved
