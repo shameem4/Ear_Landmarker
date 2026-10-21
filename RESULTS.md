@@ -3308,3 +3308,55 @@ PNG vs JPG, same ear, mean landmark movement (fused, px at 192):
   compressed images during training did not remove.
 - v3's stored crops are PNG and were curated toward less blockiness (9.5% vs
   15.2%), so the latest model met JPEG artefacts least of any generation.
+
+## It was never JPEG: the jitter regression is FRAMING
+*2026-10-20. Supersedes "the regression is a JPEG-artefact sensitivity" above.*
+
+The format split was a proxy. In data/preprocessed every JPEG file comes from
+collectionA/B and every PNG from AudioEar2D, so format, source corpus,
+softness (sharpness p50 19 vs 335), blockiness and framing all move together.
+
+**JPEG ablation (no part of JPEG reproduces it).** A JPEG codec with every
+lossy stage as a switch, validated against PIL's encoder (50 dB agreement vs
+35-40 dB of compression; 97 dB with all stages off). Each component applied
+alone to clean PNG ears as their source compression, then the same crop
+wobble: colour round-trip, chroma subsampling, chroma quantisation, luma
+quantisation, its DC / low / mid / high AC bands, and deblocked luma. Every
+one: jitter unchanged from the PNG control (0.173 -> 0.170-0.175) and no gap
+between models (-3% to +1%). Grid-phase sensitivity -- the same image with
+only the 8x8 grid shifted -- shows the latest model LESS sensitive to block
+placement than shipped (-8% to -19%).
+
+**Softness and compression together do not reproduce it either.** Rebuilding
+collectionB's measured condition on AudioEar ears (sharpness 19-25 vs target
+19, blockiness 1.36-1.82 vs 1.57, including a web-style small-JPEG -> upscale
+-> re-JPEG pipeline): jitter 0.16-0.19 for every model, gap -1% to +2%.
+
+**Framing does, causally.** collectionB ears fill 0.85 of the crop; AudioEar
+0.64. Zooming collectionA/B OUT, with identical wobble, n=199:
+
+      ear extent   shipped   v3 ctl    fc05    fc05 vs shipped
+        0.85        0.552     0.714    0.769     +39%  p=6e-25
+        0.74        0.437     0.468    0.502     +15%  p=8e-05
+        0.64        0.408     0.373    0.386      -6%  p=1e-06
+        0.53        0.394     0.331    0.348     -12%  p=3e-13
+
+The gap is a monotone function of framing and REVERSES once the ear is framed
+the way v3 trained. (Zooming out also shrinks the ear in pixels, which lowers
+absolute jitter for all models; the claim rests on the between-model ratio,
+which that does not explain.) Training occupancy: v3 mean 0.696, sd 0.050, p90
+0.76 -- consistent framing, a deliberate property of the curated crops --
+against data/manual's 0.64-0.90. Only 2.7% of v3 training ears are framed
+above 0.777. bbox jitter (+/-10%) does not reach 0.85; the eval's 1.18x zoom
+pushes collectionB to ~1.0.
+
+### This is a deployment bug, not only an eval artefact
+`TRAIN_OCCUPANCY = 0.777` in inference.py AND docs/earlandmarker_inference.js
+re-frames every ear to the SHIPPED model's training occupancy, and with
+ROI_OCC_TOL = 0.06 it accepts anything in 0.717-0.837 without refining. For
+the latest model that is the upper edge of, or beyond, everything it trained
+on. The constant is per-corpus and was never updated for v3.
+
+Retractions: "JPEG-artefact sensitivity" (above) is withdrawn. Degradation
+augmentation and the degrade-consistency penalty targeted a cause that does
+not exist; the latter was written but never run or committed.
