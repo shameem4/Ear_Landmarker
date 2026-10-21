@@ -485,7 +485,7 @@ def square_roi_crop(frame_rgb: np.ndarray, cx: float, cy: float, side: float,
     SUBPIXEL_ROI_CROP the origin is a float; the caller only ever adds it to
     landmark coordinates, so that costs nothing.
 
-    THE INTEGER PATH IS NOT FLIP-EQUIVARIANT, which FLIP_REVIEW.md recorded and
+    THE INTEGER PATH IS NOT FLIP-EQUIVARIANT, which the flip review in RESULTS.md (part 2) recorded and
     nothing fixed. `int(round(cx - side/2))` on an as-is frame and
     `int(round(W - cx - side/2))` on its mirror agree only when the fractional
     parts cooperate, so the rounding itself is anti-equivariant. Measured

@@ -6,7 +6,7 @@ A single test NME cannot settle it: three seeds of one configuration give
 0.02919 +/- 0.00031, so the resolution of this setup is about 1% relative and
 anything smaller is a seed, not a result. Two independent means throw away the
 fact that both models scored the *same images*, and this repo has already paid
-for that lesson once -- in FLIP_REVIEW.md, an unpaired version of the handedness
+for that lesson once -- in the flip review (RESULTS.md part 2), an unpaired version of the handedness
 test returned |t| < 0.7 for every cut, because row-to-row difficulty swamps the
 effect, while the paired version found +17.05% at p=2.7e-19. Pairing is not a
 refinement here, it is the difference between seeing an effect and not.

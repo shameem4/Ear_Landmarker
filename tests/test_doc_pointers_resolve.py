@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCS = ["README.md", "RESULTS.md", "FIXES.md", "vendor/README.md"]
+DOCS = ["README.md", "RESULTS.md", "vendor/README.md"]
 PAT = re.compile(r"`((?:\.\./)?[A-Za-z0-9_./-]+\.(?:py|js|md|onnx|csv|json|html))`")
 
 

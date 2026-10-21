@@ -8,7 +8,7 @@ reports the DISTRIBUTION, so the disagreeing images can be pulled out and
 looked at.
 
 Each group is scored on the channel that covers it, measured over 150
-images and recorded in README_qa_2d.md:
+images and recorded in RESULTS.md, part 6:
 
   depth  the rim and the inner helix   clahe  the interior
   base   the crura and the lobe        (concha is scored by nothing)
@@ -24,7 +24,7 @@ CAVEAT, do not remove: the rim groups sit ON the landmark convex hull
 the channel draws a thin line rather than a broad region. That holds for
 the sato channels here and was checked by eye; it did NOT hold for a
 blurred-intensity channel that scored well by finding the hair. See the
-hull-edge section of README_qa_2d.md before adding a channel.
+hull-edge section of RESULTS.md part 6 before adding a channel.
 
     python scripts/qa_agreement.py --n 500 --depth-dir /tmp/depth500 \
         --out /tmp/agreement.csv --jobs 12
@@ -51,7 +51,7 @@ from qa_common import padding_mask                    # noqa: E402
 
 G = {n: list(range(lo, hi)) for n, (lo, hi) in zip(GROUP_NAMES, GROUPS)}
 
-# which channel covers which group, from the n=150 sweep in README_qa_2d.md
+# which channel covers which group, from the n=150 sweep in RESULTS.md part 6
 # concha is in neither table: nothing traces it, so it is never scored
 BEST = {
     "helix": "depth", "descending_helix": "depth", "inner_helix": "depth",

@@ -72,7 +72,7 @@ def test_subpixel_crop_is_exactly_flip_equivariant():
     integer path misses this because `round(cx - s/2)` and
     `round(W - cx - s/2)` agree only when the fractional parts cooperate.
     Skipped unless the flag is on, since the integer path is expected to fail
-    it -- that failure is the defect, documented in FLIP_REVIEW.md.
+    it -- that failure is the defect, documented in RESULTS.md (part 2, flip review).
     """
     if not SUBPIXEL_ROI_CROP:
         pytest.skip("integer path is knowingly not flip-equivariant")
