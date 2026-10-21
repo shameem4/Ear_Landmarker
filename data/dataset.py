@@ -68,6 +68,15 @@ class AugmentationParams:
     # shipped under blur and JPEG. Nothing else in this list models image
     # quality; colour jitter covers brightness/contrast only.
     degrade_prob: float = 0.0
+    # Occupancy (framing) randomisation: with probability occupancy_prob, re-
+    # frame the sample so the ear spans a random fraction T of the crop side,
+    # T ~ U(occupancy_range). Makes the model occupancy-ROBUST instead of tuned
+    # to one framing. v3 crops are framed at 0.696 +/- 0.050, so bbox jitter
+    # alone (+/-10%) never shows an ear near 0.85-1.0 -- and that is exactly
+    # where the latest model's off-domain jitter came from (gap +39% at 0.85,
+    # reversing to -6% at 0.64). None = off.
+    occupancy_range: Optional[Tuple[float, float]] = None
+    occupancy_prob: float = 0.0
 
 
 class EarLandmarkDataset(Dataset):
@@ -126,16 +135,22 @@ class EarLandmarkDataset(Dataset):
         sample = self.samples[idx]
         global_idx = int(sample["idx"])
 
-        # Load image and resize
+        # Load image and landmarks (normalized to the crop; may fall outside
+        # [0, 1] when the annotated point lies beyond it)
         img_path = self.data_dir / sample["image_file"]
         image = Image.open(img_path).convert("RGB")
-        image = image.resize((self.image_size, self.image_size), Image.BILINEAR)
-
-        # Load landmarks (normalized to the crop; may fall outside [0, 1] when
-        # the annotated point lies beyond it)
         landmarks = torch.tensor(
             self.landmarks[global_idx].copy(), dtype=torch.float32,
         )  # (55, 2)
+
+        # Occupancy re-framing works on the FULL-RESOLUTION source, so zooming
+        # in does not upsample an already-downsized 192 image.
+        aug = self.augmentation
+        if aug and aug.occupancy_range and aug.occupancy_prob > 0 \
+                and random.random() < aug.occupancy_prob:
+            image, landmarks = self._reframe(image, landmarks, aug.occupancy_range)
+        else:
+            image = image.resize((self.image_size, self.image_size), Image.BILINEAR)
 
         # Points that were never inside the crop to begin with. Older
         # preprocessed sets clamped these onto the border, so a coordinate
@@ -186,6 +201,37 @@ class EarLandmarkDataset(Dataset):
             # loss-trajectory screen needs and what a final residual cannot give.
             "idx": torch.tensor(global_idx, dtype=torch.long),
         }
+
+    def _reframe(self, image: Image.Image, landmarks: torch.Tensor,
+                 occ_range: Tuple[float, float]) -> Tuple[Image.Image, torch.Tensor]:
+        """Square window around the ear so it spans T of the side, T ~ U(range).
+
+        Mirrors inference.square_roi_crop: integer window, mid-grey (128)
+        where the window leaves the source, labels mapped through the SAME
+        integer window the pixels get. The ear box comes from the in-crop
+        labels only; with fewer than 3 the sample is returned unframed.
+        Returns the image already resized to image_size.
+        """
+        w, h = image.size
+        px = landmarks.numpy() * np.array([w, h], np.float32)
+        inside = ((landmarks > 0) & (landmarks < 1)).all(dim=1).numpy()
+        if inside.sum() < 3:
+            return image.resize((self.image_size, self.image_size), Image.BILINEAR), landmarks
+        lo, hi = px[inside].min(0), px[inside].max(0)
+        extent = float((hi - lo).max())
+        t = random.uniform(*occ_range)
+        n = max(8, int(round(extent / t)))
+        cx, cy = (lo + hi) / 2
+        x1, y1 = int(round(cx - n / 2)), int(round(cy - n / 2))
+        canvas = Image.new("RGB", (n, n), (128, 128, 128))
+        sx1, sy1 = max(0, x1), max(0, y1)
+        sx2, sy2 = min(w, x1 + n), min(h, y1 + n)
+        if sx2 > sx1 and sy2 > sy1:
+            canvas.paste(image.crop((sx1, sy1, sx2, sy2)), (sx1 - x1, sy1 - y1))
+        out = landmarks.clone()
+        out[:, 0] = (landmarks[:, 0] * w - x1) / n
+        out[:, 1] = (landmarks[:, 1] * h - y1) / n
+        return canvas.resize((self.image_size, self.image_size), Image.BILINEAR), out
 
     @staticmethod
     def _degrade(image: Image.Image) -> Image.Image:

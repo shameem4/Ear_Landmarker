@@ -175,6 +175,13 @@ def main() -> None:
                              "self-disagrees by ~60%% of its own error. Costs a "
                              "second forward pass per step. A constant predictor "
                              "is perfectly equivariant, so keep the weight small.")
+    parser.add_argument("--occupancy-range", type=float, nargs=2, default=None,
+                        metavar=("LO", "HI"),
+                        help="Re-frame training samples so the ear spans a random "
+                             "fraction T~U(LO,HI) of the crop. Makes the model "
+                             "robust to framing. Off unless given.")
+    parser.add_argument("--occupancy-prob", type=float, default=0.5,
+                        help="Probability of occupancy re-framing per sample.")
     parser.add_argument("--degrade-prob", type=float, default=0.0,
                         help="Probability of image-quality degradation per "
                              "training sample (blur, downscale, noise, JPEG; "
@@ -220,6 +227,8 @@ def main() -> None:
         bbox_jitter_prob=0.5,
         perspective_deg=args.perspective_deg,
         degrade_prob=args.degrade_prob,
+        occupancy_range=tuple(args.occupancy_range) if args.occupancy_range else None,
+        occupancy_prob=args.occupancy_prob,
     )
 
     data_dir = (PROJECT / args.data_dir) if args.data_dir else DATA_DIR

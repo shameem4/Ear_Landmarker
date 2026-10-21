@@ -3360,3 +3360,40 @@ on. The constant is per-corpus and was never updated for v3.
 Retractions: "JPEG-artefact sensitivity" (above) is withdrawn. Degradation
 augmentation and the degrade-consistency penalty targeted a cause that does
 not exist; the latter was written but never run or committed.
+
+## Occupancy robustness instead of an occupancy constant
+*2026-10-20*
+
+**Correction to "this is a deployment bug".** An occupancy sweep on each
+model's own test split (oracle square framing via inference.square_roi_crop,
+fused, errors as % of ear extent so framings compare fairly):
+
+      occupancy   latest err  latest jitter   shipped err  shipped jitter
+        0.600       1.51%       0.157%           2.03%        0.192%
+        0.696       1.44%       0.130%           1.92%        0.176%
+        0.777       1.45%       0.117%           1.89%        0.172%   <- deployed
+        0.837       1.50%       0.114%           1.88%        0.169%
+        0.880       1.55%       0.115%           1.90%        0.160%
+
+In domain, the latest model is flat across 0.65-0.84 and is STEADIEST near the
+deployed 0.777; moving the constant to its training mean (0.696) would have
+made it ~11% jitterier. The off-domain regression sits at an effective
+occupancy near 1.0 (collectionB's 0.85 under the eval's 1.18x zoom), outside
+both the training and the deployed range. The constant was not changed.
+
+**The fix is robustness, not a better constant.** `--occupancy-range LO HI`
+re-frames each training sample (p=0.5) so the ear spans T ~ U(LO, HI) of a
+square crop, cut from full resolution with the pipeline's mid-grey padding and
+labels mapped through the same integer window. Tested: marked pixels stay
+under their labels at T = 0.55-0.98, achieved occupancy equals the draw to
+<0.01, default path byte-identical to a plain resize. Range 0.60-0.98: the
+problem is at the high end, and below ~0.6 the grey pad becomes a large,
+unnatural frame.
+
+**PRE-REGISTERED for v3g_fc05_occ_s42 vs v3g_fc05_s42:**
+  1. Robustness: error and jitter curves FLATTER over occupancy 0.60-1.00
+     (the sweep extended to 1.0), especially above 0.85.
+  2. The collectionA/B off-domain jitter gap vs shipped closes to within the
+     seed floor (~7%) at native framing.
+  3. Accuracy on the preserved 1,000-ear split at native framing does not
+     worsen beyond the 0.28% floor.
