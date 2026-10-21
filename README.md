@@ -463,7 +463,8 @@ python scripts/eval_test.py --data-dir data/manual fixed_conv_s42
 
 # Compare models on real frames with NO ground truth, which is the only
 # comparison the collectionB convention cannot distort
-python scripts/eval_gt_free.py --limit 500 manual_occ_s42 fixed_conv_s42
+# (runs are set in CK at the top of the script)
+python scripts/eval_edge_response.py
 
 # Tests
 python -m pytest tests/ -q

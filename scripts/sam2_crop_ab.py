@@ -23,7 +23,7 @@ from scipy.spatial import ConvexHull
 from matplotlib.path import Path as MPath
 from transformers import Sam2Model, Sam2Processor
 sys.path.insert(0, "scripts"); sys.path.insert(0, ".")
-from ear3d.scheme import GROUPS, GROUP_NAMES
+from scheme import GROUPS, GROUP_NAMES  # was ear3d.scheme; identical, moved at the repo split
 R = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/Ear_Landmarker")
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 300
 PAD = float(sys.argv[2]) if len(sys.argv) > 2 else 0.60

@@ -18,7 +18,7 @@ from scipy.spatial import ConvexHull
 from matplotlib.path import Path as MPath
 from skimage.filters import sato
 sys.path.insert(0, "scripts"); sys.path.insert(0, ".")
-from ear3d.scheme import GROUPS, GROUP_NAMES
+from scheme import GROUPS, GROUP_NAMES  # was ear3d.scheme; identical, moved at the repo split
 R = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/Ear_Landmarker")
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 200
 Q = float(sys.argv[2]) if len(sys.argv) > 2 else 85.0

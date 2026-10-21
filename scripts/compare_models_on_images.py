@@ -18,7 +18,7 @@ panel rather than buried here:
   annotation conventions as two accuracies.
 
 So this is a picture to look at, not a measurement. scripts/eval_test.py and
-eval_gt_free.py are the measurements.
+scripts/eval_edge_response.py are the measurements.
 
     python scripts/compare_models_on_images.py --rank runs/sam_qa.csv --n 24
 """

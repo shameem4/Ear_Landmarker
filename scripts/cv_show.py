@@ -5,7 +5,7 @@ from PIL import Image
 import cv2
 from skimage.filters import sato
 sys.path.insert(0, "scripts"); sys.path.insert(0, ".")
-from ear3d.scheme import GROUPS, GROUP_NAMES
+from scheme import GROUPS, GROUP_NAMES  # was ear3d.scheme; identical, moved at the repo split
 R = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/Ear_Landmarker")
 W = pathlib.Path("/mnt/14BE47C2BE479ADE/Code/ear_stuff/wrap_work")
 g = {n: list(range(lo, hi)) for n, (lo, hi) in zip(GROUP_NAMES, GROUPS)}

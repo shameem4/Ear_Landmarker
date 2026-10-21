@@ -1,7 +1,7 @@
 """Score ground truth and any number of runs by how well the outer contour sits
 on real image structure -- no ground truth in the judging.
 
-REPLACES scripts/eval_gt_free.py for this purpose. That script needs
+REPLACES scripts/eval_gt_free.py (removed 2026-10-20) for this purpose. That script needs
 BlazeEar/data/yolo11_ears, which no longer exists, so it reports "0 frames
 usable" and nan for every model. This one works on the crops a split already
 has, which also means it scores the SAME images a paired NME comparison
