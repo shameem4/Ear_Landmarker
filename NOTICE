@@ -38,13 +38,16 @@ docs/BlazeFace_web.onnx derives from MediaPipe's published weights.
 3. Training data for the shipped weights  --  COMMISSIONED, NO ONWARD RESTRICTION
 --------------------------------------------------------------------------------
 
-No dataset is redistributed here; data/raw, data/preprocessed, data/manual and
-runs/ are all gitignored. docs/EarLandmarker_web.onnx IS tracked, and as of this
-version it is trained on ONE source:
+No dataset is redistributed here; data/raw, data/preprocessed, data/manual,
+data/v3_manual, v3_manual_data and runs/ are all gitignored.
+docs/EarLandmarker_web.onnx IS tracked, and as of this version (v4_fc05_s42,
+2026-10-21) it is trained on ONE source, the v3 manual corpus, sourced and
+annotated by the same process as the earlier data/manual set that trained the
+previous default (fixed_conv_s42):
 
 | source      | samples | images                        | annotations        |
 |-------------|---------|-------------------------------|--------------------|
-| manual      |  10,535 | collected from the wild,      | commissioned       |
+| v3 manual   |   9,286 | collected from the wild,      | commissioned       |
 |             |         | vetted to exclude non-        | work-for-hire via  |
 |             |         | permissive/non-commercial     | a crowd-annotation |
 |             |         | licences                      | platform           |
@@ -65,7 +68,8 @@ holder's position is that human correction of a machine-proposed starting point
 produces an independent work: measured on this set, the final labels differ from
 the seeding model's prediction by more than one pixel (at 192px) on 51% of all
 points, with a median displacement of ~1px against ~4px for annotation of the
-same model's own training distribution.
+same model's own training distribution. That measurement was made on the
+data/manual set; the v3 corpus was produced by the same process.
 
 This is recorded because it is a judgment call rather than a clean chain, and
 anyone relying on these weights should be able to see the basis for it. If you
