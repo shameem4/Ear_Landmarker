@@ -3223,3 +3223,38 @@ The regression replicates across seeds at 6-15x the seed-to-seed spread, so it
 is a property of the v3 recipe, not seed luck. The floor also sets the bar for
 the degradation and stability arms: an improvement must clear ~5-7% (geom,
 JPEG) or ~1-4% (rotation, blur) to count, and those arms are single-seed.
+
+### Result: degradation augmentation REJECTED as a jitter fix
+*2026-10-20, v3g_fc05_dg05_s42 vs v3g_fc05_s42, criteria as pre-registered*
+
+Fused jitter, data/preprocessed, n=300 (seed floor 1.3-7.3%):
+
+      perturbation         shipped   fc05   fc05+DEGRADE   vs fc05
+      ROT +/-2deg  HELD OUT  0.371   0.406     0.425        +5%  p=2e-02
+      MOTION       HELD OUT  0.588   0.888     0.836        -6%  p=1e-02
+      geom x1      trained   0.421   0.572     0.603        +5%  p=9e-03
+      BLUR         trained   0.211   0.358     0.225       -37%  p=1e-31
+      JPEG         trained   0.278   0.443     0.423        -4%  p=5e-04
+
+Accuracy, preserved 1,000-ear split: error **+1.54%** (p=1.5e-04, 5x the 0.28%
+floor), tangential +2.08%, normal +0.68%.
+
+Criterion 1 fails: rotation got WORSE, motion blur moved -6% (about the size of
+the seed spread), and the gap to shipped stays +15% / +42%. Criterion 2 fails:
+accuracy fell by 5x the floor. The augmentation fixed exactly one thing --
+isotropic Gaussian blur, the precise family it synthesises (-37%).
+
+**The informative failure is JPEG.** It was in the augmentation, it is the
+second-worst regression, and it moved only -4%, within the seed floor. A model
+that has now SEEN heavy compression in training is still as jittery under it.
+So the jitter was never caused by unfamiliarity with degraded images. This is
+the flip result again: augmentation teaches the model what degraded images
+look like (the DISTRIBUTION); it does not make the prediction CONSISTENT under
+degradation (the FUNCTION). The corpus-quality diagnosis explains why v3
+differs from shipped; it does not follow that augmentation reverses it.
+
+Implication for the running arm (v3g_fc05_dg05_sc05_s42): it stacks the
+stability penalty on top of an augmentation now shown to cost 1.54%, so any
+result is confounded by that cost, and its penalty perturbs only shift, scale,
+brightness and Gaussian noise -- not blur or compression, where the
+regression actually is.
