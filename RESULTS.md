@@ -3258,3 +3258,53 @@ stability penalty on top of an augmentation now shown to cost 1.54%, so any
 result is confounded by that cost, and its penalty perturbs only shift, scale,
 brightness and Gaussian noise -- not blur or compression, where the
 regression actually is.
+
+## The jitter regression is a JPEG-artefact sensitivity, not general instability
+*2026-10-20*
+
+Prompted by a direct test -- the same ear fed as PNG and as JPG -- which
+showed a cliff in the off-domain set (movement ~0.07 px at q75, ~10x at q50)
+traced to DOUBLE compression: 199 of the 300 off-domain test images are
+already JPEG files.
+
+Splitting the whole held-out jitter battery by SOURCE format (fused, n=300):
+
+      perturbation    src    shipped   v3 fc05   fc05 vs shipped
+      geom x1         PNG     0.168     0.166      -1%  p=0.1
+      geom x1         JPEG    0.550     0.778     +42%  p=3e-25
+      ROT +/-2deg     PNG     0.114     0.108      -6%  p=3e-03
+      ROT +/-2deg     JPEG    0.501     0.557     +11%  p=4e-05
+      MOTION          PNG     0.443     0.464      +5%  p=7e-05
+      MOTION          JPEG    0.662     1.103     +67%  p=5e-30
+      BLUR            PNG     0.136     0.136       0%  p=0.7
+      BLUR            JPEG    0.249     0.471     +89%  p=4e-23
+      JPEG            PNG     0.150     0.149      -1%  p=0.08
+      JPEG            JPEG    0.343     0.592     +73%  p=2e-31
+
+**On off-domain images that were never JPEG-compressed, the latest model is as
+steady as shipped under every perturbation** (-6% to +5%). The ENTIRE
+regression is on images already carrying JPEG artefacts. Any perturbation of
+such an image -- a crop shift, a blur, a rotation -- moves the 8x8 block grid
+relative to the content, and the latest model reacts to that grid far more
+than shipped does. Every model is ~3x jitterier on JPEG-source images; the
+latest is that, amplified.
+
+PNG vs JPG, same ear, mean landmark movement (fused, px at 192):
+
+      v3 test PNGs (single compression)   q50: shipped 0.273, v3 fc05 0.223 (-18%)
+      off-domain, PNG sources             q50: shipped 0.174, v3 fc05 0.147 (-16%)
+      off-domain, JPEG sources (double)   q50: shipped 0.875, v3 fc05 1.401 (+60%)
+      4 webcam fixtures, full pipeline    all models 0.25-0.45 px on a ~54 px ear,
+                                          <1% of ear width, indistinguishable at n=4
+
+### What this changes
+- The live webcam demo receives raw frames (getUserMedia), not JPEGs, so the
+  condition under which the regression exists does not arise there. The
+  earlier "34% jitterier" was measured on a corpus that is two-thirds JPEG.
+- Uploaded photos are usually JPEG, so it does apply there -- as sensitivity
+  of a single prediction to artefacts, not as visible frame-to-frame jitter.
+- It explains why degradation augmentation could not fix it: the defect is
+  reacting to block artefacts already present in the input, which seeing more
+  compressed images during training did not remove.
+- v3's stored crops are PNG and were curated toward less blockiness (9.5% vs
+  15.2%), so the latest model met JPEG artefacts least of any generation.
