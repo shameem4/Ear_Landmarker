@@ -6,14 +6,13 @@ Real-time 55-point ear landmark regression using a BlazeBlock backbone (FaceMesh
 
 ## Status
 
-**Shipped:** `fixed_conv_s42`, in the web demo and as `SHIPPED_RUN` in
-`inference.py`, with flip fusion on by default.
-
-**In progress:** a re-annotated v3 corpus (`v3_manual_data/`, ingested by
-`scripts/ingest_manual_v3.py`) and a candidate recipe on it,
-`--flip-consistency 0.5`. Work is paused while more images are onboarded; the
-next default ships after that. [RESULTS.md](RESULTS.md) opens with the current
-state and holds every finding, including the ones that were retracted.
+**Shipped:** `v4_fc05_s42`, in the web demo and as `SHIPPED_RUN` in
+`inference.py`, with flip fusion on by default. Trained on the deduplicated v3
+corpus (`v3_manual_data/`, ingested by `scripts/ingest_manual_v3.py` after
+`scripts/dedupe_corpus.py`) with `--flip-consistency 0.5`; about 14% lower
+error than the previous default, `fixed_conv_s42`, replicated over three seeds.
+[RESULTS.md](RESULTS.md) opens with the current state and holds every finding,
+including the ones that were retracted.
 
 ## Scope
 

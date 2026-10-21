@@ -859,7 +859,15 @@ def draw_results(frame_bgr: np.ndarray, results: List[dict]) -> np.ndarray:
 # presentation. Which presentation it favours in THAT pipeline's own frame is
 # for that pipeline to measure; it does not follow from the side names here.
 # A consumer in that position should measure before adopting.
-SHIPPED_RUN = "fixed_conv_s42"
+# v4_fc05_s42 replaces it (2026-10-21): the v3 corpus, deduplicated
+# (data/v3_manual_exclude.txt), with --flip-consistency 0.5. On the 909 test
+# ears that have no copy anywhere in training, three seeds beat
+# fixed_conv_s42 by -14.81% / -13.46% / -14.22% (Wilcoxon p <= 2e-66), with
+# gross misses (>0.05) not significantly different (McNemar p >= 0.29); rim
+# placement is better on the GT-free edge test and the raw model is ~3.6x more
+# flip-equivariant. The cost: off-domain jitter on data/preprocessed is higher
+# (0.551 vs 0.418 px fused at 192), sub-pixel. See RESULTS.md "Shipped v4".
+SHIPPED_RUN = "v4_fc05_s42"
 
 
 def find_best_checkpoint(run: str | None = SHIPPED_RUN) -> Path:

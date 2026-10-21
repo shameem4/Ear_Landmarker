@@ -545,7 +545,7 @@ class EarLandmarkerPipeline {
      */
     drawResults(ctx, results, options = {}) {
         const lineWidth = options.lineWidth || 2;
-        const pointRadius = options.pointRadius ?? 1.8;
+        const pointRadius = options.pointRadius ?? 1.0;
         const pointLineWidth = options.pointLineWidth ?? 1;
         const showBbox = options.showBbox ?? true;
         const showConfidence = options.showConfidence ?? true;

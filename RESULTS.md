@@ -2,15 +2,14 @@
 
 ## Current state
 
-*Updated 2026-10-20. This file is the single record of findings; [README.md](README.md) is the guide.*
+*Updated 2026-10-21. This file is the single record of findings; [README.md](README.md) is the guide.*
 
-- **Shipped:** `fixed_conv_s42` (web demo and `SHIPPED_RUN`). Handedness bias
-  fixed (R-L antisymmetry +17.05% -> +1.01%, ns); flip fusion on by default.
-- **Next default -- paused for onboarding.** More v3 images are being added; a
-  new default ships after that. Candidate recipe: grown v3 corpus +
-  `--flip-consistency 0.5`. Before shipping: re-ingest with `--preserve-test`,
-  replicate at seeds 1 and 2, score against shipped. See "Paused" at the end of
-  part 1.
+- **Shipped:** `v4_fc05_s42` (web demo and `SHIPPED_RUN`), 2026-10-21: the
+  deduplicated v3 corpus + `--flip-consistency 0.5`. -14.81% error against the
+  previous default `fixed_conv_s42` on the 909 clean test ears, replicated
+  (-13.46%, -14.22% at seeds 1 and 2). See "Shipped v4" at the end of part 1.
+- **The 91 test ears with training copies** were found and excluded from
+  scoring; every v3-test number before 2026-10-20 is mildly flattered.
 - **What the candidate has shown (seed 42):** -5.26% error against the
   small-corpus control, from data (normal error) and the penalty (tangential
   error) acting additively; rim placement better than shipped on three GT-free
@@ -3524,6 +3523,32 @@ default ships after that. Where things stand:
   docs/EarLandmarker_web.onnx`, and update `SHIPPED_RUN` in inference.py.
 - **Onboarding note:** re-ingest with `--preserve-test` if the corpus grows by
   addition, so every number above stays comparable.
+
+#### Shipped v4, 2026-10-21
+
+`v4_fc05_s{42,1,2}`: `train.py --data-dir data/v3_manual --arch heatmap
+--perspective-deg 65 --flip-consistency 0.5`, on the deduplicated corpus
+(7,375 train / 911 val). Pre-registered bar, set before seeds 1 and 2 were
+scored: each seed beats shipped on `test_clean.csv` (909) by >= 10% at
+Wilcoxon p < 1e-10, and gross misses are not significantly worse.
+
+| seed | vs fixed_conv_s42 | better on | gross >0.05 (shipped 0.478%) |
+|---|---|---|---|
+| 42 | -14.81% (p=4e-79) | 80.2% | 0.448%, McNemar p=0.29 |
+| 1 | -13.46% (p=2e-66) | 76.9% | 0.508%, p=0.31 |
+| 2 | -14.22% (p=1e-74) | 79.5% | 0.456%, p=0.46 |
+
+All three pass; s42 ships. Against the previous candidate `v3g_fc05_s42`, s42
+is -1.86% (p=0.02) and FIXES its gross-miss regression (0.448% vs 0.546%,
+McNemar p=1e-5). Every anatomical group improves on shipped (concha -21%,
+upper helix -16%, lobe -13%, rim rest -11%).
+
+Off-domain (recovered `jitter_diag.py` / `gtfree_battery.py`): rim edge
+response +0.49 / +0.50 over shipped on v3 / manual crops (p < 1e-121), equal
+to GT on v3 crops (p=0.15); raw flip disagreement 0.32 vs 1.19 px. Jitter is
+level in-domain (0.184 vs 0.183 fused) and the known off-domain cost remains:
+0.551 vs 0.418 px fused on data/preprocessed, worst on tragus/concha (1.6x),
+sub-pixel. Web demo dot radius reduced 1.8 -> 1.0 px.
 
 ## 2. Handedness and flip fusion
 
