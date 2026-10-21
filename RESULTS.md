@@ -3397,3 +3397,30 @@ unnatural frame.
      seed floor (~7%) at native framing.
   3. Accuracy on the preserved 1,000-ear split at native framing does not
      worsen beyond the 0.28% floor.
+
+### Is framing THE cause? Partly -- and the zoom-out result was inflated
+*2026-10-20, three tests the zoom-out lacked (fused, wobble on the window, no 1.18x eval zoom; jitter as % of ear extent)*
+
+A. SUFFICIENCY, AudioEar2D zoomed IN (clean, sharp): fc05 vs shipped -2% at
+   0.64, -3% at 0.75, +3% at 0.85, +5% at 0.92, **+14% at 1.00** (p=2e-22).
+C. IN-DOMAIN, v3 test crops: -1% at 0.70, +2% at 0.85, +7% at 0.92, **+19% at
+   1.00** (p=2e-20). Near-1.0 framing hurts the latest model on its own data.
+B. collectionA/B zoomed out with the PIPELINE's grey padding:
+      1.00 +41% | 0.85 +21% | 0.74 +21% | 0.64 +7%
+   With the edge padding used before: 0.85 +11% | 0.64 **-14%**.
+
+**Correction.** The earlier "gap reverses to -6% / -12%" was inflated by edge-
+replicated padding, which smears streaks into the border. With grey padding
+the gap shrinks with framing but does not reverse (+7% at 0.64).
+
+So there are TWO components:
+  1. Framing near 1.0 -- causal, sufficient on clean images, a property of the
+     model: ~+14-19%. This is what --occupancy-range targets.
+  2. A residual SPECIFIC to collectionA/B content: +21% at 0.74-0.85 and +7% at
+     0.64, where clean images show ~0%; framing amplifies it (+41% at 1.0 vs
+     +14% for AudioEar). Cause unknown. Not softness or JPEG alone (ablated).
+
+The deployed pipeline frames at ~0.72-0.84, where component 1 is ~0-3%. In
+deployment, what remains is mostly component 2, which the occupancy run does
+not address. The run is still worth finishing for the near-1.0 regime, but
+passing its criteria will not close the jitter question.
