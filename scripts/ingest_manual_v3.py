@@ -36,6 +36,20 @@ which is why the split keys on the `ec_NNNNNN` stem.
 Usage:
     python scripts/ingest_manual_v3.py                 # build data/v3_manual/
     python scripts/ingest_manual_v3.py --test-size 900
+    python scripts/ingest_manual_v3.py --preserve-test --exclude data/v3_manual_exclude.txt
+
+DUPLICATES UNDER DIFFERENT NAMES, which a stem-keyed split cannot see.
+`data/v3_manual_exclude.txt` lists 151 photos to leave out, found 2026-10-20 by
+CLIP retrieval (mirrors included) then SIFT/RANSAC, confirmed when the image
+transform carries one label set onto the other, and checked by eye:
+  - 53 from the expansion (ec_r_*, ec_s_*) re-delivered photos already present.
+  - 98 more were train/val copies of 91 TEST ears, already in the corpus before
+    the expansion (e.g. ec_000xxx train = ec_011xxx test). The test split is
+    fixed, so the copies go, not the test ears.
+51 of those copies are in data/manual/train.csv, so the shipped baseline DID
+see copies of ~5% of this test split: the "clean" check below is by stem only,
+and earlier baseline numbers on this split are slightly flattered.
+Duplicates WITHIN train/val were left alone; they reweight, they do not leak.
 """
 
 from __future__ import annotations
@@ -77,10 +91,20 @@ def main() -> None:
                          "ADDITION, so results stay comparable with everything "
                          "already measured on that split; refuses if any "
                          "previous test ear is missing from the source.")
+    ap.add_argument("--exclude", type=Path,
+                    help="File of ec_* stems to leave out (one per line): "
+                         "duplicates of ears already in the corpus")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
     pngs = sorted(SRC.glob("ec_*.png"))
+    if args.exclude:
+        drop = set(args.exclude.read_text().split())
+        unknown = drop - {p.stem for p in pngs}
+        if unknown:
+            raise SystemExit(f"--exclude names {len(unknown)} stems not in {SRC}")
+        pngs = [p for p in pngs if p.stem not in drop]
+        print(f"excluded {len(drop)} listed duplicates")
     if not pngs:
         raise SystemExit(f"no ec_*.png under {SRC}")
 
