@@ -396,7 +396,7 @@ with no independent arbiter, so "collectionB is wrong" is not proven, only
 455 real full frames from BlazeEar's local data, 653 ears, both models through
 the identical two-stage pipeline. Contour placement scored by mean image-gradient
 response along the outer helix, per-image normalised so blur and exposure cannot
-bias it (`scripts/eval_gt_free.py`). Three seeds per side:
+bias it (eval_gt_free.py (removed 2026-10-20, in git history before 49b9696)). Three seeds per side:
 
 | group | seeds                 | mean  | within-group range |
 |-------|-----------------------|-------|--------------------|
@@ -448,10 +448,10 @@ augmentation. The three scripts it cites -- `eval_homography_fidelity.py`,
 Perspective augmentation is a homography. It reproduces foreshortening but not
 parallax or self-occlusion, and its measured benefit plateaued at 65 deg. Two
 readings fit -- the model saturates, or the warp stops resembling a head turn.
-Rendering real ear meshes (`Ear_3D_Lifter/scripts/render3d_ears.py`, AudioEar3D) separates them.
+Rendering real ear meshes (`Ear_3D_Lifter/archive/scripts/render3d_ears.py`, AudioEar3D) separates them.
 
 **The warp is a poor match to a real rotation at every angle**, not just past 65
-(`Ear_3D_Lifter/scripts/eval_homography_fidelity.py`, 12 ears). There is no cliff. NOTE: these
+(`Ear_3D_Lifter/archive/scripts/eval_homography_fidelity.py`, 12 ears). There is no cliff. NOTE: these
 numbers predate the reconstruction fix below; both sides of each comparison come
 from the same mesh so the NCC column largely cancels the defect, but the
 silhouette IoU column is contaminated and has not been re-measured:
@@ -466,7 +466,7 @@ silhouette IoU column is contaminated and has not been re-measured:
 | 80  | -0.086 | 0.231 |
 
 **And it buys nothing measurable on either axis**
-(`Ear_3D_Lifter/scripts/eval_pose_consistency.py`, 28 ears, drift vs each model's own pose-zero
+(`Ear_3D_Lifter/archive/scripts/eval_pose_consistency.py`, 28 ears, drift vs each model's own pose-zero
 landmarks lifted to 3D):
 
 | comparison, abs(angle)>=20 | yaw | pitch |
@@ -499,7 +499,7 @@ Separating precision from fragility needs annotated ground truth.
 
 ### Two measurement routes that failed, so nobody repeats them
 
-**Edge response on renders.** The metric behind `scripts/eval_gt_free.py` works
+**Edge response on renders.** The metric behind eval_gt_free.py (removed 2026-10-20, in git history before 49b9696) works
 on photographs, where the ear sits against a head. An isolated render against
 flat grey has an enormous silhouette gradient, so a foreshortened ear rewards any
 contour hugging its outline. It reported that rotating an ear IMPROVES quality --
@@ -2650,7 +2650,7 @@ every strip) but regular is not uniform: they sit at anatomically anchored
 positions, and forcing uniformity destroys the contour. This rules out the
 whole family of post-hoc re-parameterisation fixes.
 
-`scripts/eval_gt_free.py` is DEAD: it needs `BlazeEar/data/yolo11_ears`, which
+eval_gt_free.py (removed 2026-10-20, in git history before 49b9696) is DEAD: it needs `BlazeEar/data/yolo11_ears`, which
 no longer exists, and reports nan for every model rather than failing. Use
 `scripts/eval_edge_response.py`.
 
