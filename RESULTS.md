@@ -8653,3 +8653,32 @@ median. A median hides the tail, and the tail is where this model loses.
   - the non-commercial datasets (Aachen, IIT Indore, York, Mendeley) stay
     discarded;
   - accepting licence terms is the user's action.
+
+#### Duplicates and the cleaned test split, 2026-10-20
+
+The onboarding batch (850 `ec_r_*` + 297 `ec_s_*`) was deduplicated with
+`scripts/dedupe_corpus.py`: CLIP candidates (mirrors included), SIFT/RANSAC,
+then the decisive check, landmark transfer through the fitted transform. Sample
+sheets are in `evidence/dedupe_2026-10-20/`. For the new batch against the
+corpus, same-photo pairs sit below 0.1 of ear size and nothing falls between
+0.1 and 0.22. Inside the old corpus the band 0.1-0.3 mixes the same photo,
+the same ear in another photo, and different ears, so it was judged by eye.
+
+Found: 53 re-delivered photos, and **91 of the 1,000 test ears had copies in
+train/val under other ids**, predating the batch. 51 copies were in
+`data/manual/train.csv`, which the shipped model trained on. All are in
+`data/v3_manual_exclude.txt` (373 including 222 duplicates inside train/val).
+
+Re-scored, `compare_runs_paired.py fixed_conv_s42 v3g_fc05_s42`:
+
+| test ears | shipped | latest | delta | latest better on |
+|---|---|---|---|---|
+| all 1,000 | 0.01032 | 0.00889 | -13.86% | 77.2% |
+| 909 with no copy | 0.01033 | 0.00896 | **-13.20%** | 76.6% (Wilcoxon p=4e-68) |
+| 91 with a copy | 0.01027 | 0.00817 | -20.47% | 83.5% |
+
+The leak favoured the LATEST model (whose v3 train split held 98 copies), not
+the shipped one. The honest headline is -13.2%. Gross misses (>0.05) remain the
+one regression: 0.546% vs 0.478%, McNemar p=0.02. The `v4_fc05_s{42,1,2}`
+runs train on the deduplicated corpus (7,375 / 911 / 1,000); score them on
+`test_clean.csv` (909), regenerated after every re-ingest because `idx` changes.

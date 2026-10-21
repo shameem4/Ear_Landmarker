@@ -39,7 +39,7 @@ Usage:
     python scripts/ingest_manual_v3.py --preserve-test --exclude data/v3_manual_exclude.txt
 
 DUPLICATES UNDER DIFFERENT NAMES, which a stem-keyed split cannot see.
-`data/v3_manual_exclude.txt` lists 151 photos to leave out, found 2026-10-20 by
+`data/v3_manual_exclude.txt` lists 373 photos to leave out, found 2026-10-20 by
 CLIP retrieval (mirrors included) then SIFT/RANSAC, confirmed when the image
 transform carries one label set onto the other, and checked by eye:
   - 53 from the expansion (ec_r_*, ec_s_*) re-delivered photos already present.
@@ -49,7 +49,13 @@ transform carries one label set onto the other, and checked by eye:
 51 of those copies are in data/manual/train.csv, so the shipped baseline DID
 see copies of ~5% of this test split: the "clean" check below is by stem only,
 and earlier baseline numbers on this split are slightly flattered.
-Duplicates WITHIN train/val were left alone; they reweight, they do not leak.
+  - 222 more are near-certain duplicates (landmark-transfer error < 0.1) inside
+    train/val. They do not leak; they were dropped so no photo counts twice.
+8 test-vs-test duplicate pairs remain, because the test split is fixed.
+Found with scripts/dedupe_corpus.py; run it on any future batch before ingest.
+Its CLIP candidate search is not perfectly repeatable between runs: a re-run
+proposed 2 more new-vs-train/val copies (ec_r_006280, ec_s_000060), not
+excluded because v4_fc05_* trained without them excluded and they do not leak.
 """
 
 from __future__ import annotations
