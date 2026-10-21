@@ -3424,3 +3424,35 @@ The deployed pipeline frames at ~0.72-0.84, where component 1 is ~0-3%. In
 deployment, what remains is mostly component 2, which the occupancy run does
 not address. The run is still worth finishing for the near-1.0 regime, but
 passing its criteria will not close the jitter question.
+
+### The collectionA/B residual: a bounded tail with no single synthetic cause
+*2026-10-20, inference only. Framing fixed at T=0.74 (deployed-like), grey pad, fused crop-wobble jitter*
+
+**Located.** The top 10% of collectionA/B images carry 72% of the net gap, the
+top 20% carry 94%; the median image is +10% (68% of images positive).
+
+**Excluded causally** (each applied to clean AudioEar2D ears; target +21%):
+  every JPEG component (codec ablation), softness, softness + JPEG, web-style
+  re-compression; horizontal stretch x1.3-x3.0 (-1% to -6%); tilt 15-60 deg
+  (-19% to -1%); darkness x0.5-x0.15 (+3% to +8%); grayscale (-6%); noise
+  sd .05/.10 (-3%/-2%); low contrast (+3%).
+  Tilt of 75-90 deg DOES reproduce it (+11% / +18%), but only 0.2% of
+  collectionA/B ears are tilted past 60 deg, so it cannot carry the residual.
+  Labels were checked against images for the top-gap files and match; the
+  "sideways" look was extreme aspect distortion, which stretch tests exclude.
+
+**Looked at.** The top-gap images are a visually mixed tail: extreme close-ups
+with heavy aspect distortion, very dark exposures, grayscale, heavy sensor
+noise -- each of which, ALONE and synthesised, does not reproduce the gap.
+Remaining explanations are interactions of several, or a property of
+genuinely low-quality originals that synthesis does not capture. Not pursued
+further.
+
+**Why not pursued: it is small in absolute terms.**
+      ear size   shipped median jitter   residual (median / mean)
+        54 px          0.114 px            +0.011 / +0.027 px
+       100 px          0.211 px            +0.021 / +0.050 px
+       200 px          0.421 px            +0.041 / +0.101 px
+A hundredth to a tenth of a pixel, against an accuracy error 6.8x larger than
+shipped's whole jitter. The large percentages throughout this investigation
+were ratios of very small numbers.
