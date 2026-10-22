@@ -89,6 +89,29 @@ class EMACallback(pl.Callback):
         self._swap_out(pl_module)
 
 
+def load_init_weights(module: EarLandmarkerModule, path: str | Path) -> Path:
+    """Start a NEW run from another checkpoint's network weights (fine-tuning).
+
+    Unlike --resume, nothing else carries over: epoch, optimizer state and the
+    LR schedule all start fresh, so a short low-LR schedule (e.g. --lr 1e-4
+    --epochs 60 --patience 15) actually adapts the model instead of continuing
+    a cosine schedule that has already decayed. Checkpoints hold the EMA
+    weights (see EMACallback), which is what should be fine-tuned, and the EMA
+    of the new run starts from them because it is seeded at on_train_start.
+
+    The load is STRICT: a different arch, width or head raises here instead of
+    half-loading. The source path is recorded in hparams, so the checkpoint
+    this run writes says what it was built on.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"--init-weights: {path} not found")
+    ck = torch.load(str(path), map_location="cpu", weights_only=False)
+    module.load_state_dict(ck["state_dict"], strict=True)
+    module.hparams["init_weights"] = str(path)
+    return path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train EarLandmarker")
     parser.add_argument("--epochs", type=int, default=500)
@@ -126,6 +149,11 @@ def main() -> None:
     parser.add_argument("--wing-epsilon", type=float, default=0.01)
     parser.add_argument("--resume", type=str, default=None,
                         help="Resume from checkpoint: 'last', 'best', or path to .ckpt")
+    parser.add_argument("--init-weights", type=str, default=None,
+                        help="Fine-tune: start a NEW run from this checkpoint's weights "
+                             "(epoch, optimizer and LR schedule start fresh). Pair with "
+                             "a short low-LR schedule, e.g. --lr 1e-4 --epochs 60 "
+                             "--patience 15. Mutually exclusive with --resume.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--monitor", type=str, default="val_nme",
                         choices=["val_nme", "val_nme_normal"],
@@ -327,6 +355,13 @@ def main() -> None:
         stab_bright=args.stab_bright, stab_noise=args.stab_noise,
         point_trajectory_dir=args.point_trajectory_dir,
     )
+
+    # Before torch.compile, which renames the parameter keys.
+    if args.init_weights:
+        if args.resume:
+            raise SystemExit("--init-weights and --resume are mutually exclusive: "
+                             "resume continues a run, init-weights starts a new one")
+        print(f"Fine-tuning from: {load_init_weights(module, args.init_weights)}")
 
     if args.compile:
         module.model = torch.compile(module.model)
