@@ -12,6 +12,9 @@
 
 # optional synthetic training source (regenerate with scripts/ingest_synthetic.py)
 /data/synthetic/
+# hand-corrected scan renders from Ear_3D_Lifter (scripts/ingest_synthetic_v1.py); never publish
+/data/synthetic*/
+data/synthetic*/
 # Commissioned manual annotations and their ingested form. Images are from the
 # wild under permissive terms and the labels are work-for-hire, but neither is
 # this repository's to redistribute wholesale; scripts/ingest_manual.py rebuilds

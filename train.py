@@ -158,6 +158,11 @@ def main() -> None:
                              "default) is off; 1.0 balances synthetic against real. "
                              "Synthetic NEVER enters val or test, so the held-out "
                              "metrics stay purely real and a regression is visible.")
+    parser.add_argument("--synthetic-dir", type=str, default="data/synthetic",
+                        help="Synthetic source directory, relative to the project root")
+    parser.add_argument("--synthetic-csv", type=str, default="train.csv",
+                        help="Synthetic training split inside --synthetic-dir, e.g. a "
+                             "subject subset for a learning curve")
     parser.add_argument("--point-trajectory-dir", type=str, default=None,
                         help="Write per-point normal/tangential error for every "
                              "training row, once per epoch, into this directory. "
@@ -265,12 +270,12 @@ def main() -> None:
     # and landmarks, so reverting is either omitting the flag or deleting
     # data/synthetic -- the real splits are never modified.
     if args.synthetic_ratio > 0:
-        synth_dir = PROJECT / "data" / "synthetic"
-        if not (synth_dir / "train.csv").exists():
+        synth_dir = PROJECT / args.synthetic_dir
+        if not (synth_dir / args.synthetic_csv).exists():
             raise FileNotFoundError(
-                f"{synth_dir}/train.csv not found -- run scripts/ingest_synthetic.py")
+                f"{synth_dir}/{args.synthetic_csv} not found -- run the matching ingest script")
         synth_full = EarLandmarkDataset(
-            split_csv=synth_dir / "train.csv",
+            split_csv=synth_dir / args.synthetic_csv,
             data_dir=synth_dir,
             image_size=args.image_size,
             augmentation=train_aug,
