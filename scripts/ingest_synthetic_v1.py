@@ -14,8 +14,17 @@ views of one ear are near-duplicates. test.csv is for scoring only; train.py
 never reads val/test from a synthetic source. train_25/50.csv are nested subject
 subsets of train.csv, for a learning curve.
 
+synthetic_v2 (2026-10-22) is v1 (68 attached-lobe ears, byte-identical) plus 51
+free-lobe ears, one per subject (list: Ear_3D_Lifter/runs/handfix/
+_batch2_free_lobes.txt; ~30 visibly free, ~20 ambiguous, not verified).
+--carry-split keeps every subject of an earlier ingest in its old split, so the
+earlier synthetic test set stays held out; only new subjects are shuffled, with
+--test-subjects/--val-subjects counted among them.
+
 Usage:
-    python scripts/ingest_synthetic_v1.py
+    python scripts/ingest_synthetic_v1.py                   # synthetic_v1
+    python scripts/ingest_synthetic_v1.py --name synthetic_v2 \\
+        --carry-split data/synthetic_v1 --test-subjects 9 --val-subjects 5
 """
 import argparse
 import csv
@@ -26,8 +35,6 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT.parent / "Ear_3D_Lifter" / "runs" / "synthetic_v1"
-OUT = ROOT / "data" / "synthetic_v1"
 HELD_OUT = {f"pp{n}" for n in (16, 19, 21, 22, 33, 40, 46, 47, 49, 57, 69, 70, 71, 72, 77, 78)}
 
 
@@ -36,7 +43,11 @@ def main():
     ap.add_argument("--test-subjects", type=int, default=10)
     ap.add_argument("--val-subjects", type=int, default=5)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--name", default="synthetic_v1")
+    ap.add_argument("--carry-split", type=Path, help="earlier ingest whose subject split to keep")
     a = ap.parse_args()
+    SRC = ROOT.parent / "Ear_3D_Lifter" / "runs" / a.name
+    OUT = ROOT / "data" / a.name
     rows = list(csv.DictReader(open(SRC / "manifest.csv")))
     bad = {r["subject"] for r in rows} & HELD_OUT
     assert not bad, f"held-out heads in the delivery: {bad}"
@@ -48,9 +59,16 @@ def main():
     (OUT / "images").mkdir(parents=True, exist_ok=True)
     np.save(OUT / "landmarks.npy", np.stack(pts).astype(np.float32))
     subj = sorted({r["subject"] for r in rows})
-    random.Random(a.seed).shuffle(subj)
-    test, val = set(subj[:a.test_subjects]), set(subj[a.test_subjects:a.test_subjects + a.val_subjects])
-    train = subj[a.test_subjects + a.val_subjects:]
+    old = {}
+    if a.carry_split:
+        for sp in ("train", "val", "test"):
+            old.update({r["subject"]: sp for r in csv.DictReader(open(a.carry_split / f"{sp}.csv"))})
+        assert set(old) <= set(subj), "earlier subjects missing from the delivery"
+    new = [s for s in subj if s not in old]
+    random.Random(a.seed).shuffle(new)
+    test = {s for s in old if old[s] == "test"} | set(new[:a.test_subjects])
+    val = {s for s in old if old[s] == "val"} | set(new[a.test_subjects:a.test_subjects + a.val_subjects])
+    train = [s for s in subj if old.get(s) == "train"] + new[a.test_subjects + a.val_subjects:]
     fields = ["idx", "image_file", "source", "subject", "side", "yaw", "pitch"]
 
     def write(name, keep):
