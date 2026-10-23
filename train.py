@@ -215,6 +215,9 @@ def main() -> None:
                              "robust to framing. Off unless given.")
     parser.add_argument("--occupancy-prob", type=float, default=0.5,
                         help="Probability of occupancy re-framing per sample.")
+    parser.add_argument("--bbox-jitter", type=float, default=0.1,
+                        help="Crop-box jitter (fraction). 0 for renders framed "
+                             "exactly as at inference, e.g. the 3D path's.")
     parser.add_argument("--degrade-prob", type=float, default=0.0,
                         help="Probability of image-quality degradation per "
                              "training sample (blur, downscale, noise, JPEG; "
@@ -256,7 +259,7 @@ def main() -> None:
         translation=0.05,
         rotation_deg=args.rotation_deg,
         color_jitter={"brightness": 0.3, "contrast": 0.3, "saturation": 0.2, "hue": 0.05},
-        bbox_jitter=0.1,
+        bbox_jitter=args.bbox_jitter,
         bbox_jitter_prob=0.5,
         perspective_deg=args.perspective_deg,
         degrade_prob=args.degrade_prob,

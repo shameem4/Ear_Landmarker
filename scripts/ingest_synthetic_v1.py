@@ -25,6 +25,13 @@ Usage:
     python scripts/ingest_synthetic_v1.py                   # synthetic_v1
     python scripts/ingest_synthetic_v1.py --name synthetic_v2 \\
         --carry-split data/synthetic_v1 --test-subjects 9 --val-subjects 5
+    python scripts/ingest_synthetic_v1.py --name synthetic_v3 --px 600 \\
+        --test-subjects 22 --val-subjects 22
+
+synthetic_v3 (2026-10-23) is a different kind of delivery: 444 ears x 4 skins x
+25 orbit views, each the WHOLE 600 px pipeline render at occupancy 0.75, for the
+render-only model the 3D path uses. 210 ears carry the user's hand labels, 234
+lm3d_v13 (model-derived; `trusted` column in the source manifest).
 """
 import argparse
 import csv
@@ -44,6 +51,7 @@ def main():
     ap.add_argument("--val-subjects", type=int, default=5)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--name", default="synthetic_v1")
+    ap.add_argument("--px", type=float, default=384.0, help="render size the labels are in")
     ap.add_argument("--carry-split", type=Path, help="earlier ingest whose subject split to keep")
     a = ap.parse_args()
     SRC = ROOT.parent / "Ear_3D_Lifter" / "runs" / a.name
@@ -55,7 +63,7 @@ def main():
     for r in rows:
         x = np.loadtxt(SRC / f"{r['stem']}_annotation.txt")
         assert x.shape == (55, 2) and np.isfinite(x).all(), r["stem"]
-        pts.append(x / 384.0)
+        pts.append(x / a.px)
     (OUT / "images").mkdir(parents=True, exist_ok=True)
     np.save(OUT / "landmarks.npy", np.stack(pts).astype(np.float32))
     subj = sorted({r["subject"] for r in rows})
