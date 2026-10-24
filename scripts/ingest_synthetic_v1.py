@@ -30,7 +30,10 @@ Usage:
 
 synthetic_v3 (2026-10-23) is a different kind of delivery: 444 ears x 4 skins x
 25 orbit views, each the WHOLE 600 px pipeline render at occupancy 0.75, for the
-render-only model the 3D path uses. 210 ears carry the user's hand labels, 234
+render-only model the 3D path uses. synthetic_v3r replaced it (2026-10-23):
+20% of v3 were broken SONICOM decimate/noise renders. synthetic_v3j is an
+add-on of 140 training ears with skin-coloured jewellery; ingest it with
+--carry-split data/synthetic_v3r --addon so every ear keeps its split. 210 ears carry the user's hand labels, 234
 lm3d_v13 (model-derived; `trusted` column in the source manifest).
 """
 import argparse
@@ -53,6 +56,8 @@ def main():
     ap.add_argument("--name", default="synthetic_v1")
     ap.add_argument("--px", type=float, default=384.0, help="render size the labels are in")
     ap.add_argument("--carry-split", type=Path, help="earlier ingest whose subject split to keep")
+    ap.add_argument("--addon", action="store_true",
+                    help="delivery is a SUBSET of --carry-split's subjects (e.g. synthetic_v3j)")
     a = ap.parse_args()
     SRC = ROOT.parent / "Ear_3D_Lifter" / "runs" / a.name
     OUT = ROOT / "data" / a.name
@@ -71,7 +76,10 @@ def main():
     if a.carry_split:
         for sp in ("train", "val", "test"):
             old.update({r["subject"]: sp for r in csv.DictReader(open(a.carry_split / f"{sp}.csv"))})
-        assert set(old) <= set(subj), "earlier subjects missing from the delivery"
+        if not a.addon:
+            assert set(old) <= set(subj), "earlier subjects missing from the delivery"
+        else:
+            assert set(subj) <= set(old), "an add-on must not bring new subjects"
     new = [s for s in subj if s not in old]
     random.Random(a.seed).shuffle(new)
     test = {s for s in old if old[s] == "test"} | set(new[:a.test_subjects])
