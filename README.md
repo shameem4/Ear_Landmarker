@@ -16,7 +16,9 @@ including the ones that were retracted.
 
 **3D path model (branch `synthetic`):** `r2j_s42`, a separate, RENDER-ONLY
 landmarker used by [Ear_3D_Lifter](https://github.com/shameem4/Ear_3D_Lifter)
-on its own pipeline renders. It must never be used on photographs (photo test
+on its own pipeline renders; the weights are
+[`models/render_only/r2j_s42.ckpt`](models/render_only/r2j_s42.ckpt) (licence
+basis in [NOTICE](NOTICE) section 5). It must never be used on photographs (photo test
 error is about 5x v4's) or in the web demo; v4 stays the photo model. Details in
 [Render-only 3D model](#render-only-3d-model).
 
@@ -231,6 +233,10 @@ renders, it gets its own model, trained on those renders alone (decided
   jewellery, lobe -0.42 mm (p=0.001). The real-hoop ear pp21_left goes from a
   worst point of 7.6 to 3.3 mm, judged improved by eye. Not immune: 3 of 15
   synthetic-hoop ears still lose 2.4-3.2 mm on their worst lobe point.
+- **Weights:** [`models/render_only/r2j_s42.ckpt`](models/render_only/r2j_s42.ckpt),
+  a Lightning checkpoint (load with `EarLandmarkerModule.load_from_checkpoint`,
+  or Ear_3D_Lifter's `LandmarkPredictor`). Input: the whole square pipeline
+  render, resized to 192.
 - **Caveats:** one seed; the reference is the user's own placement, and 212
   of the training ears carry it (no held-out head was rendered), so this
   measures agreement with the user's convention.
