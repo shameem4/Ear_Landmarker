@@ -206,6 +206,13 @@ worst on the lobe and upper helix. Since that path only ever sees its own
 renders, it gets its own model, trained on those renders alone (decided
 2026-10-22; the photo model is unaffected).
 
+**Why not one model:** every attempt to combine renders and photos compromised
+both. Mixing them into photo training (synthetic_v1 at 6/12/21% of the set)
+cost photos +1.8/+3.5/+4.1% against v4 and reached only 1.41/1.41/1.33 mm in
+3D. Fine-tuning v4 on a 6% mix (synthetic_v2) kept photos level (+0.4%) but
+reached only 1.55 mm. The render-only model reaches 1.05-1.09 mm, and v4 keeps
+its photo accuracy.
+
 - **Data** (local only; the renders are of scan geometry, so `data/synthetic*`
   is gitignored and never published): `synthetic_v3r`, 444 ears from 222
   SONICOM/HUTUBS subjects x 4 skins x 25 views = 44,400 whole 600 px pipeline
