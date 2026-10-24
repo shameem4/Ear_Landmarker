@@ -14,6 +14,12 @@ error than the previous default, `fixed_conv_s42`, replicated over three seeds.
 [RESULTS.md](RESULTS.md) opens with the current state and holds every finding,
 including the ones that were retracted.
 
+**3D path model (branch `synthetic`):** `r2j_s42`, a separate, RENDER-ONLY
+landmarker used by [Ear_3D_Lifter](https://github.com/shameem4/Ear_3D_Lifter)
+on its own pipeline renders. It must never be used on photographs (photo test
+error is about 5x v4's) or in the web demo; v4 stays the photo model. Details in
+[Render-only 3D model](#render-only-3d-model).
+
 ## Scope
 
 This repository detects the 55-point ear scheme in **2D**: the landmarker,
@@ -189,6 +195,45 @@ sd 0.093 -- a constant occupancy trains a model that only works at one scale),
 and assigns splits by perceptual-hash GROUP rather than per sample, because
 wild-collected images repeat the same ear and a near-duplicate across the test
 boundary would inflate the score.
+
+### Render-only 3D model
+
+Ear_3D_Lifter feeds the landmarker whole renders of 3D head scans, framed at
+occupancy 0.75 from 25 fixed orbit views, which photo-trained models handle
+worst on the lobe and upper helix. Since that path only ever sees its own
+renders, it gets its own model, trained on those renders alone (decided
+2026-10-22; the photo model is unaffected).
+
+- **Data** (local only; the renders are of scan geometry, so `data/synthetic*`
+  is gitignored and never published): `synthetic_v3r`, 444 ears from 222
+  SONICOM/HUTUBS subjects x 4 skins x 25 views = 44,400 whole 600 px pipeline
+  renders, 36% with decimated geometry; 212 ears hand-labelled in 3D by the
+  user, 232 labelled by lm3d_v13. Plus `synthetic_v3j`, 140 of the training
+  ears with skin-coloured jewellery (lobe hoops 50%, studs 30%, helix 20%),
+  labels unchanged. Ingested by `scripts/ingest_synthetic_v1.py` (`--px 600`,
+  `--carry-split`, `--addon`), split by subject 178/22/22; the 16 held-out
+  heads and BJ002 are asserted absent.
+- **Recipe:** init from v4 (`--init-weights`), renders only, lr 1e-3, early
+  stopping on render val; `--bbox-jitter 0`, `--rotation-deg 5`, no
+  perspective or occupancy reframing, `--degrade-prob 0.3`, flip consistency
+  0.5, jewellery add-on at `--synthetic-ratio 0.32` (24% of the mix). Best
+  checkpoint epoch 4: render val saturates fast.
+- **Result** (Ear_3D_Lifter, end to end on the user's hand-corrected 32 ears
+  of 16 held-out heads, view_table_v13, median mm):
+
+  | model | clean | with synthetic jewellery | lobe clean / jewellery |
+  |---|---|---|---|
+  | v4 | 1.61 | -- | 2.02 / -- |
+  | r1 (v3 renders) | 1.045 | 1.112 | 1.59 / 1.77 |
+  | **r2j (v3r + jewellery)** | 1.089 | 1.061 | 1.43 / 1.52 |
+
+  r2j vs r1: clean overall level (p=0.40), lobe -0.21 mm (p=0.034); with
+  jewellery, lobe -0.42 mm (p=0.001). The real-hoop ear pp21_left goes from a
+  worst point of 7.6 to 3.3 mm, judged improved by eye. Not immune: 3 of 15
+  synthetic-hoop ears still lose 2.4-3.2 mm on their worst lobe point.
+- **Caveats:** one seed; the reference is the user's own placement, and 212
+  of the training ears carry it (no held-out head was rendered), so this
+  measures agreement with the user's convention.
 
 ### The older corpus (`data/preprocessed`)
 
