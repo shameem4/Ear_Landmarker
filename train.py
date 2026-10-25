@@ -181,14 +181,15 @@ def main() -> None:
                              "data/manual for the commissioned annotation set.")
     parser.add_argument("--landmarks", type=str, default="landmarks.npy",
                         help="Landmark array under data/preprocessed/")
-    parser.add_argument("--synthetic-ratio", type=float, default=0.0,
+    parser.add_argument("--synthetic-ratio", type=float, nargs="+", default=[0.0],
                         help="Synthetic samples per real training sample. 0 (the "
                              "default) is off; 1.0 balances synthetic against real. "
                              "Synthetic NEVER enters val or test, so the held-out "
                              "metrics stay purely real and a regression is visible.")
-    parser.add_argument("--synthetic-dir", type=str, default="data/synthetic",
-                        help="Synthetic source directory, relative to the project root")
-    parser.add_argument("--synthetic-csv", type=str, default="train.csv",
+    parser.add_argument("--synthetic-dir", type=str, nargs="+", default=["data/synthetic"],
+                        help="Synthetic source directory, relative to the project root. "
+                             "Several sources: give one dir, csv and ratio per source.")
+    parser.add_argument("--synthetic-csv", type=str, nargs="+", default=["train.csv"],
                         help="Synthetic training split inside --synthetic-dir, e.g. a "
                              "subject subset for a learning curve")
     parser.add_argument("--point-trajectory-dir", type=str, default=None,
@@ -300,26 +301,32 @@ def main() -> None:
     # Optional synthetic source. Kept in its own directory with its own manifest
     # and landmarks, so reverting is either omitting the flag or deleting
     # data/synthetic -- the real splits are never modified.
-    if args.synthetic_ratio > 0:
-        synth_dir = PROJECT / args.synthetic_dir
-        if not (synth_dir / args.synthetic_csv).exists():
-            raise FileNotFoundError(
-                f"{synth_dir}/{args.synthetic_csv} not found -- run the matching ingest script")
-        synth_full = EarLandmarkDataset(
-            split_csv=synth_dir / args.synthetic_csv,
-            data_dir=synth_dir,
-            image_size=args.image_size,
-            augmentation=train_aug,
-        )
-        n_want = int(round(len(train_ds) * args.synthetic_ratio))
-        if n_want < len(synth_full):
-            g = torch.Generator().manual_seed(args.seed)
-            keep = torch.randperm(len(synth_full), generator=g)[:n_want].tolist()
-            synth_ds = torch.utils.data.Subset(synth_full, keep)
-        else:
-            synth_ds = synth_full
-        real_n, synth_n = len(train_ds), len(synth_ds)
-        train_ds = torch.utils.data.ConcatDataset([train_ds, synth_ds])
+    if sum(args.synthetic_ratio) > 0:
+        n_src = len(args.synthetic_ratio)
+        dirs = args.synthetic_dir if len(args.synthetic_dir) == n_src else args.synthetic_dir * n_src
+        csvs = args.synthetic_csv if len(args.synthetic_csv) == n_src else args.synthetic_csv * n_src
+        assert len(dirs) == len(csvs) == n_src, "give one --synthetic-dir/-csv per ratio"
+        real_n, parts = len(train_ds), []
+        for synth_dir, synth_csv, ratio in zip(dirs, csvs, args.synthetic_ratio):
+            synth_dir = PROJECT / synth_dir
+            if not (synth_dir / synth_csv).exists():
+                raise FileNotFoundError(
+                    f"{synth_dir}/{synth_csv} not found -- run the matching ingest script")
+            synth_full = EarLandmarkDataset(
+                split_csv=synth_dir / synth_csv,
+                data_dir=synth_dir,
+                image_size=args.image_size,
+                augmentation=train_aug,
+            )
+            n_want = int(round(real_n * ratio))       # ratios are all against the base set
+            if n_want < len(synth_full):
+                g = torch.Generator().manual_seed(args.seed)
+                keep = torch.randperm(len(synth_full), generator=g)[:n_want].tolist()
+                synth_full = torch.utils.data.Subset(synth_full, keep)
+            parts.append(synth_full)
+            print(f"  synthetic source {synth_dir.name}: {len(synth_full)}")
+        synth_n = sum(len(x) for x in parts)
+        train_ds = torch.utils.data.ConcatDataset([train_ds, *parts])
         print(f"training mix: {real_n} real + {synth_n} synthetic "
               f"= {len(train_ds)} ({synth_n/len(train_ds)*100:.0f}% synthetic)")
         print(f"  val/test remain 100% real, so any regression shows there")
